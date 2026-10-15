@@ -2,9 +2,10 @@
 
 limpid is for reading what agents write, quickly, and answering from the
 keyboard. It opens agent responses and markdown files as clean pages in a
-lightweight window. Agents can mark the places where they need an answer, and
-limpid lets you move between those places, write replies with vim keys, and
-send the replies back to the agent in compact form.
+lightweight window. Agents list what they need from you under a `## Questions`
+heading. limpid lets you move between those questions, write replies with vim
+keys, comment on any block, and send everything back to the agent in compact
+form.
 
 This document describes the target system. [TASKS.md](TASKS.md) orders the work.
 
@@ -14,9 +15,11 @@ This document describes the target system. [TASKS.md](TASKS.md) orders the work.
   from command to visible window for a 2,000-line file. Cold start under
   0.3 s (htmlview today: about 0.4 s).
 - **Small.** One Rust workspace and one web engine instance shared by all
-  windows. No Python, Node or npm at runtime. JavaScript runs only in the page,
-  and the heavy parts load lazily.
+  windows. No Python, Node or npm at runtime or build time. JavaScript runs only
+  in the page, and the heavy parts load lazily.
 - **Driven from the keyboard.** Every action has a key. The mouse is optional.
+- **Transparent to agents.** Agents write ordinary markdown. Nothing limpid
+  asks of them looks odd in a terminal.
 - **Read-only except comments.** limpid never edits content. It writes only
   replies and comments.
 
@@ -29,20 +32,23 @@ This document describes the target system. [TASKS.md](TASKS.md) orders the work.
 - macOS, X11-only setups, remote URLs for markdown, and general browsing.
 - Editing documents beyond comments.
 
-## Components
+## Architecture
 
 ```
-you / agent hook
+you / agent hook / integration
    │
-limpid-core <agent> [spec]   ─▶ ~/.cache/limpid/<page>.html
-   │
-limpid <file.md | file.html | ->      small binary, does not link GTK
-   │   renders .md in-process (limpid-core library)
-   │   Unix socket: {path, slot, theme, origin}
+limpid-core <agent> [spec]  ─▶  ~/.cache/limpid/<page>.html + <page>.meta.json
+   │  (page path on stdout)
    ▼
-limpid-host                           GTK4 + WebKit 6.0, one process,
-   │                                  many windows, one shared web process
-   │   script message handlers (reply, comment, mermaid-svg)
+limpid <file.md | page.html | ->      small binary, does not link GTK
+   │   renders .md in-process (limpid-core library)
+   │   captures $WEZTERM_PANE
+   │   Unix socket: {path, slot, origin, theme, pane}
+   ▼
+limpid-host                           GTK4 + WebKit 6.0, links limpid-core
+   │                                  one process, many windows,
+   │                                  one shared web process
+   │   script message handlers: reply, comment, mermaid-svg
    ▼
 page: static HTML/CSS + small JS (rail, scroll-spy, search, fields)
       lazy: mermaid.js, CodeMirror 6 + vim
@@ -52,35 +58,75 @@ One Cargo workspace, three crates:
 
 | Crate | Kind | Responsibility |
 |---|---|---|
-| `limpid-core` | lib + bin | Read sources (markdown files, stdin, Claude Code, Codex and pi transcripts with turn specs), render pages, find question fields, format replies, print agent instructions. No GTK. |
-| `limpid` | bin | The command you type. Renders `.md` in-process, writes the page to the cache, hands it to the host over the socket, and starts `limpid-host` when none is running. |
-| `limpid-host` | bin | Windows, keys, the shared WebKit context, script message handlers, writing comments to disk, and delivering replies. |
+| `limpid-core` | lib + bin | Settings; reading sources (markdown files, stdin, Claude Code, Codex and pi transcripts with turn specs); rendering pages; highlighting and the grammar catalog; finding question fields; reply storage and formatting; agent instructions; `send`. No GTK. |
+| `limpid` | bin | The command you type. Renders `.md` in-process, writes the page to the cache, and hands it to the host over the socket. When no host is running, it starts `limpid-host` first, so GTK starts up while the page renders. |
+| `limpid-host` | bin | Windows, keys, the shared WebKit context, slots, and the script message handlers. It stores replies and runs the reply command through `limpid-core`. |
 
 `limpid` must not link GTK or WebKit. The dynamic linker maps every linked
 library at startup, so keeping GTK and WebKit out of `limpid` keeps the handoff
 path to a few milliseconds. htmlview had the same split: its front end handed
 the file to the host and exited before importing GTK.
 
-### Command surface
+### Commands
 
 ```
-limpid notes.md                 render and open
-limpid page.html                open as is
-limpid -                        read markdown from stdin
-limpid --slot ID notes.md       reuse the window holding slot ID
-limpid --dark | --light         theme (separate host per scheme)
-limpid --separate               own process, no host
-limpid-core claude [spec]       newest Claude Code turn(s) -> page path on stdout
+limpid notes.md                    render and open
+limpid page.html                   open as is
+limpid -                           read markdown from stdin
+limpid --slot ID <target>          reuse the window holding slot ID
+limpid --hook <target>             open without taking focus (origin: hook)
+limpid --dark | --light <target>   theme (separate host per scheme)
+limpid --separate <target>         own process, no host
+limpid --out FILE <target>         write a self-contained page, don't open
+
+limpid-core render FILE.md         render to the cache, print the page path
+limpid-core claude [spec]          newest Claude Code turn(s) -> page path
 limpid-core codex  [spec]
 limpid-core pi     [spec]
-limpid-core instructions        the one-line agent instruction (see Ask fields)
+limpid-core grammars sync | list   install the configured grammars / show catalog
+limpid-core instructions           the one-line agent instruction (see Questions)
+limpid-core send                   reply command: type stdin into $LIMPID_PANE
 ```
 
 Turn specs keep today's grammar: `0`, `3`, `0..2`, `1..=3`, `2..`, `..4`, `..`,
 capped at 10 turns.
 
-Integrations are thin wrappers: `/read` in Claude Code, pi's `Ctrl-R` and
+Integrations are thin wrappers. `/read` in Claude Code, pi's `Ctrl-R` and
 `!limpid codex` all run `limpid "$(limpid-core <agent> <spec>)"`.
+
+### Files
+
+| Path | Contents | Written by |
+|---|---|---|
+| `~/.config/limpid/config.toml` | Settings (below) | you |
+| `~/.cache/limpid/<page>.html` | Rendered pages, newest 50 kept | `limpid`, `limpid-core` |
+| `~/.cache/limpid/<page>.meta.json` | Agent, session id, turn spec, source path | `limpid-core` |
+| `~/.cache/limpid/<page>.replies.json` | Replies and comments on agent pages | host |
+| `~/.cache/limpid/assets/<hash>.js` | Shared page scripts and styles | `limpid` |
+| `~/.cache/limpid/mermaid/<hash>.svg` | Rendered diagrams | host |
+| `~/.local/share/limpid/grammars/` | Compiled grammars (`<lang>.so`) and their queries | `limpid-core grammars sync` |
+| `$XDG_RUNTIME_DIR/limpid-<scheme>.sock` | Handoff socket, one per color scheme | host |
+
+### Settings
+
+```toml
+# ~/.config/limpid/config.toml — every key is optional
+[highlight]
+grammars = ["rust", "python", "typescript", "tsx", "bash", "json", "toml",
+            "yaml", "go", "c", "cpp", "lua", "sql", "html", "css", "markdown"]
+theme = "default"
+
+[questions]
+headings = ["Questions", "Open questions", "Questions for you"]
+
+[reply]
+command = "wl-copy"            # or "limpid-core send"
+
+[autoopen]
+claude = false                 # Stop hook opens turns that contain Questions
+```
+
+Unknown keys are an error with the key's name, so typos don't fail silently.
 
 ## Rendering
 
@@ -95,9 +141,21 @@ footnotes, YAML front matter and math enabled.
 | Mermaid | `<pre class="mermaid">` source first, then `mermaid.js` loads after first paint. The page sends the SVG to the host, which caches it under a hash of the source; later renders inline the cached SVG | none; the diagram appears later |
 | Front matter | `title` becomes the window and page title; the block is otherwise hidden | none |
 | Raw HTML | Escaped in agent transcripts. Sanitized with `ammonia` (allowlist, no scripts) in files you open yourself | small |
+| Questions | Fields with numbered options and a reply area (see Questions) | none |
+| Saved replies | Shown as annotations under the block they belong to | none |
 
 Every block element carries `data-src="start-end"`, its byte range in the
-markdown source. Comments use these ranges to point at the source.
+markdown source. Comments, saved replies and the watch scroll anchor all use
+these ranges.
+
+Page scripts (rail, scroll-spy, search, fields, the Mermaid loader) and styles
+are compiled in with `include_str!` and written once to
+`~/.cache/limpid/assets/<hash>.js`, so pages refer to shared files instead of
+inlining them. `--out` inlines everything except lazy bundles, and the page
+stays readable without them.
+
+The JIT stays off by default (`JSC_useJIT=0`, about 10 MiB per web process).
+`LIMPID_JIT=1` turns it back on.
 
 ### Highlighting
 
@@ -107,40 +165,26 @@ injections: macro bodies in Rust, SQL in strings and code in markdown get
 re-parsed as their own language. nvim's Rust macro highlighting works the same
 way.
 
-- **Grammars are shared libraries loaded at runtime** from
+- **Grammars are shared libraries loaded at runtime** (`libloading`) from
   `~/.local/share/limpid/grammars/<lang>.so`, the way nvim and Helix load them.
-  Only languages that appear on a page get loaded.
+  Only languages that appear on a page get loaded, and each language's queries
+  compile on first use.
 - **Queries come from Helix** (`highlights.scm`, `injections.scm`), not
   nvim-treesitter, whose queries use nvim-only predicates such as
-  `#lua-match?`. Helix's `languages.toml` also pins a source repository and
-  commit for about 200 grammars, which `limpid-core grammars` uses as its
-  catalog.
-- **Which grammars are installed is a setting:**
-
-  ```toml
-  # ~/.config/limpid/config.toml
-  [highlight]
-  grammars = ["rust", "python", "typescript", "tsx", "bash", "json", "toml",
-              "yaml", "go", "c", "cpp", "lua", "sql", "html", "css", "markdown"]
-  theme = "default"
-  ```
-
+  `#lua-match?`. limpid can ship its own override for a language when Helix's
+  queries fall short.
+- **The catalog** is generated from Helix's `languages.toml`, which pins a
+  source repository and commit for about 200 grammars, and is committed to the
+  repo as `catalog.toml`. It also supplies fence aliases (`rs`, `py`, `sh`,
+  `ts`).
+- **Which grammars are installed is the `highlight.grammars` setting.**
   `limpid-core grammars sync` fetches and compiles exactly that list (it needs
-  a C compiler at install time). `grammars list` shows the catalog and what is
-  installed. Fence names map to grammars through aliases (`rs`, `py`, `sh`,
-  `ts`), taken from the same catalog.
+  `git` and a C compiler). `grammars list` shows the catalog and what is
+  installed.
 - **Themes are CSS.** Highlight names become classes (`hl-keyword`,
   `hl-function-macro`), and a theme is a stylesheet with light and dark
   variants, so switching scheme needs no re-render. The default theme matches
   the page palette.
-
-Vendored JavaScript (rail, search, fields, mermaid, CodeMirror) is compiled in
-with `include_str!` and written once to `~/.cache/limpid/assets/<hash>.js`, so
-pages refer to shared files instead of inlining megabytes. Pages saved with
-`--out` inline everything and remain self-contained.
-
-The JIT stays off by default (`JSC_useJIT=0`, about 10 MiB per web process).
-`LIMPID_JIT=1` turns it back on.
 
 ## Questions
 
@@ -159,12 +203,10 @@ so the response reads normally in a terminal. Questions go under a
 ```
 
 - Each top-level item under the heading is a field, numbered `q1`, `q2`, … in
-  document order. Nested `- ` items are suggested answers. Free text is always
-  allowed.
-- The heading may be any level. limpid also accepts "Open questions" and
-  "Questions for you", matched without regard to case. The list is in
-  `config.toml` (`questions.headings`).
-- In limpid, each field shows its options numbered and has a reply area.
+  document order, so the ids match the agent's own numbering. Nested `- ` items
+  are suggested answers. Free text is always allowed.
+- The heading may be any level and is matched without regard to case against
+  `questions.headings`.
 - An agent that forgets the convention breaks nothing: `c` comments on any
   block. Fields only decide where `Tab` stops.
 
@@ -203,10 +245,11 @@ owns them otherwise. This rule exists today in `keys.py` and carries over.
 
 ### Storage
 
-Replies are stored in a sidecar file, never in agent transcripts:
+Replies never go into agent transcripts.
 
-- Agent pages: `~/.cache/limpid/<page>.replies.json`
-- Markdown files you opened: written into the file itself as an HTML comment
+- **Agent pages:** `~/.cache/limpid/<page>.replies.json`, keyed by field id or
+  `data-src` range.
+- **Markdown files you opened:** written into the file itself as an HTML comment
   right after the block, so they stay with the document and are invisible in
   other renderers:
 
@@ -214,11 +257,17 @@ Replies are stored in a sidecar file, never in agent transcripts:
   <!-- limpid reply q1
   SQLite. We can move later.
   -->
+
+  <!-- limpid comment
+  This leaks on error.
+  -->
   ```
 
-  When limpid renders the file again, it shows these comments as annotations on
-  the block above them. It writes the file atomically (temporary file and
-  rename) and refuses to save if the file changed on disk since it was rendered.
+  limpid writes the file atomically (temporary file and rename) and refuses to
+  save if the file changed on disk since it was rendered. A `-->` inside a reply
+  is escaped so it cannot end the comment early.
+
+Either way, the next render shows saved replies as annotations.
 
 ### Compact reply format
 
@@ -231,79 +280,84 @@ q2: no
 c "Use the existing pool…" (L42-48): this leaks on error
 ```
 
-Fields use their `qN` id, which matches the agent's own numbering. Comments quote the first
-few words of the block and its line range. Unanswered fields are left out.
+Fields use their `qN` id. Comments quote the first few words of the block and
+its line range. Unanswered fields are left out.
 
 ### Delivery
 
-The host delivers a reply by running a configurable reply command, with the
-message on stdin and these environment variables:
+The host delivers a reply by running `reply.command`, with the message on stdin
+and these environment variables:
 
-| Variable | Meaning |
-|---|---|
-| `LIMPID_AGENT` | `claude`, `codex`, `pi` or `file` |
-| `LIMPID_SESSION` | Session id, when the page came from a transcript |
-| `LIMPID_PANE` | Terminal pane that opened the page (`$WEZTERM_PANE` captured by the hook or wrapper) |
-| `LIMPID_SOURCE` | Path of the page's source |
+| Variable | Meaning | Source |
+|---|---|---|
+| `LIMPID_AGENT` | `claude`, `codex`, `pi` or `file` | page meta |
+| `LIMPID_SESSION` | Session id, when the page came from a transcript | page meta |
+| `LIMPID_SOURCE` | Path of the page's source | page meta |
+| `LIMPID_PANE` | Terminal pane that opened the page | `$WEZTERM_PANE`, captured by `limpid` and sent in the handoff |
 
-The default command copies the message to the clipboard (`wl-copy`). The
-shipped alternative, `limpid-core send`, types the message into the agent's
-pane with `wezterm cli send-text --pane-id $LIMPID_PANE` and does **not** press
-Enter, so you can still review it in the agent's own prompt. Agent-specific
-delivery (for example a pi extension that receives the message directly) plugs
-in through the same command.
+The default command copies the message to the clipboard (`wl-copy`).
+`limpid-core send` types the message into the agent's pane with
+`wezterm cli send-text --pane-id $LIMPID_PANE` and does **not** press Enter, so
+you can still review it in the agent's own prompt. It falls back to the
+clipboard when no pane is known. Agent-specific delivery (for example a pi
+extension that receives the message directly) plugs in through the same
+setting.
 
 ## Windows and slots
 
 The handoff message carries an optional `slot`. If a window already holds that
-slot, the host loads the new page there instead of opening a window and keeps
-the scroll position when the page is the same source. Hooks use the agent's
-session id as the slot, so each agent gets one window that updates.
+slot, the host loads the new page there instead of opening a window, and keeps
+the scroll position (by `data-src` anchor) when the page has the same source.
+Hooks use the agent's session id as the slot, so each agent gets one window
+that updates.
 
-Opening a window never takes focus when the request comes from a hook
-(`origin: hook`). Hyprland rules match the window class `limpid`.
+Requests with `origin: hook` never take focus. Hyprland rules match the window
+class `limpid`.
 
 ## Watch
 
 `--watch` re-renders on save and keeps the scroll position, anchored to the
 `data-src` of the block at the top of the view rather than to a pixel offset.
 Markdown files you open with `limpid` are watched by default, so annotations
-appear after an external edit.
+appear after an external edit and after limpid saves a comment.
 
 ## Dependencies
 
-Runtime: WebKitGTK 6.0 and GTK4 (system packages), `wl-copy`, and `wezterm`
-for `send`. Compiled grammars live in `~/.local/share/limpid/grammars/`.
-
-Install time: a C compiler and `git`, for `limpid-core grammars sync`.
-
-Rust crates: `pulldown-cmark`, `pulldown-latex`, `ammonia`, `tree-sitter`,
-`tree-sitter-highlight`, `libloading`, `toml`, `serde`, `serde_json`, `gtk4`,
-`webkit6`. Every new crate needs a reason written in its PR.
-
-Vendored JavaScript: `mermaid.min.js` and a CodeMirror 6 bundle with
-`@replit/codemirror-vim`, built once and committed with the version and
-licenses recorded in `vendor/README.md`.
+- **Runtime:** WebKitGTK 6.0 and GTK4 (system packages), `wl-copy`, and
+  `wezterm` for `send`.
+- **Installing grammars:** `git` and a C compiler.
+- **Rust crates:** `pulldown-cmark`, `pulldown-latex`, `ammonia`, `tree-sitter`,
+  `tree-sitter-highlight`, `libloading`, `toml`, `serde`, `serde_json`, `gtk4`,
+  `webkit6`. Every new crate needs a reason written in its PR.
+- **Vendored JavaScript:** `mermaid.min.js`, and a CodeMirror 6 bundle with
+  `@replit/codemirror-vim`. Each is built once outside the normal build and
+  committed, with its version, licenses and rebuild steps in
+  `vendor/README.md`. Building limpid never needs npm.
 
 ## Testing
 
 - **Golden pages:** fixed `.md` inputs and the expected HTML for headings, TOC,
-  tables, code (including Rust macro bodies), math, question fields, escaping
-  and sanitizing. Changes are reviewed
-  as diffs.
-- **Parity:** the existing TypeScript tests (spec, codex, page, cli, the
-  Claude Code `read` tests) are ported first and must pass before the
-  TypeScript code is deleted. Agent pages rendered from the existing fixtures
-  must match the TypeScript output, ignoring whitespace.
-- **Adversarial input:** duplicate, empty, emoji and very long headings;
-  unclosed fences; a 10 MB file; invalid UTF-8; CRLF; no headings; raw
-  `<script>`; a `## Questions` heading with no list, a bulleted instead of
-  numbered list, or two Questions sections; a fence naming a language with no
-  grammar; a grammar `.so` that fails to load; a reply comment containing `-->`;
-  a file changed on disk between render and save.
+  tables, code (including Rust macro bodies), math, question fields, saved
+  replies, escaping and sanitizing. Changes are reviewed as diffs.
+- **Parity:** the existing TypeScript tests (spec, codex, page, cli, the Claude
+  Code `read` tests) are ported first and must pass before the TypeScript code
+  is deleted. Agent pages rendered from the existing fixtures must match the
+  TypeScript output, ignoring whitespace and highlighting.
+- **Adversarial input:**
+  - **Headings:** duplicate, empty, emoji and very long headings, and a
+    document with no headings.
+  - **Malformed input:** unclosed fences, a 10 MB file, invalid UTF-8, CRLF line
+    endings, raw `<script>`.
+  - **Questions:** a `## Questions` heading with no list, a bulleted list
+    instead of a numbered one, and two Questions sections.
+  - **Grammars:** a fence naming a language with no grammar, and a grammar `.so`
+    that fails to load.
+  - **Settings:** an unknown key in the settings file.
+  - **Replies:** a reply containing `-->`, and a file that changed on disk
+    between render and save.
 - **Host:** the 19 handoff tests and 10 window tests from htmlview are ported.
-  New tests cover reusing a slot, reply round trips through a fake reply
-  command, and Tab order across fields.
+  New tests cover reusing a slot, `--hook` not taking focus, reply round trips
+  through a fake reply command, and Tab order across fields.
 - **Benchmarks:** `bench/` holds the measurement scripts from
   `~/.cache/htmlview-bench/`, adapted for limpid. Each phase that touches the
   hot path reports cold start, warm start and private memory for 1, 2 and 3
