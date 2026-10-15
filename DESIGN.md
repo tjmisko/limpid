@@ -52,7 +52,7 @@ One Cargo workspace, three crates:
 
 | Crate | Kind | Responsibility |
 |---|---|---|
-| `limpid-core` | lib + bin | Read sources (markdown files, stdin, Claude Code, Codex and pi transcripts with turn specs), render pages, parse ask fields, format replies, print agent instructions. No GTK. |
+| `limpid-core` | lib + bin | Read sources (markdown files, stdin, Claude Code, Codex and pi transcripts with turn specs), render pages, find question fields, format replies, print agent instructions. No GTK. |
 | `limpid` | bin | The command you type. Renders `.md` in-process, writes the page to the cache, hands it to the host over the socket, and starts `limpid-host` when none is running. |
 | `limpid-host` | bin | Windows, keys, the shared WebKit context, script message handlers, writing comments to disk, and delivering replies. |
 
@@ -90,7 +90,7 @@ footnotes, YAML front matter and math enabled.
 | Feature | How it renders | Cost at first paint |
 |---|---|---|
 | Headings, TOC | `id`s with slug deduplication; the rail and the narrow-screen `<details>` stay as they are today | none |
-| Code | nvim highlighting, cached by (language, code, colorscheme); plain escaped text if nvim is missing | cache hit: none. Miss: one nvim run per page, measured in phase 0 |
+| Code | tree-sitter with injections (see Highlighting); plain escaped text for languages with no grammar installed | one query compile per language per page, measured in phase 0 |
 | Math | LaTeX turned into MathML when the page renders (`pulldown-latex`); WebKit draws MathML natively | microseconds |
 | Mermaid | `<pre class="mermaid">` source first, then `mermaid.js` loads after first paint. The page sends the SVG to the host, which caches it under a hash of the source; later renders inline the cached SVG | none; the diagram appears later |
 | Front matter | `title` becomes the window and page title; the block is otherwise hidden | none |
@@ -98,6 +98,41 @@ footnotes, YAML front matter and math enabled.
 
 Every block element carries `data-src="start-end"`, its byte range in the
 markdown source. Comments use these ranges to point at the source.
+
+### Highlighting
+
+Code highlighting uses the `tree-sitter` and `tree-sitter-highlight` crates
+directly, with no wrapper crate and no regex grammars. The reason is
+injections: macro bodies in Rust, SQL in strings and code in markdown get
+re-parsed as their own language. nvim's Rust macro highlighting works the same
+way.
+
+- **Grammars are shared libraries loaded at runtime** from
+  `~/.local/share/limpid/grammars/<lang>.so`, the way nvim and Helix load them.
+  Only languages that appear on a page get loaded.
+- **Queries come from Helix** (`highlights.scm`, `injections.scm`), not
+  nvim-treesitter, whose queries use nvim-only predicates such as
+  `#lua-match?`. Helix's `languages.toml` also pins a source repository and
+  commit for about 200 grammars, which `limpid-core grammars` uses as its
+  catalog.
+- **Which grammars are installed is a setting:**
+
+  ```toml
+  # ~/.config/limpid/config.toml
+  [highlight]
+  grammars = ["rust", "python", "typescript", "tsx", "bash", "json", "toml",
+              "yaml", "go", "c", "cpp", "lua", "sql", "html", "css", "markdown"]
+  theme = "default"
+  ```
+
+  `limpid-core grammars sync` fetches and compiles exactly that list (it needs
+  a C compiler at install time). `grammars list` shows the catalog and what is
+  installed. Fence names map to grammars through aliases (`rs`, `py`, `sh`,
+  `ts`), taken from the same catalog.
+- **Themes are CSS.** Highlight names become classes (`hl-keyword`,
+  `hl-function-macro`), and a theme is a stylesheet with light and dark
+  variants, so switching scheme needs no re-render. The default theme matches
+  the page palette.
 
 Vendored JavaScript (rail, search, fields, mermaid, CodeMirror) is compiled in
 with `include_str!` and written once to `~/.cache/limpid/assets/<hash>.js`, so
@@ -107,32 +142,41 @@ pages refer to shared files instead of inlining megabytes. Pages saved with
 The JIT stays off by default (`JSC_useJIT=0`, about 10 MiB per web process).
 `LIMPID_JIT=1` turns it back on.
 
-## Ask fields
+## Questions
 
-Agents mark the places that need your answer. The marker has to survive in a
-plain terminal, so it is a fenced block rather than a custom HTML tag:
+Agents mark what needs your answer with ordinary markdown and no new syntax,
+so the response reads normally in a terminal. Questions go under a
+`## Questions` heading as a numbered list, with suggested answers as nested
+`- ` items:
 
-````markdown
-```ask
-Which database should the prototype use?
-- SQLite
-- Postgres
+```markdown
+## Questions
+
+1. Which database should the prototype use?
+   - SQLite
+   - Postgres
+2. Should the old endpoint keep working?
 ```
-````
 
-- The first line is the question. Lines starting with `- ` are suggested
-  answers. Free text is always allowed.
-- An optional id goes in the info string (`` ```ask db ``). Without one, fields
-  are numbered `q1`, `q2`, … in document order.
-- In a terminal it reads as a quoted question. In limpid it renders as a field
-  with the options as choices and a reply area.
+- Each top-level item under the heading is a field, numbered `q1`, `q2`, … in
+  document order. Nested `- ` items are suggested answers. Free text is always
+  allowed.
+- The heading may be any level. limpid also accepts "Open questions" and
+  "Questions for you", matched without regard to case. The list is in
+  `config.toml` (`questions.headings`).
+- In limpid, each field shows its options numbered and has a reply area.
+- An agent that forgets the convention breaks nothing: `c` comments on any
+  block. Fields only decide where `Tab` stops.
 
 `limpid-core instructions` prints the line that goes into each agent's
 instructions (CLAUDE.md, AGENTS.md, the pi system prompt):
 
-> When you need a decision or answer from the user, put each question in its
-> own ```` ```ask ```` fenced block: the question on the first line, optional
-> `- ` answer lines below.
+> Put questions that need the user's answer under a `## Questions` heading as a
+> numbered list; give suggested answers as nested `- ` items.
+
+If agents drift from the convention in practice, the fallback is a custom kind
+of GitHub alert, `> [!ASK]`, which reads as a quote with a small tag in the
+terminal.
 
 ## Keys
 
@@ -141,7 +185,7 @@ The existing keys stay: `q`, `r`, `+ - 0`, `[ ]` back and forward, `j k`, `gg`,
 
 | Key | Action |
 |---|---|
-| `Tab` / `Shift-Tab` | Next / previous ask field. Wraps around and scrolls the field into view |
+| `Tab` / `Shift-Tab` | Next / previous question field. Wraps around and scrolls the field into view |
 | `1`–`9` | On a focused field: pick that option |
 | `Enter` or `i` | Open the reply editor on the focused field (CodeMirror, vim mode, starts in insert) |
 | `c` | Comment on the block nearest the top of the view (any block, not only fields) |
@@ -182,12 +226,12 @@ Replies are stored in a sidecar file, never in agent transcripts:
 
 ```
 re: <page title> (claude, turn 0)
-q1 db: SQLite. We can move later.
+q1: SQLite. We can move later.
 q2: no
 c "Use the existing pool…" (L42-48): this leaks on error
 ```
 
-Fields that point back to the source use their id. Comments quote the first
+Fields use their `qN` id, which matches the agent's own numbering. Comments quote the first
 few words of the block and its line range. Unanswered fields are left out.
 
 ### Delivery
@@ -228,12 +272,14 @@ appear after an external edit.
 
 ## Dependencies
 
-Runtime: WebKitGTK 6.0 and GTK4 (system packages), `nvim` (optional), `wl-copy`,
-and `wezterm` for `send`.
+Runtime: WebKitGTK 6.0 and GTK4 (system packages), `wl-copy`, and `wezterm`
+for `send`. Compiled grammars live in `~/.local/share/limpid/grammars/`.
 
-Rust crates: `pulldown-cmark`, `pulldown-latex`, `ammonia`, `serde`,
-`serde_json`, `gtk4`, `webkit6`. Every new crate needs a reason written in its
-PR.
+Install time: a C compiler and `git`, for `limpid-core grammars sync`.
+
+Rust crates: `pulldown-cmark`, `pulldown-latex`, `ammonia`, `tree-sitter`,
+`tree-sitter-highlight`, `libloading`, `toml`, `serde`, `serde_json`, `gtk4`,
+`webkit6`. Every new crate needs a reason written in its PR.
 
 Vendored JavaScript: `mermaid.min.js` and a CodeMirror 6 bundle with
 `@replit/codemirror-vim`, built once and committed with the version and
@@ -242,7 +288,8 @@ licenses recorded in `vendor/README.md`.
 ## Testing
 
 - **Golden pages:** fixed `.md` inputs and the expected HTML for headings, TOC,
-  tables, code, math, ask fields, escaping and sanitizing. Changes are reviewed
+  tables, code (including Rust macro bodies), math, question fields, escaping
+  and sanitizing. Changes are reviewed
   as diffs.
 - **Parity:** the existing TypeScript tests (spec, codex, page, cli, the
   Claude Code `read` tests) are ported first and must pass before the
@@ -250,7 +297,9 @@ licenses recorded in `vendor/README.md`.
   must match the TypeScript output, ignoring whitespace.
 - **Adversarial input:** duplicate, empty, emoji and very long headings;
   unclosed fences; a 10 MB file; invalid UTF-8; CRLF; no headings; raw
-  `<script>`; an `ask` block with no question; a reply comment containing `-->`;
+  `<script>`; a `## Questions` heading with no list, a bulleted instead of
+  numbered list, or two Questions sections; a fence naming a language with no
+  grammar; a grammar `.so` that fails to load; a reply comment containing `-->`;
   a file changed on disk between render and save.
 - **Host:** the 19 handoff tests and 10 window tests from htmlview are ported.
   New tests cover reusing a slot, reply round trips through a fake reply
@@ -262,8 +311,10 @@ licenses recorded in `vendor/README.md`.
 
 ## Open questions
 
-- How long does nvim highlighting take per page? If a cache miss is too slow,
-  first paint shows plain code and the highlighted version swaps in.
+- How long do the larger Helix queries take to compile on first use? If that is
+  too slow, first paint shows plain code and the highlighted version swaps in.
+- Do Helix's Rust injections parse macro bodies as Rust, like nvim's? If not,
+  limpid ships its own `injections.scm` override for Rust.
 - Is MathML output from `pulldown-latex` good enough, or does KaTeX need to load
   lazily as a fallback?
 - How fast is Mermaid with the JIT off? If it is too slow, pages that contain

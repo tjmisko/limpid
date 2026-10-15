@@ -14,8 +14,10 @@ Small experiments, no product code. The answers decide details in later phases.
 - [ ] **P0.2** Build an empty window with `gtk4` + `webkit6` in Rust on this
   machine (aarch64, 16 KiB pages). Measure cold start and memory against the
   Python host.
-- [ ] **P0.3** Time nvim highlighting for a page with 1, 10 and 50 code blocks.
-  Decide whether a cache miss blocks first paint.
+- [ ] **P0.3** Highlighting spike: load a Rust grammar `.so` with Helix's
+  queries through `tree-sitter-highlight`. Check that macro bodies are
+  highlighted as Rust, and time query compilation for Rust, TypeScript and
+  markdown (the largest queries). Decide whether first paint waits for it.
 - [ ] **P0.4** Render a math sample with `pulldown-latex` in WebKit. Decide
   whether MathML is good enough or KaTeX loads lazily.
 - [ ] **P0.5** Time Mermaid with the JIT off and on for small and large
@@ -33,7 +35,15 @@ changes to DESIGN.md are made.
   rail and search JS as compiled-in assets.
 - [ ] **P1.3** Render markdown with `pulldown-cmark` (GFM, footnotes, front
   matter), heading ids, TOC (depth 3), table wrapping and `data-src` ranges.
-- [ ] **P1.4** Highlight code with nvim plus a cache, following the P0.3 result.
+- [ ] **P1.4** Highlighting: load grammars at runtime with lazy per-language
+  query compilation, output highlight classes, a default theme in CSS (light
+  and dark), and fence aliases. Plain text when a grammar is missing.
+- [ ] **P1.4a** `~/.config/limpid/config.toml` (`highlight.grammars`,
+  `highlight.theme`, `questions.headings`), with defaults when the file is
+  absent and clear errors for unknown keys.
+- [ ] **P1.4b** `limpid-core grammars sync | list`: a catalog generated from
+  Helix's `languages.toml` (repository, commit, aliases, queries), and fetching
+  and compiling the configured set.
 - [ ] **P1.5** Escape raw HTML (agent mode) or sanitize it with `ammonia` (file
   mode).
 - [ ] **P1.6** Golden tests and the adversarial input set.
@@ -99,10 +109,12 @@ of a 2,000-line `.md` is under 150 ms.
 **Done when:** a document with math, a diagram and footnotes shows readable
 text first and the diagram after.
 
-## Phase 6: Ask fields
+## Phase 6: Question fields
 
-- [ ] **P6.1** Parse ```` ```ask ```` blocks (question, options, optional id,
-  automatic `qN` ids). Golden tests, including malformed blocks.
+- [ ] **P6.1** Find the `## Questions` section (configured heading names,
+  any level, case-insensitive): top-level numbered items become `q1`, `q2`, …,
+  and nested `- ` items become options. Golden tests, including a heading with
+  no list, bulleted lists, nested numbering and two Questions sections.
 - [ ] **P6.2** Render fields: the question, numbered options, an empty reply
   area.
 - [ ] **P6.3** `Tab` / `Shift-Tab` focus moves between fields; `1`–`9` picks an
@@ -134,7 +146,7 @@ block and get the reply into the agent's prompt without touching the mouse.
 
 - [ ] **P8.1** Claude Code Stop hook: render the newest turn and open it in the
   session's slot without taking focus. Opt-in, and only when the turn contains
-  ask fields (configurable).
+  a Questions section (configurable).
 - [ ] **P8.2** The same for pi (an extension event) and Codex (a notify hook),
   where those agents support it.
 - [ ] **P8.3** Capture `$WEZTERM_PANE` and the session id at open time and pass
