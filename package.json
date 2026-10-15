@@ -1,0 +1,10 @@
+{
+  "name": "limpid",
+  "version": "0.1.0",
+  "description": "Render AI-agent conversation turns as a styled HTML page",
+  "type": "module",
+  "private": true,
+  "bin": { "limpid": "./limpid" },
+  "scripts": { "test": "node --test --no-warnings=ExperimentalWarning test/" },
+  "dependencies": { "marked": "^15.0.0" }
+}
