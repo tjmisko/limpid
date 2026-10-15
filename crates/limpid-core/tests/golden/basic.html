@@ -66,7 +66,7 @@ pre code{font-size:inherit;background:none;border:0;padding:0;color:var(--ink)}
 figure.code{margin:22px 0;border:1px solid var(--rule);border-radius:10px;overflow:hidden;background:var(--code)}
 figure.code figcaption{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);background:var(--surface);padding:8px 14px;border-bottom:1px solid var(--rule)}
 /* Neovim tree-sitter token colours arrive as inline styles on each span. */
-figure.code pre code{color:#cdd6f4}
+figure.code pre code{color:var(--ink)}
 .limpid-search{position:fixed;right:22px;top:18px;z-index:20;width:min(340px,calc(100vw - 44px));padding:8px 12px;border:1px solid var(--teal);border-radius:7px;background:var(--surface);color:var(--ink);box-shadow:0 8px 24px #0005;font:14px var(--sans)}
 .limpid-search[hidden]{display:none}
 .limpid-editor{margin:10px 0;border:1px solid var(--teal);border-radius:7px;overflow:hidden}
@@ -79,13 +79,13 @@ figure.code pre code{color:#cdd6f4}
 figure.diagram{margin:22px 0;padding:14px;border:1px solid var(--rule);border-radius:10px;overflow-x:auto;background:var(--surface)}
 figure.diagram pre.mermaid{padding:0;background:transparent;color:var(--muted)}
 figure.diagram svg{display:block;max-width:100%;height:auto;margin:auto}
-pre code .hl-keyword,pre code .hl-operator{color:var(--purple)}
-pre code .hl-function,pre code .hl-function-macro,pre code .hl-function-method{color:var(--blue)}
-pre code .hl-type,pre code .hl-constructor,pre code .hl-constant{color:var(--amber)}
-pre code .hl-string,pre code .hl-string-special,pre code .hl-character{color:var(--teal)}
-pre code .hl-comment{color:var(--muted);font-style:italic}
-pre code .hl-variable-parameter,pre code .hl-attribute,pre code .hl-property{color:var(--amber)}
-pre code .hl-number,pre code .hl-boolean{color:var(--purple)}
+pre code [class^="hl-keyword"],pre code [class^="hl-operator"]{color:var(--purple)}
+pre code [class^="hl-function"]{color:var(--blue)}
+pre code [class^="hl-type"],pre code [class^="hl-constructor"],pre code [class^="hl-constant"]{color:var(--amber)}
+pre code [class^="hl-string"],pre code [class^="hl-character"]{color:var(--teal)}
+pre code [class^="hl-comment"]{color:var(--muted);font-style:italic}
+pre code [class^="hl-variable-parameter"],pre code [class^="hl-attribute"],pre code [class^="hl-property"]{color:var(--amber)}
+pre code [class^="hl-number"],pre code [class^="hl-boolean"]{color:var(--purple)}
 hr{border:0;border-top:1px solid var(--rule);margin:36px 0}
 .table-wrap{margin:22px 0;overflow-x:auto;border:1px solid var(--rule);border-radius:10px}
 table{border-collapse:collapse;width:100%;font-size:14px}

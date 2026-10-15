@@ -636,6 +636,14 @@ mod tests {
     }
 
     #[test]
+    fn very_long_heading_has_bounded_slug() {
+        let title = "A".repeat(400);
+        let result = render_markdown(&format!("# {title}"));
+        assert_eq!(result.toc[0].id.len(), 60);
+        assert_eq!(result.title, title);
+    }
+
+    #[test]
     fn sanitizes_local_html() {
         let result = render(
             "<script>alert(1)</script>\n\n<img src=x onerror=alert(2)>",

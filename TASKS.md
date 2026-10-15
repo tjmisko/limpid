@@ -4,6 +4,9 @@ Phased plan for [DESIGN.md](DESIGN.md). Each phase ends in something usable and
 merges on its own. Task ids are stable once work starts; refer to them in branch
 names and commits.
 
+Performance measurements in Phases 0, 3 and 4 are deferred at the user's
+request. Build and behavior work continues independently of those benchmarks.
+
 ## Phase 0: Measure and check the risky parts
 
 Small experiments, no product code. The answers decide details in later phases.
@@ -42,12 +45,12 @@ DESIGN.md's open questions are answered or updated.
 - [x] **P1.5** Grammar catalog: generate `catalog.toml` from Helix's
   `languages.toml` (repository, commit, aliases, query paths). Implement
   `limpid-core grammars sync | list`.
-- [ ] **P1.6** Highlighting: load grammars at runtime, compile each language's
+- [x] **P1.6** Highlighting: load grammars at runtime, compile each language's
   queries on first use, output highlight classes, and ship a default theme as
   light and dark CSS. Plain text when a grammar is missing or fails to load.
 - [x] **P1.7** Escape raw HTML (agent mode) or sanitize it with `ammonia` (file
   mode).
-- [ ] **P1.8** `limpid-core render FILE.md`, golden tests, and the adversarial
+- [x] **P1.8** `limpid-core render FILE.md`, golden tests, and the adversarial
   input set.
 
 **Done when:** `limpid-core render notes.md` writes a page that looks like
@@ -158,7 +161,7 @@ block and get the reply into the agent's prompt without touching the mouse.
 
 ## Phase 8: Auto-open
 
-- [ ] **P8.1** Claude Code Stop hook: when `autoopen.claude` is on and the
+- [x] **P8.1** Claude Code Stop hook: when `autoopen.claude` is on and the
   newest turn has a Questions section, render it and open it with
   `--hook --slot <session id>`.
 - [ ] **P8.2** The same for pi (an extension event) and Codex (a notify hook),

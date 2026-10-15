@@ -173,4 +173,53 @@ mod tests {
             vec!["a", "opened", "b"]
         );
     }
+
+    #[test]
+    fn matches_transcript_edge_cases_from_read_tests() {
+        assert!(collect_turns(&[]).is_empty());
+        assert_eq!(collect_turns(&[user("hi"), assistant("hello")])[0].prompt, "hi");
+        assert_eq!(
+            collect_turns(&[
+                user("do it"),
+                assistant("Let me look."),
+                user(""),
+                assistant("Still looking."),
+                user(""),
+                assistant("Done: the answer."),
+            ])[0]
+                .response,
+            "Done: the answer."
+        );
+        assert_eq!(
+            collect_turns(&[user("go"), assistant("Working."), assistant("")])[0].response,
+            "Working."
+        );
+        assert!(collect_turns(&[user("q")]).is_empty());
+        assert!(collect_turns(&[user("q"), assistant("  \n")]).is_empty());
+        let long = "x".repeat(200_000);
+        let response = format!("{long}\nλ → ∑");
+        let turns = collect_turns(&[
+            user("日本語 prompt 🎉 ünïcode"),
+            assistant(&response),
+        ]);
+        assert_eq!(turns[0].prompt, "日本語 prompt 🎉 ünïcode");
+        assert_eq!(turns[0].response, response);
+        assert_eq!(
+            collect_turns(&[
+                user("<system-reminder>multi\nline</system-reminder> real <system-reminder>x</system-reminder>"),
+                assistant("answer"),
+            ])[0]
+                .prompt,
+            "real"
+        );
+        assert_eq!(
+            collect_turns(&[user("what does /read do?"), assistant("it opens pages")]).len(),
+            1
+        );
+        assert_eq!(
+            collect_turns(&[user("<command-name>/readme</command-name>"), assistant("x")])
+                .len(),
+            1
+        );
+    }
 }

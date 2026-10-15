@@ -46,6 +46,14 @@ also accepts `limpid-core claude [spec]` and `limpid-core pi [spec]`, with their
 transcript data as JSON on stdin. Each prints a cached page path that can be
 passed to `limpid`.
 
+Auto-open is off by default. Set `autoopen.claude = true` and merge
+[`integrations/claude-code/stop-hook.settings.json`](integrations/claude-code/stop-hook.settings.json)
+into Claude Code's settings to open turns with numbered Questions without
+taking focus. The pi extension uses its `agent_end` event when `autoopen.pi` is
+true. Both reuse a window by session ID. `limpid hook codex '<json>'` accepts a
+Codex turn-complete payload as the final command argument; this repository does
+not enable a Codex notification command.
+
 Turn specs include `0`, `3`, `0..2`, `1..=3`, `2..`, `..4`, and `..`. Ranges are
 limited to ten turns.
 
@@ -81,6 +89,8 @@ command = "wl-copy"
 
 [autoopen]
 claude = false
+pi = false
+codex = false
 ```
 
 Run `limpid-core grammars list` to see the catalog and installed grammars, or

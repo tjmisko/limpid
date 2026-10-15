@@ -4,6 +4,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -114,6 +115,53 @@ pub fn from_file_annotations(source: &str) -> AgentReplies {
         index += 1;
     }
     saved
+}
+
+pub fn deliver_reply(
+    command_line: &str,
+    message: &str,
+    agent: &str,
+    session: Option<&str>,
+    source: Option<&Path>,
+    pane: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(command_line)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .env_remove("LIMPID_AGENT")
+        .env_remove("LIMPID_SESSION")
+        .env_remove("LIMPID_SOURCE")
+        .env_remove("LIMPID_PANE")
+        .env("LIMPID_AGENT", agent);
+    if let Some(value) = session {
+        command.env("LIMPID_SESSION", value);
+    }
+    if let Some(value) = source {
+        command.env("LIMPID_SOURCE", value);
+    }
+    if let Some(value) = pane {
+        command.env("LIMPID_PANE", value);
+    }
+    let mut child = command.spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or("reply command has no stdin")?
+        .write_all(message.as_bytes())?;
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "reply command exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    Ok(())
 }
 
 impl AgentReplies {
@@ -332,5 +380,33 @@ mod tests {
             saved.comments.values().next().unwrap().quote,
             "Use the pool."
         );
+    }
+
+    #[test]
+    fn fake_reply_command_receives_message_and_context() {
+        let dir = std::env::temp_dir().join(format!("limpid-send-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let message_path = dir.join("message");
+        let context_path = dir.join("context");
+        let command = format!(
+            "cat > {}; printf '%s|%s|%s|%s' \"$LIMPID_AGENT\" \"$LIMPID_SESSION\" \"$LIMPID_SOURCE\" \"$LIMPID_PANE\" > {}",
+            message_path.display(),
+            context_path.display()
+        );
+        deliver_reply(
+            &command,
+            "q1: SQLite",
+            "pi",
+            Some("session-42"),
+            Some(Path::new("/tmp/turn.jsonl")),
+            Some("7"),
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&message_path).unwrap(), "q1: SQLite");
+        assert_eq!(
+            fs::read_to_string(&context_path).unwrap(),
+            "pi|session-42|/tmp/turn.jsonl|7"
+        );
+        fs::remove_dir_all(dir).unwrap();
     }
 }

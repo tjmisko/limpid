@@ -53,6 +53,18 @@ export default function readExtension(pi: ExtensionAPI) {
 			event.systemPromptOptions.promptGuidelines.push(QUESTION_INSTRUCTION);
 		}
 	});
+	pi.on("agent_end", async (_event, ctx) => {
+		const session = ctx.sessionManager.getSessionId();
+		const input = JSON.stringify({
+			model: ctx.model?.name ?? ctx.model?.id,
+			session_id: session,
+			branch: ctx.sessionManager.getBranch(),
+		});
+		const page = await command("limpid-core", ["autoopen", "pi"], input);
+		if (page.code === 0 && page.stdout.trim()) {
+			await command("limpid", ["--hook", "--slot", session, page.stdout.trim()]);
+		}
+	});
 	pi.registerCommand("read", {
 		description: "Open a response, or a Rust-style range of turns, as a styled HTML page",
 		handler: async (args, ctx) => {

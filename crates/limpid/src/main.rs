@@ -17,7 +17,14 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    let mut args = std::env::args_os().skip(1);
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if arguments.first().is_some_and(|arg| arg == "hook") {
+        if arguments.len() < 2 || arguments.len() > 3 {
+            return Err("hook requires an agent and optional JSON payload".into());
+        }
+        return hook(&arguments[1], arguments.get(2).map(|value| value.as_os_str()));
+    }
+    let mut args = arguments.into_iter();
     let mut out = None;
     let mut target = None;
     let mut turn_spec = None;
@@ -180,6 +187,94 @@ fn run() -> Result<(), Box<dyn Error>> {
             wait_host(&socket, &mut host)?;
             limpid_core::transport::send(&socket, &handoff)?;
         }
+    }
+    Ok(())
+}
+
+fn hook(
+    agent: &std::ffi::OsStr,
+    payload_argument: Option<&std::ffi::OsStr>,
+) -> Result<(), Box<dyn Error>> {
+    if agent != "claude" && agent != "codex" {
+        return Err("hook requires claude or codex".into());
+    }
+    let input = if let Some(value) = payload_argument {
+        value.to_str().ok_or("hook payload is not UTF-8")?.to_owned()
+    } else {
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input)?;
+        input
+    };
+    let payload: serde_json::Value = serde_json::from_str(&input)?;
+    let session = payload
+        .get(if agent == "codex" {
+            "thread-id"
+        } else {
+            "session_id"
+        })
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or("hook payload has no session ID")?;
+    if agent == "codex"
+        && payload.get("type").and_then(serde_json::Value::as_str) != Some("agent-turn-complete")
+    {
+        return Ok(());
+    }
+    if agent == "claude"
+        && payload
+            .get("hook_event_name")
+            .and_then(serde_json::Value::as_str)
+            != Some("Stop")
+    {
+        return Ok(());
+    }
+    let sibling = std::env::current_exe()?.with_file_name("limpid-core");
+    let executable = if sibling.exists() {
+        sibling
+    } else {
+        PathBuf::from("limpid-core")
+    };
+    let mut command = Command::new(executable);
+    command.args(["autoopen", agent.to_str().ok_or("invalid agent")?]);
+    if agent == "codex" {
+        command.env("CODEX_THREAD_ID", session);
+        if let Some(cwd) = payload.get("cwd").and_then(serde_json::Value::as_str) {
+            command.current_dir(cwd);
+        }
+    }
+    let mut child = command
+        .stdin(if agent == "claude" {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .spawn()?;
+    if agent == "claude" {
+        child
+            .stdin
+            .take()
+            .ok_or("core has no stdin")?
+            .write_all(input.as_bytes())?;
+    }
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "limpid-core autoopen: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    let page = String::from_utf8(output.stdout)?;
+    let page = page.trim();
+    if page.is_empty() {
+        return Ok(());
+    }
+    let status = Command::new(std::env::current_exe()?)
+        .args(["--hook", "--slot", session, page])
+        .status()?;
+    if !status.success() {
+        return Err(format!("limpid could not open hook page: {status}").into());
     }
     Ok(())
 }

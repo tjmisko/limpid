@@ -4,13 +4,11 @@ use std::{
     cell::RefCell,
     error::Error,
     fs,
-    io::Write,
     os::unix::{
         fs::PermissionsExt,
         net::{UnixListener, UnixStream},
     },
     path::Path,
-    process::{Command, Stdio},
     rc::Rc,
     sync::mpsc,
     time::Duration,
@@ -576,53 +574,21 @@ fn compose_review(request: &Handoff, title: &str) -> Result<String, Box<dyn Erro
 fn deliver(request: &Handoff, message: &str) -> Result<(), Box<dyn Error>> {
     let settings = limpid_core::settings::Settings::load_default()?;
     let meta = page_meta(request)?;
-    let mut command = Command::new("sh");
-    command
-        .arg("-c")
-        .arg(&settings.reply.command)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .env(
-            "LIMPID_AGENT",
-            meta.get("agent")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("file"),
-        );
-    if let Some(session) = meta.get("session_id").and_then(serde_json::Value::as_str) {
-        command.env("LIMPID_SESSION", session);
-    }
-    if let Some(source) = request
-        .source
-        .as_ref()
-        .map(|path| path.to_string_lossy().into_owned())
-        .or_else(|| {
-            meta.get("source")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-    {
-        command.env("LIMPID_SOURCE", source);
-    }
-    if let Some(pane) = &request.pane {
-        command.env("LIMPID_PANE", pane);
-    }
-    let mut child = command.spawn()?;
-    child
-        .stdin
-        .take()
-        .ok_or("reply command has no stdin")?
-        .write_all(message.as_bytes())?;
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "reply command exited with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        )
-        .into());
-    }
-    Ok(())
+    let source = request.source.clone().or_else(|| {
+        meta.get("source")
+            .and_then(serde_json::Value::as_str)
+            .map(std::path::PathBuf::from)
+    });
+    limpid_core::replies::deliver_reply(
+        &settings.reply.command,
+        message,
+        meta.get("agent")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("file"),
+        meta.get("session_id").and_then(serde_json::Value::as_str),
+        source.as_deref(),
+        request.pane.as_deref(),
+    )
 }
 
 fn cache_mermaid(hash: &str, svg: &str) -> Result<(), Box<dyn Error>> {

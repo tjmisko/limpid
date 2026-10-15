@@ -79,6 +79,8 @@ impl Default for Reply {
 #[serde(default, deny_unknown_fields)]
 pub struct Autoopen {
     pub claude: bool,
+    pub pi: bool,
+    pub codex: bool,
 }
 
 impl Settings {
@@ -115,6 +117,8 @@ mod tests {
         assert_eq!(settings.reply.command, "limpid-core send");
         assert_eq!(settings.highlight.theme, "default");
         assert!(!settings.autoopen.claude);
+        assert!(!settings.autoopen.pi);
+        assert!(!settings.autoopen.codex);
     }
 
     #[test]
@@ -122,7 +126,7 @@ mod tests {
         for source in [
             "wat = 1",
             "[highlight]\ngrmmars = []",
-            "[autoopen]\npi = true",
+            "[autoopen]\npie = true",
         ] {
             let error = Settings::parse(source).unwrap_err().to_string();
             assert!(
@@ -134,7 +138,7 @@ mod tests {
                         .trim_start_matches('[')
                         .trim_end_matches(']')
                 ) || error.contains("grmmars")
-                    || error.contains("pi"),
+                    || error.contains("pie"),
                 "{error}"
             );
         }

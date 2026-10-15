@@ -1,6 +1,10 @@
 use crate::{grammars, render::escape_html};
 use libloading::Library;
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fs,
+    path::PathBuf,
+};
 use tree_sitter::Language;
 use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
 use tree_sitter_language::LanguageFn;
@@ -8,7 +12,6 @@ use tree_sitter_language::LanguageFn;
 struct Grammar {
     // A Language points into the shared object, so it must outlive the config.
     config: HighlightConfiguration,
-    classes: Vec<String>,
     injections: String,
     _library: Library,
 }
@@ -17,6 +20,8 @@ pub struct PageHighlighter {
     directory: Option<PathBuf>,
     aliases: HashMap<String, String>,
     loaded: HashMap<String, Option<Grammar>>,
+    classes: Vec<String>,
+    configured_count: usize,
 }
 
 impl Default for PageHighlighter {
@@ -48,6 +53,8 @@ impl PageHighlighter {
             directory: grammars::grammar_dir().ok(),
             aliases,
             loaded: HashMap::new(),
+            classes: Vec::new(),
+            configured_count: 0,
         }
     }
 
@@ -81,6 +88,26 @@ impl PageHighlighter {
                     .insert(canonical.clone(), self.load(&canonical).ok());
             }
         }
+        if name == "markdown" {
+            let fenced = source
+                .lines()
+                .filter_map(|line| {
+                    let line = line.trim_start();
+                    let info = line
+                        .strip_prefix("```")
+                        .or_else(|| line.strip_prefix("~~~"))?;
+                    let alias = info.split_whitespace().next()?.to_ascii_lowercase();
+                    self.aliases.get(&alias).cloned()
+                })
+                .collect::<Vec<_>>();
+            for injected in fenced {
+                if !self.loaded.contains_key(&injected) {
+                    self.loaded
+                        .insert(injected.clone(), self.load(&injected).ok());
+                }
+            }
+        }
+        self.configure_loaded();
         let Some(grammar) = self.loaded.get(&name).and_then(Option::as_ref) else {
             return escape_html(source);
         };
@@ -104,7 +131,7 @@ impl PageHighlighter {
                 }
                 Ok(HighlightEvent::HighlightStart(highlight)) => {
                     html.push_str("<span class=\"hl-");
-                    html.push_str(&grammar.classes[highlight.0]);
+                    html.push_str(&self.classes[highlight.0]);
                     html.push_str("\">");
                 }
                 Ok(HighlightEvent::HighlightEnd) => html.push_str("</span>"),
@@ -112,6 +139,32 @@ impl PageHighlighter {
             }
         }
         html
+    }
+
+    fn configure_loaded(&mut self) {
+        if self.configured_count == self.loaded.len() {
+            return;
+        }
+        let names = self
+            .loaded
+            .values()
+            .filter_map(Option::as_ref)
+            .flat_map(|grammar| grammar.config.names().iter().map(|name| name.to_string()))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        for grammar in self.loaded.values_mut().filter_map(Option::as_mut) {
+            grammar.config.configure(&names);
+        }
+        self.classes = names
+            .iter()
+            .map(|name| {
+                name.chars()
+                    .map(|ch| if ch == '.' || ch == '_' { '-' } else { ch })
+                    .collect()
+            })
+            .collect();
+        self.configured_count = self.loaded.len();
     }
 
     fn load(&self, name: &str) -> Result<Grammar, Box<dyn std::error::Error>> {
@@ -129,24 +182,9 @@ impl PageHighlighter {
         let queries = root.join(name);
         let highlights = fs::read_to_string(queries.join("highlights.scm"))?;
         let injections = fs::read_to_string(queries.join("injections.scm")).unwrap_or_default();
-        let mut config = HighlightConfiguration::new(language, name, &highlights, &injections, "")?;
-        let names = config
-            .names()
-            .iter()
-            .map(|name| name.to_string())
-            .collect::<Vec<_>>();
-        config.configure(&names);
-        let classes = names
-            .iter()
-            .map(|name| {
-                name.chars()
-                    .map(|ch| if ch == '.' || ch == '_' { '-' } else { ch })
-                    .collect()
-            })
-            .collect();
+        let config = HighlightConfiguration::new(language, name, &highlights, &injections, "")?;
         Ok(Grammar {
             config,
-            classes,
             injections,
             _library: library,
         })
@@ -166,6 +204,17 @@ mod tests {
         );
         highlighter.directory = None;
         assert_eq!(highlighter.render("rust", "<script>"), "&lt;script&gt;");
+    }
+
+    #[test]
+    fn broken_shared_object_falls_back_to_plain_code() {
+        let root = std::env::temp_dir().join(format!("limpid-bad-grammar-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("rust.so"), b"not a shared object").unwrap();
+        let mut highlighter = PageHighlighter::new();
+        highlighter.directory = Some(root.clone());
+        assert_eq!(highlighter.render("rust", "<script>"), "&lt;script&gt;");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -211,6 +260,26 @@ mod tests {
             return;
         }
         let html = highlighter.render("rust", "macro_rules! make { () => { fn generated() {} }; }");
-        assert!(html.contains("hl-keyword-function\">fn"), "{html}");
+        assert!(
+            html.contains("hl-keyword-function") && html.contains("fn</span>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn markdown_fence_injects_its_installed_language() {
+        let mut highlighter = PageHighlighter::new();
+        if !highlighter
+            .directory
+            .as_ref()
+            .is_some_and(|dir| dir.join("markdown.so").is_file() && dir.join("rust.so").is_file())
+        {
+            return;
+        }
+        let html = highlighter.render("markdown", "```rust\nfn main() {}\n```");
+        assert!(
+            html.contains("hl-keyword-function") && html.contains("fn</span>"),
+            "{html}"
+        );
     }
 }
