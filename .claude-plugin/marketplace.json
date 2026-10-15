@@ -1,0 +1,6 @@
+{
+  "name": "limpid",
+  "description": "Open AI-agent responses as a styled HTML page.",
+  "owner": { "name": "Tristan Misko" },
+  "plugins": [{ "name": "limpid", "source": "./integrations/claude-code" }]
+}

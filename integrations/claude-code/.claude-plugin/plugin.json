@@ -1,0 +1,9 @@
+{
+  "name": "limpid",
+  "version": "0.1.0",
+  "description": "/read opens a response, or a Rust-style range of turns, as a styled HTML page rendered by limpid.",
+  "author": { "name": "Tristan Misko" },
+  "homepage": "https://github.com/tjmisko/limpid",
+  "repository": "https://github.com/tjmisko/limpid",
+  "license": "MIT"
+}
