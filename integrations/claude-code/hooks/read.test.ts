@@ -135,83 +135,49 @@ test('should preserve unicode and very long text when collecting', () => {
 
 type Call = { argv: readonly string[]; stdin?: string; timeoutMs?: number }
 
-function wire(on: On, run: (call: Call) => unknown, extra: { model?: string } = {}) {
+function wire(on: On, run: (call: Call) => unknown) {
   const calls: Call[] = []
-  const toasts: string[] = []
   on('session.messages', () => ({ value: [user('q'), assistant('a'), readInvocation('0..2')] }))
-  on('session.model', () => ({ value: extra.model ?? 'opus' }))
+  on('session.model', () => ({ value: 'opus' }))
   on('env.get', () => ({ value: '/home/test' }))
-  on('ui.toast', (_$, e) => {
-    toasts.push(e.text)
-    return { value: undefined }
-  })
   on('process.run', (_$, e) => {
     const call = { argv: e.argv, stdin: e.init?.stdin, timeoutMs: e.init?.timeoutMs }
     calls.push(call)
     return run(call) as never
   })
-  return { calls, toasts }
+  return calls
 }
 
-const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+const ok = (stdout = '') => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
 
-test('should pass the spec and turns to limpid when /read runs', async ($, on) => {
-  const { calls } = wire(on, () => ok('{"file":"/x.html","context":"turn 0"}'))
-  await $.command.run({ ...RUN, command: 'read', args: ' 0..2 ' })
-  expect(calls.length).toBe(1)
-  expect(calls[0]?.argv).toEqual(['limpid', '--spec', '0..2'])
-  expect(JSON.parse(calls[0]?.stdin ?? '{}')).toEqual({ model: 'opus', turns: [{ prompt: 'q', response: 'a' }] })
-  expect(calls[0]?.timeoutMs).toBe(30000)
+test('should pass raw messages to limpid-core and open its page', async ($, on) => {
+  const calls = wire(on, call => call.argv[0] === 'limpid-core' ? ok('/x.html\n') : ok())
+  const result = await $.command.run({ ...RUN, command: 'read', args: ' 0..2 ' })
+  expect(calls.length).toBe(2)
+  expect(calls[0]?.argv).toEqual(['limpid-core', 'claude', '0..2'])
+  expect(JSON.parse(calls[0]?.stdin ?? '{}')).toEqual({ model: 'opus', messages: [user('q'), assistant('a'), readInvocation('0..2')] })
+  expect(calls[1]?.argv).toEqual(['limpid', '/x.html'])
+  expect(result.text).toBe(undefined)
 })
 
-test('should default the spec to 0 when /read has no arguments', async ($, on) => {
-  const { calls } = wire(on, () => ok('{"file":"/x.html","context":"turn 0"}'))
+test('should use spec 0 when /read has no arguments', async ($, on) => {
+  const calls = wire(on, call => call.argv[0] === 'limpid-core' ? ok('/x.html') : ok())
   await $.command.run({ ...RUN, command: 'read', args: '' })
   expect(calls[0]?.argv.at(-1)).toBe('0')
 })
 
-test('should toast the opened context when limpid succeeds', async ($, on) => {
-  const { toasts } = wire(on, () => ok('{"file":"/x.html","context":"turns 0–2"}'))
-  const result = await $.command.run({ ...RUN, command: 'read', args: '0..3' })
-  expect(toasts).toEqual(['Opened turns 0–2.'])
-  expect(result.text).toBe(undefined)
+test('should report a core error without opening a page', async ($, on) => {
+  const calls = wire(on, () => ({ value: { exitCode: 1, stdout: '', stderr: 'Bad spec\nmore', isStdoutTruncated: false, isStderrTruncated: false } }))
+  const result = await $.command.run({ ...RUN, command: 'read', args: 'bad' })
+  expect(calls.length).toBe(1)
+  expect(result.text).toBe('Bad spec')
 })
 
-test('should toast the first stderr line when limpid exits non-zero', async ($, on) => {
-  const { toasts } = wire(on, () => ({
-    value: { exitCode: 1, stdout: '', stderr: '  Range covers 11 turns; the maximum is 10.\nusage: ...\n', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
-  await $.command.run({ ...RUN, command: 'read', args: '0..11' })
-  expect(toasts).toEqual(['Range covers 11 turns; the maximum is 10.'])
-})
-
-test('should toast a generic message when limpid fails silently', async ($, on) => {
-  const { toasts } = wire(on, () => ({
-    value: { exitCode: 2, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
-  await $.command.run({ ...RUN, command: 'read', args: '' })
-  expect(toasts).toEqual(['limpid exited with 2'])
-})
-
-test('should fall back to ~/.local/bin/limpid when limpid is not on PATH', async ($, on) => {
-  const { calls, toasts } = wire(on, call =>
-    call.argv[0] === 'limpid' ? { deny: 'ENOENT' } : ok('{"file":"/x.html","context":"turn 0"}'),
-  )
+test('should use installed binary paths when commands are absent from PATH', async ($, on) => {
+  const calls = wire(on, call => {
+    if (call.argv[0] === 'limpid-core' || call.argv[0] === 'limpid') return { deny: 'ENOENT' }
+    return call.argv[0]?.includes('limpid-core') ? ok('/x.html') : ok()
+  })
   await $.command.run({ ...RUN, command: 'read', args: '1' })
-  expect(calls.map(c => c.argv[0])).toEqual(['limpid', '/home/test/.local/bin/limpid'])
-  expect(toasts).toEqual(['Opened turn 0.'])
-})
-
-test('should toast an install hint when limpid cannot start from either location', async ($, on) => {
-  const { toasts } = wire(on, () => ({ deny: 'ENOENT' }))
-  await $.command.run({ ...RUN, command: 'read', args: '' })
-  expect(toasts.length).toBe(1)
-  expect(toasts[0]?.includes('Install it')).toBe(true)
-})
-
-test('should toast a warning when limpid prints something other than JSON', async ($, on) => {
-  const { toasts } = wire(on, () => ok('not json'))
-  await $.command.run({ ...RUN, command: 'read', args: '' })
-  expect(toasts.length).toBe(1)
-  expect(toasts[0]?.includes('parse')).toBe(true)
+  expect(calls.map(call => call.argv[0])).toEqual(['limpid-core', '/home/test/.local/bin/limpid-core', 'limpid', '/home/test/.local/bin/limpid'])
 })

@@ -1,5 +1,25 @@
 (() => {
   const editorUrl = document.currentScript?.dataset.editor;
+  const mermaidUrl = document.currentScript?.dataset.mermaid;
+  const diagrams = [...document.querySelectorAll('pre.mermaid')];
+  if (mermaidUrl && diagrams.length) requestAnimationFrame(() => setTimeout(() => {
+    const script = document.createElement('script');
+    script.src = new URL(mermaidUrl, location.href).href;
+    script.onload = async () => {
+      for (const [index, pre] of diagrams.entries()) {
+        const source = pre.textContent;
+        try {
+          const svg = await window.limpidRenderMermaid(`limpid-mermaid-${index}`, source);
+          const rendered = document.createElement('div');
+          rendered.className = 'mermaid-rendered';
+          rendered.innerHTML = svg;
+          pre.replaceWith(rendered);
+          window.webkit?.messageHandlers?.['mermaid-svg']?.postMessage({hash: pre.dataset.hash, source, svg});
+        } catch { /* Keep the readable source if a diagram is invalid. */ }
+      }
+    };
+    document.head.append(script);
+  }, 0));
   let editorPromise;
   function loadEditor() {
     if (!editorUrl) return Promise.resolve(false);
@@ -32,6 +52,17 @@
     document.querySelectorAll('article h1[id],article h2[id],article h3[id]').forEach(head => observer.observe(head));
   }
   const fields = [...document.querySelectorAll('.question-field')];
+  window.limpidCaptureAnchor = () => {
+    const blocks = [...document.querySelectorAll('article [data-src]')];
+    const block = blocks.filter(item => item.getBoundingClientRect().top <= 25).at(-1) || blocks[0];
+    return block ? {src: block.dataset.src, turn: block.closest('.turn')?.id || '', offset: block.getBoundingClientRect().top} : null;
+  };
+  window.limpidRestoreAnchor = anchor => {
+    if (!anchor) return;
+    const block = [...document.querySelectorAll('article [data-src]')]
+      .find(item => item.dataset.src === anchor.src && (item.closest('.turn')?.id || '') === anchor.turn);
+    if (block) window.scrollTo({top: block.getBoundingClientRect().top + scrollY - anchor.offset});
+  };
   window.limpidRestoreReplies = replies => {
     for (const [id, text] of Object.entries(replies)) {
       const field = document.getElementById(id);
@@ -40,6 +71,22 @@
       for (const option of field.querySelectorAll('.question-option')) {
         option.classList.toggle('selected', option.textContent.trim() === text.trim());
       }
+    }
+  };
+  window.limpidRestoreComments = comments => {
+    for (const [key, comment] of Object.entries(comments)) {
+      const [turn, range] = key.includes(':') ? key.split(':', 2) : ['', key];
+      const target = [...document.querySelectorAll('article [data-src]')]
+        .find(block => block.dataset.src === range && (block.closest('.turn')?.id || '') === turn);
+      if (!target) continue;
+      const note = document.createElement('aside');
+      note.className = 'limpid-annotation';
+      const heading = document.createElement('strong');
+      heading.textContent = 'Comment';
+      const text = document.createElement('p');
+      text.textContent = comment.text;
+      note.append(heading, text);
+      target.after(note);
     }
   };
   const headings = [...document.querySelectorAll('article h1[id],article h2[id],article h3[id],article h4[id],article h5[id],article h6[id]')];
@@ -51,6 +98,7 @@
   async function edit(target, kind) {
     if (editing || !target || !await loadEditor()) return;
     editing = true;
+    const quote = target.textContent.trim().slice(0, 80);
     const mount = document.createElement('div');
     mount.className = 'limpid-editor';
     target.append(mount);
@@ -65,7 +113,7 @@
         note.className = 'limpid-annotation';
         note.textContent = `Comment: ${text}`;
         target.after(note);
-        window.webkit?.messageHandlers?.comment?.postMessage({src: target.dataset.src, turn: target.closest('.turn')?.id || '', quote: target.textContent.trim().slice(0, 80), text});
+        window.webkit?.messageHandlers?.comment?.postMessage({src: target.dataset.src, turn: target.closest('.turn')?.id || '', lineStart: Number(target.dataset.lineStart || 0), lineEnd: Number(target.dataset.lineEnd || 0), quote, text});
       }
       finish();
     }, finish);

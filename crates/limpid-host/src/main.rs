@@ -21,6 +21,8 @@ struct WindowState {
     window: gtk4::ApplicationWindow,
     view: webkit6::WebView,
     request: Rc<RefCell<Handoff>>,
+    restore_anchor: Rc<RefCell<Option<String>>>,
+    file_stamp: Rc<RefCell<Option<(std::time::SystemTime, u64)>>>,
 }
 
 fn main() {
@@ -32,10 +34,12 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn Error>> {
     let mut scheme = Scheme::Dark;
+    let mut separate = false;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--light" => scheme = Scheme::Light,
             "--dark" => scheme = Scheme::Dark,
+            "--separate" => separate = true,
             _ => return Err(format!("unknown option: {arg}").into()),
         }
     }
@@ -45,11 +49,18 @@ fn run() -> Result<(), Box<dyn Error>> {
             std::env::set_var("JSC_useJIT", "0");
         }
     }
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").ok_or("XDG_RUNTIME_DIR is required")?;
-    let socket = socket_path(Path::new(&runtime), scheme);
-    let listener = bind_socket(&socket)?;
     let (sender, receiver) = mpsc::channel::<Handoff>();
-    std::thread::spawn(move || serve(listener, sender));
+    let socket = if separate {
+        let request = serde_json::from_reader(std::io::stdin())?;
+        sender.send(request)?;
+        None
+    } else {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").ok_or("XDG_RUNTIME_DIR is required")?;
+        let socket = socket_path(Path::new(&runtime), scheme);
+        let listener = bind_socket(&socket)?;
+        std::thread::spawn(move || serve(listener, sender));
+        Some(socket)
+    };
     let receiver = Rc::new(RefCell::new(receiver));
 
     let app = gtk4::Application::builder()
@@ -60,6 +71,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         let receiver = receiver.clone();
         let context = webkit6::WebContext::new();
         let windows = Rc::new(RefCell::new(Vec::<WindowState>::new()));
+        let watched_windows = windows.clone();
         let startup_hold = Rc::new(RefCell::new(Some(app.hold())));
         let app = app.clone();
         glib::timeout_add_local(Duration::from_millis(10), move || {
@@ -72,9 +84,19 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             glib::ControlFlow::Continue
         });
+        glib::timeout_add_local(Duration::from_millis(300), move || {
+            for state in watched_windows.borrow().iter() {
+                if let Err(error) = refresh_file(state) {
+                    eprintln!("limpid-host: could not refresh file: {error}");
+                }
+            }
+            glib::ControlFlow::Continue
+        });
     });
     app.run();
-    let _ = fs::remove_file(socket);
+    if let Some(socket) = socket {
+        let _ = fs::remove_file(socket);
+    }
     Ok(())
 }
 
@@ -106,25 +128,42 @@ fn open_request(
         gio::File::for_path(&path).uri(),
         request.theme.as_str()
     );
-    if let Some(slot) = &request.slot {
-        if let Some(existing) = windows
+    if let Some(slot) = &request.slot
+        && let Some(existing) = windows
             .borrow()
             .iter()
             .find(|state| state.request.borrow().slot.as_ref() == Some(slot))
-        {
-            existing.view.load_uri(&uri);
-            *existing.request.borrow_mut() = request.clone();
-            if request.origin == limpid_core::transport::Origin::User {
-                existing.window.present();
-            }
-            return Ok(());
-        }
+    {
+        let view = existing.view.clone();
+        let active_request = existing.request.clone();
+        let restore_anchor = existing.restore_anchor.clone();
+        let window = existing.window.clone();
+        existing.view.evaluate_javascript(
+            "window.limpidCaptureAnchor()",
+            None,
+            None,
+            None::<&gio::Cancellable>,
+            move |result| {
+                let anchor = result
+                    .ok()
+                    .and_then(|value| value.to_json(0))
+                    .map(|value| value.to_string());
+                *restore_anchor.borrow_mut() = anchor;
+                *active_request.borrow_mut() = request.clone();
+                view.load_uri(&uri);
+                if request.origin == limpid_core::transport::Origin::User {
+                    window.present();
+                }
+            },
+        );
+        return Ok(());
     }
     let manager = webkit6::UserContentManager::new();
     for name in ["reply", "comment", "mermaid-svg", "review", "send"] {
         manager.register_script_message_handler(name, None);
     }
     let active_request = Rc::new(RefCell::new(request.clone()));
+    let restore_anchor = Rc::new(RefCell::new(None::<String>));
     let settings = webkit6::Settings::new();
     settings.set_enable_javascript(true);
     let view = webkit6::WebView::builder()
@@ -133,9 +172,19 @@ fn open_request(
         .settings(&settings)
         .build();
     let restore_request = active_request.clone();
+    let anchor_on_load = restore_anchor.clone();
     view.connect_load_changed(move |view, event| {
         if event != webkit6::LoadEvent::Finished {
             return;
+        }
+        if let Some(anchor) = anchor_on_load.borrow_mut().take() {
+            view.evaluate_javascript(
+                &format!("window.limpidRestoreAnchor({anchor})"),
+                None,
+                None,
+                None::<&gio::Cancellable>,
+                |_| {},
+            );
         }
         let request = restore_request.borrow();
         if request.source.is_some() {
@@ -149,8 +198,13 @@ fn open_request(
         let Ok(json) = serde_json::to_string(&replies.replies) else {
             return;
         };
+        let Ok(comments) = serde_json::to_string(&replies.comments) else {
+            return;
+        };
         view.evaluate_javascript(
-            &format!("window.limpidRestoreReplies({json})"),
+            &format!(
+                "window.limpidRestoreReplies({json}); window.limpidRestoreComments({comments})"
+            ),
             None,
             None,
             None::<&gio::Cancellable>,
@@ -159,6 +213,7 @@ fn open_request(
     });
     let reply_request = active_request.clone();
     let reply_view = view.clone();
+    let reply_anchor = restore_anchor.clone();
     manager.connect_script_message_received(Some("reply"), move |_, value| {
         let Some(json) = value.to_json(0) else {
             return;
@@ -174,13 +229,14 @@ fn open_request(
             return;
         };
         match save_reply(&mut reply_request.borrow_mut(), field, text, source_range) {
-            Ok(true) => reply_view.reload(),
+            Ok(true) => reload_with_anchor(&reply_view, &reply_anchor),
             Ok(false) => {}
             Err(error) => eprintln!("limpid-host: could not save reply: {error}"),
         }
     });
     let comment_request = active_request.clone();
     let comment_view = view.clone();
+    let comment_anchor = restore_anchor.clone();
     manager.connect_script_message_received(Some("comment"), move |_, value| {
         let Some(json) = value.to_json(0) else {
             return;
@@ -199,8 +255,24 @@ fn open_request(
             .get("turn")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
-        match save_comment(&mut comment_request.borrow_mut(), range, turn, quote, text) {
-            Ok(true) => comment_view.reload(),
+        let line_start = message
+            .get("lineStart")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as usize;
+        let line_end = message
+            .get("lineEnd")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as usize;
+        match save_comment(
+            &mut comment_request.borrow_mut(),
+            range,
+            turn,
+            quote,
+            text,
+            line_start,
+            line_end,
+        ) {
+            Ok(true) => reload_with_anchor(&comment_view, &comment_anchor),
             Ok(false) => {}
             Err(error) => eprintln!("limpid-host: could not save comment: {error}"),
         }
@@ -242,6 +314,30 @@ fn open_request(
             eprintln!("limpid-host: could not send reply: {error}");
         }
     });
+    manager.connect_script_message_received(Some("mermaid-svg"), move |_, value| {
+        let Some(json) = value.to_json(0) else {
+            return;
+        };
+        let Ok(message) = serde_json::from_str::<serde_json::Value>(&json) else {
+            return;
+        };
+        let (Some(source), Some(svg), Some(hash)) = (
+            message.get("source").and_then(serde_json::Value::as_str),
+            message.get("svg").and_then(serde_json::Value::as_str),
+            message.get("hash").and_then(serde_json::Value::as_str),
+        ) else {
+            return;
+        };
+        if svg.len() > 2_000_000
+            || !svg.trim_start().starts_with("<svg")
+            || limpid_core::replies::source_hash(source.as_bytes()) != hash
+        {
+            return;
+        }
+        if let Err(error) = cache_mermaid(hash, svg) {
+            eprintln!("limpid-host: could not cache Mermaid diagram: {error}");
+        }
+    });
     view.load_uri(&uri);
     let window = gtk4::ApplicationWindow::builder()
         .application(app)
@@ -272,6 +368,8 @@ fn open_request(
         window: window.clone(),
         view,
         request: active_request,
+        restore_anchor,
+        file_stamp: Rc::new(RefCell::new(None)),
     });
     if request.origin == limpid_core::transport::Origin::Hook {
         window.set_visible(true);
@@ -279,6 +377,61 @@ fn open_request(
         window.present();
     }
     Ok(())
+}
+
+fn refresh_file(state: &WindowState) -> Result<(), Box<dyn Error>> {
+    let request = state.request.borrow();
+    let (Some(source), Some(previous_hash)) = (&request.source, &request.source_hash) else {
+        return Ok(());
+    };
+    let metadata = fs::metadata(source)?;
+    let stamp = (metadata.modified()?, metadata.len());
+    if state.file_stamp.borrow().as_ref() == Some(&stamp) {
+        return Ok(());
+    }
+    *state.file_stamp.borrow_mut() = Some(stamp);
+    let updated = fs::read_to_string(source)?;
+    let hash = limpid_core::replies::source_hash(updated.as_bytes());
+    if &hash == previous_hash {
+        return Ok(());
+    }
+    let settings = limpid_core::settings::Settings::load_default()?;
+    let rendered = limpid_core::render::render_with_questions(
+        &updated,
+        limpid_core::render::RenderMode::File,
+        &settings.questions.headings,
+    );
+    let html = limpid_core::render::page(&rendered);
+    let cache = request
+        .path
+        .parent()
+        .ok_or("page has no parent directory")?;
+    fs::write(
+        &request.path,
+        limpid_core::render::externalize_assets(&html, cache)?,
+    )?;
+    drop(request);
+    state.request.borrow_mut().source_hash = Some(hash);
+    reload_with_anchor(&state.view, &state.restore_anchor);
+    Ok(())
+}
+
+fn reload_with_anchor(view: &webkit6::WebView, anchor: &Rc<RefCell<Option<String>>>) {
+    let view_to_reload = view.clone();
+    let anchor = anchor.clone();
+    view.evaluate_javascript(
+        "window.limpidCaptureAnchor()",
+        None,
+        None,
+        None::<&gio::Cancellable>,
+        move |result| {
+            *anchor.borrow_mut() = result
+                .ok()
+                .and_then(|value| value.to_json(0))
+                .map(|value| value.to_string());
+            view_to_reload.reload();
+        },
+    );
 }
 
 fn save_reply(
@@ -335,6 +488,8 @@ fn save_comment(
     turn: &str,
     quote: &str,
     text: &str,
+    line_start: usize,
+    line_end: usize,
 ) -> Result<bool, Box<dyn Error>> {
     let (_, end) = range.split_once('-').ok_or("invalid source range")?;
     let end = end.parse::<usize>()?;
@@ -373,8 +528,8 @@ fn save_comment(
         limpid_core::replies::Comment {
             text: text.to_owned(),
             quote: quote.to_owned(),
-            start_line: 0,
-            end_line: 0,
+            start_line: line_start,
+            end_line: line_end,
         },
     );
     replies.save(&path)?;
@@ -467,5 +622,18 @@ fn deliver(request: &Handoff, message: &str) -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
+    Ok(())
+}
+
+fn cache_mermaid(hash: &str, svg: &str) -> Result<(), Box<dyn Error>> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cache"))
+        })
+        .ok_or("HOME or XDG_CACHE_HOME is required")?;
+    let directory = base.join("limpid/mermaid");
+    fs::create_dir_all(&directory)?;
+    fs::write(directory.join(format!("{hash}.svg")), svg)?;
     Ok(())
 }

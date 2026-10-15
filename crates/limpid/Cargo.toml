@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 limpid-core = { path = "../limpid-core" }
+serde_json.workspace = true

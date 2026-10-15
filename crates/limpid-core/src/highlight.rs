@@ -9,6 +9,7 @@ struct Grammar {
     // A Language points into the shared object, so it must outlive the config.
     config: HighlightConfiguration,
     classes: Vec<String>,
+    injections: String,
     _library: Library,
 }
 
@@ -57,6 +58,28 @@ impl PageHighlighter {
         let name = name.clone();
         if !self.loaded.contains_key(&name) {
             self.loaded.insert(name.clone(), self.load(&name).ok());
+        }
+        let static_injections = self
+            .loaded
+            .get(&name)
+            .and_then(Option::as_ref)
+            .map(|grammar| {
+                grammar
+                    .injections
+                    .split("#set! injection.language \"")
+                    .skip(1)
+                    .filter_map(|tail| tail.split('"').next())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for injected in static_injections {
+            if let Some(canonical) = self.aliases.get(&injected).cloned()
+                && !self.loaded.contains_key(&canonical)
+            {
+                self.loaded
+                    .insert(canonical.clone(), self.load(&canonical).ok());
+            }
         }
         let Some(grammar) = self.loaded.get(&name).and_then(Option::as_ref) else {
             return escape_html(source);
@@ -124,6 +147,7 @@ impl PageHighlighter {
         Ok(Grammar {
             config,
             classes,
+            injections,
             _library: library,
         })
     }
@@ -156,5 +180,37 @@ mod tests {
             assert!(html.contains("hl-"), "{html}");
             assert!(html.contains("main"), "{html}");
         }
+    }
+
+    #[test]
+    fn installed_default_queries_compile() {
+        let highlighter = PageHighlighter::new();
+        let Some(directory) = &highlighter.directory else {
+            return;
+        };
+        let defaults = crate::settings::Highlight::default();
+        let mut failures = Vec::new();
+        for name in defaults.grammars {
+            if directory.join(format!("{name}.so")).is_file()
+                && let Err(error) = highlighter.load(&name)
+            {
+                failures.push(format!("{name}: {error}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn rust_macro_body_is_highlighted_when_installed() {
+        let mut highlighter = PageHighlighter::new();
+        if !highlighter
+            .directory
+            .as_ref()
+            .is_some_and(|dir| dir.join("rust.so").is_file())
+        {
+            return;
+        }
+        let html = highlighter.render("rust", "macro_rules! make { () => { fn generated() {} }; }");
+        assert!(html.contains("hl-keyword-function\">fn"), "{html}");
     }
 }

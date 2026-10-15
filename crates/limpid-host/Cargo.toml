@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-gtk4 = "0.11.5"
+gtk4 = { version = "0.11.5", features = ["v4_10"] }
 webkit6 = "0.6.1"
 limpid-core = { path = "../limpid-core" }
 serde_json.workspace = true

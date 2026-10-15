@@ -90,6 +90,17 @@ fn mathml(source: &str, display: bool) -> String {
     }
 }
 
+fn cached_mermaid(source: &str) -> Option<String> {
+    let root = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cache"))
+        })?;
+    let hash = crate::replies::source_hash(source.as_bytes());
+    let svg = fs::read_to_string(root.join("limpid/mermaid").join(format!("{hash}.svg"))).ok()?;
+    svg.trim_start().starts_with("<svg").then_some(svg)
+}
+
 fn saved_annotation(raw: &str) -> Option<String> {
     let value = raw.trim();
     let (label, body) = if let Some(rest) = value.strip_prefix("<!-- limpid reply ") {
@@ -157,6 +168,35 @@ pub fn render_with_questions(
         &mut used,
         &mut question_number,
     )
+}
+
+fn add_source_lines(body: &str, source: &str) -> String {
+    let breaks = source
+        .match_indices('\n')
+        .map(|(byte, _)| byte)
+        .collect::<Vec<_>>();
+    let mut result = String::with_capacity(body.len());
+    let mut copied = 0;
+    for (position, _) in body.match_indices("data-src=\"") {
+        let start = position + "data-src=\"".len();
+        let Some(quote) = body[start..].find('"') else {
+            continue;
+        };
+        let end = start + quote;
+        result.push_str(&body[copied..=end]);
+        if let Some((first, last)) = body[start..end].split_once('-')
+            && let (Ok(first), Ok(last)) = (first.parse::<usize>(), last.parse::<usize>())
+        {
+            let start_line = breaks.partition_point(|byte| *byte < first) + 1;
+            let end_line = breaks.partition_point(|byte| *byte < last.saturating_sub(1)) + 1;
+            result.push_str(&format!(
+                " data-line-start=\"{start_line}\" data-line-end=\"{end_line}\""
+            ));
+        }
+        copied = end + 1;
+    }
+    result.push_str(&body[copied..]);
+    result
 }
 
 pub(crate) fn render_with_state(
@@ -367,11 +407,30 @@ pub(crate) fn render_with_state(
                     }
                     next += 1;
                 }
-                let highlighted = highlighter.render(&safe_lang, &source_code);
-                output.push(Event::Html(format!(
-                    "<figure class=\"code\" data-src=\"{}-{end}\">{caption}<pre><code>{highlighted}</code></pre></figure>\n",
-                    range.start
-                ).into()));
+                if safe_lang == "mermaid" {
+                    let hash = crate::replies::source_hash(source_code.as_bytes());
+                    let diagram = if let Some(svg) = cached_mermaid(&source_code) {
+                        format!("<div class=\"mermaid-cached\">{svg}</div>")
+                    } else {
+                        format!(
+                            "<pre class=\"mermaid\" data-hash=\"{hash}\">{}</pre>",
+                            escape_html(&source_code)
+                        )
+                    };
+                    output.push(Event::Html(
+                        format!(
+                            "<figure class=\"diagram\" data-src=\"{}-{end}\">{diagram}</figure>\n",
+                            range.start
+                        )
+                        .into(),
+                    ));
+                } else {
+                    let highlighted = highlighter.render(&safe_lang, &source_code);
+                    output.push(Event::Html(format!(
+                        "<figure class=\"code\" data-src=\"{}-{end}\">{caption}<pre><code>{highlighted}</code></pre></figure>\n",
+                        range.start
+                    ).into()));
+                }
                 i = next;
             }
             Event::Rule => output.push(Event::Html(
@@ -407,7 +466,11 @@ pub(crate) fn render_with_state(
     if title.is_empty() {
         title = "Document".into();
     }
-    Rendered { title, body, toc }
+    Rendered {
+        title,
+        body: add_source_lines(&body, source),
+        toc,
+    }
 }
 
 pub fn page(rendered: &Rendered) -> String {
@@ -464,6 +527,19 @@ pub fn externalize_assets(html: &str, cache: &Path) -> std::io::Result<String> {
     if !assets.join(&editor_name).exists() {
         fs::write(assets.join(&editor_name), editor)?;
     }
+    let mermaid_name = if html.contains("<pre class=\"mermaid\"") {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendor/mermaid.min.js"
+        ));
+        let name = format!("{}.js", blake3::hash(source.as_bytes()).to_hex());
+        if !assets.join(&name).exists() {
+            fs::write(assets.join(&name), source)?;
+        }
+        Some(name)
+    } else {
+        None
+    };
     let mut page = html.to_owned();
     for (name, source, inline, reference) in [
         (
@@ -489,6 +565,13 @@ pub fn externalize_assets(html: &str, cache: &Path) -> std::io::Result<String> {
         let mut to = reference.replace("{}", hash.as_ref());
         if name == "js" {
             to = to.replacen("><", &format!(" data-editor=\"assets/{editor_name}\"><"), 1);
+            if let Some(mermaid_name) = &mermaid_name {
+                to = to.replacen(
+                    "><",
+                    &format!(" data-mermaid=\"assets/{mermaid_name}\"><"),
+                    1,
+                );
+            }
         }
         page = page.replacen(&from, &to, 1);
     }
@@ -509,6 +592,7 @@ mod tests {
         assert_eq!(result.toc[1].id, "same-2");
         assert!(result.body.contains("&lt;script&gt;"));
         assert!(result.body.contains("<figure class=\"code\""));
+        assert!(result.body.contains("data-line-start=\"4\""));
     }
 
     #[test]
@@ -522,6 +606,19 @@ mod tests {
         assert!(cached.contains("data-editor=\"assets/"));
         assert!(cached.contains("rel=\"stylesheet\" href=\"assets/"));
         assert_eq!(std::fs::read_dir(cache.join("assets")).unwrap().count(), 3);
+        std::fs::remove_dir_all(cache).unwrap();
+    }
+
+    #[test]
+    fn mermaid_starts_as_readable_source_and_loads_only_on_diagram_pages() {
+        let page = page(&render_markdown("```mermaid\ngraph TD; A-->B\n```"));
+        assert!(page.contains("<pre class=\"mermaid\""));
+        assert!(page.contains("graph TD; A--&gt;B"));
+        let cache =
+            std::env::temp_dir().join(format!("limpid-mermaid-assets-{}", std::process::id()));
+        let cached = externalize_assets(&page, &cache).unwrap();
+        assert!(cached.contains("data-mermaid=\"assets/"));
+        assert_eq!(std::fs::read_dir(cache.join("assets")).unwrap().count(), 4);
         std::fs::remove_dir_all(cache).unwrap();
     }
 

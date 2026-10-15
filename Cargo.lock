@@ -701,6 +701,7 @@ name = "limpid"
 version = "0.1.0"
 dependencies = [
  "limpid-core",
+ "serde_json",
 ]
 
 [[package]]

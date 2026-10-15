@@ -2,7 +2,7 @@ use limpid_core::transport::{Handoff, Origin, Scheme, socket_path};
 use limpid_core::{render, settings::Settings};
 use std::{
     error::Error,
-    io::Read,
+    io::{Read, Write},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -24,6 +24,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut slot = None;
     let mut origin = Origin::User;
     let mut scheme = Scheme::Dark;
+    let mut separate = false;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--out") => out = Some(args.next().ok_or("--out requires a file path")?),
@@ -36,11 +37,13 @@ fn run() -> Result<(), Box<dyn Error>> {
                 )
             }
             Some("--hook") => origin = Origin::Hook,
+            Some("--watch") => {}
+            Some("--separate") => separate = true,
             Some("--dark") => scheme = Scheme::Dark,
             Some("--light") => scheme = Scheme::Light,
             Some("--help" | "-h") => {
                 println!(
-                    "Usage: limpid [--out FILE] [--slot ID] [--hook] [--dark|--light] <file.md | page.html | ->"
+                    "Usage: limpid [--out FILE] [--slot ID] [--hook] [--watch] [--separate] [--dark|--light] <file.md | page.html | ->"
                 );
                 return Ok(());
             }
@@ -79,7 +82,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         target = String::from_utf8(output.stdout)?.trim().into();
     }
-    let (socket, mut host) = if out.is_none() {
+    let output_only = out.is_some();
+    let (socket, mut host) = if out.is_none() && !separate {
         let runtime = std::env::var_os("XDG_RUNTIME_DIR").ok_or("XDG_RUNTIME_DIR is required")?;
         let socket = socket_path(Path::new(&runtime), scheme);
         let host = launch_host(&socket, scheme)?;
@@ -141,20 +145,41 @@ fn run() -> Result<(), Box<dyn Error>> {
         std::fs::write(&path, render::externalize_assets(&html, &cache)?)?;
         path
     };
-    if let Some(socket) = socket {
-        wait_host(&socket, &mut host)?;
-        limpid_core::transport::send(
-            &socket,
-            &Handoff {
-                path: path.canonicalize()?,
-                slot,
-                origin,
-                theme: scheme,
-                pane: std::env::var("WEZTERM_PANE").ok(),
-                source: source_path,
-                source_hash,
-            },
-        )?;
+    if !output_only && (socket.is_some() || separate) {
+        let handoff = Handoff {
+            path: path.canonicalize()?,
+            slot,
+            origin,
+            theme: scheme,
+            pane: std::env::var("WEZTERM_PANE").ok(),
+            source: source_path,
+            source_hash,
+        };
+        if separate {
+            let sibling = std::env::current_exe()?.with_file_name("limpid-host");
+            let executable = if sibling.exists() {
+                sibling
+            } else {
+                PathBuf::from("limpid-host")
+            };
+            let mut child = Command::new(executable)
+                .arg("--separate")
+                .arg(if scheme == Scheme::Dark {
+                    "--dark"
+                } else {
+                    "--light"
+                })
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?;
+            let mut stdin = child.stdin.take().ok_or("host has no stdin")?;
+            serde_json::to_writer(&mut stdin, &handoff)?;
+            stdin.write_all(b"\n")?;
+        } else if let Some(socket) = socket {
+            wait_host(&socket, &mut host)?;
+            limpid_core::transport::send(&socket, &handoff)?;
+        }
     }
     Ok(())
 }

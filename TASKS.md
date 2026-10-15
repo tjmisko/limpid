@@ -34,9 +34,9 @@ DESIGN.md's open questions are answered or updated.
 - [x] **P1.2** Settings: `~/.config/limpid/config.toml` with every key
   optional, defaults when the file is absent, and an error naming any unknown
   key.
-- [ ] **P1.3** Port the page template (`page.ts`): rail, compact TOC, styles,
+- [x] **P1.3** Port the page template (`page.ts`): rail, compact TOC, styles,
   and the rail, scroll-spy and search scripts as compiled-in assets.
-- [ ] **P1.4** Render markdown with `pulldown-cmark` (GFM, footnotes, front
+- [x] **P1.4** Render markdown with `pulldown-cmark` (GFM, footnotes, front
   matter title), heading ids, TOC (depth 3), table wrapping and `data-src`
   ranges.
 - [x] **P1.5** Grammar catalog: generate `catalog.toml` from Helix's
@@ -130,7 +130,7 @@ text first and the diagram after, and reopening it loads no Mermaid script.
   area.
 - [x] **P6.3** `Tab` / `Shift-Tab` focus moves between fields; `1`–`9` picks an
   option.
-- [ ] **P6.4** `limpid-core instructions`, and the line added to the Claude Code
+- [x] **P6.4** `limpid-core instructions`, and the line added to the Claude Code
   plugin, AGENTS.md for Codex, and the pi extension.
 
 **Done when:** an agent following the instruction produces fields you can step
@@ -138,7 +138,7 @@ through and pick options in without the mouse.
 
 ## Phase 7: Replies and comments
 
-- [ ] **P7.1** Vendor CodeMirror 6 with vim mode as one bundle (recorded in
+- [x] **P7.1** Vendor CodeMirror 6 with vim mode as one bundle (recorded in
   `vendor/README.md`); load it lazily on the first `Enter`, `i` or `c`.
 - [ ] **P7.2** Reply editor on fields, and `c` comments on any block. Save with
   `:w` or `Ctrl-Enter`, cancel with `:q`.

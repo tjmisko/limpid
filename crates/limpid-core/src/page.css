@@ -76,6 +76,9 @@ figure.code pre code{color:#cdd6f4}
 .limpid-review::backdrop{background:#0009}
 .limpid-review textarea{display:block;width:100%;height:min(50vh,420px);resize:vertical;padding:12px;border:1px solid var(--rule);border-radius:6px;background:var(--code);color:var(--ink);font:13px/1.5 var(--mono)}
 .limpid-review p{margin:9px 0 0;color:var(--muted);font-size:12px}
+figure.diagram{margin:22px 0;padding:14px;border:1px solid var(--rule);border-radius:10px;overflow-x:auto;background:var(--surface)}
+figure.diagram pre.mermaid{padding:0;background:transparent;color:var(--muted)}
+figure.diagram svg{display:block;max-width:100%;height:auto;margin:auto}
 pre code .hl-keyword,pre code .hl-operator{color:var(--purple)}
 pre code .hl-function,pre code .hl-function-macro,pre code .hl-function-method{color:var(--blue)}
 pre code .hl-type,pre code .hl-constructor,pre code .hl-constant{color:var(--amber)}

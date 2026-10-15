@@ -1,33 +1,19 @@
 #!/usr/bin/env bash
-# Install limpid's dependencies and link it into ${PREFIX:-$HOME/.local}/bin.
 set -euo pipefail
 
-root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-bin_dir="${PREFIX:-$HOME/.local}/bin"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+prefix="${PREFIX:-$HOME/.local}"
 
-command -v node >/dev/null || { echo "install: node (>= 22.6) is required" >&2; exit 1; }
-command -v npm >/dev/null || { echo "install: npm is required" >&2; exit 1; }
+command -v cargo >/dev/null || { echo "install: Rust/Cargo is required" >&2; exit 1; }
+command -v pkg-config >/dev/null || { echo "install: pkg-config is required" >&2; exit 1; }
+pkg-config --exists gtk4 webkitgtk-6.0 || {
+  echo "install: GTK4 and WebKitGTK 6.0 development packages are required" >&2
+  exit 1
+}
 
-cd "$root"
-if [ -f package-lock.json ]; then
-	npm ci --omit=dev
-else
-	npm install --omit=dev
-fi
+for crate in limpid-core limpid-host limpid; do
+  cargo install --path "$root/crates/$crate" --root "$prefix" --locked --force
+done
 
-mkdir -p "$bin_dir"
-ln -sfn "$root/limpid" "$bin_dir/limpid"
-echo "linked $bin_dir/limpid -> $root/limpid"
-
-case ":$PATH:" in
-	*":$bin_dir:"*) ;;
-	*) echo "note: $bin_dir is not on your PATH" ;;
-esac
-
-cat <<NEXT
-
-Next steps:
-  Claude Code  /plugin install limpid --marketplace tjmisko/limpid
-  pi           pi install git:github.com/tjmisko/limpid
-  Codex        run  !limpid codex 0  from inside a Codex session
-NEXT
+"$prefix/bin/limpid-core" grammars sync
+echo "Installed limpid in $prefix/bin"

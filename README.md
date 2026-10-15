@@ -1,123 +1,103 @@
 # limpid
 
-Open an AI agent's response as a clean, styled HTML page.
-
-*Limpid* means clear and transparent. It is also what the human does while
-limping along behind the AI, trying to catch up with what it just wrote.
-
-Agent output is long and terminals wrap it badly. `limpid` takes the turns of a
-conversation, renders them as one self-contained HTML file, and opens it in a
-viewer.
-
-## Page layout
-
-Content comes first. Metadata (turn, model, time) is one faint line at the top.
-A table of contents sits in a left rail on wide screens and in a collapsed
-`<details>` on narrow ones. Code blocks are syntax highlighted when `nvim` is
-installed; otherwise they are plain escaped text.
+limpid opens markdown files and agent responses as readable pages in a small
+GTK4/WebKit window. Questions under a `## Questions` heading become keyboard
+answer fields. You can also comment on any rendered block and send a compact
+reply back to your agent.
 
 ## Install
 
-Needs Node >= 22.6 (it runs TypeScript natively).
+The Rust build needs GTK4 and WebKitGTK 6.0 development packages, `pkg-config`,
+Git, and a C compiler. At runtime, GTK4 and WebKitGTK 6.0 are required;
+`wl-copy` is used by the default reply command. `wezterm` is needed only if
+you configure `reply.command = "limpid-core send"`.
 
-```
-git clone https://github.com/tjmisko/limpid
-cd limpid
+```sh
 ./install.sh
 ```
 
-This runs `npm ci --omit=dev` and links `limpid` into `${PREFIX:-$HOME/.local}/bin`.
-It uses no sudo and edits none of your config. Make sure that directory is on `PATH`.
+The script installs the three Rust binaries into `${PREFIX:-$HOME/.local}/bin`
+and compiles the configured tree-sitter grammars. Cargo builds never invoke
+Node or npm.
 
-## Agents
+## Open a page
 
-### Claude Code
-
-```
-/plugin marketplace add tjmisko/limpid
-/plugin install limpid@limpid
-```
-
-Then `/read [spec]` in a session.
-
-### pi
-
-```
-pi install git:github.com/tjmisko/limpid
+```sh
+limpid notes.md
+limpid page.html
+cat response.md | limpid -
+limpid --out response.html response.md
+limpid --slot session-1 notes.md
+limpid --hook --slot session-1 notes.md
+limpid --separate notes.md
 ```
 
-pi installs the package's dependencies. Then use `/read [spec]`, or press
-`Ctrl-R` to open the latest response.
+Markdown files are watched for changes. `--out` writes a self-contained page
+without opening a window. A running host shares one WebKit context among its
+windows; `--separate` opens a dedicated host process. `--dark` and `--light`
+select separate hosts.
 
-### Codex
+Math renders as MathML. Mermaid fences show their source immediately; the
+diagram script loads after first paint, and completed SVGs are cached for the
+next render.
 
-From inside a Codex session:
+For a Codex session, run `limpid codex` or `limpid codex 0..2`. The core reader
+also accepts `limpid-core claude [spec]` and `limpid-core pi [spec]`, with their
+transcript data as JSON on stdin. Each prints a cached page path that can be
+passed to `limpid`.
 
+Turn specs include `0`, `3`, `0..2`, `1..=3`, `2..`, `..4`, and `..`. Ranges are
+limited to ten turns.
+
+## Answer from the keyboard
+
+Use `Tab` and `Shift-Tab` to move between question fields, `1`–`9` to choose an
+option, and `Enter` or `i` to edit a reply. `c` comments on the block near the
+top of the view. The editor uses CodeMirror with vim keys: `Esc` then `:w`
+saves, `:q` cancels, and `Ctrl-Enter` saves directly. `S` opens the composed
+message for review; `Ctrl-Enter` there runs the configured reply command.
+
+Navigation keys include `j`, `k`, `gg`, `G`, PageUp, PageDown, `/`, `n`, `N`,
+`{`, `}`, `t`, `r`, `+`, `-`, and `0`.
+
+Agent pages save replies beside their cached HTML. Replies to a markdown file
+are stored as HTML comments in that file. limpid refuses to write an annotation
+if the file changed since it was rendered.
+
+## Configure
+
+All keys are optional in `~/.config/limpid/config.toml`:
+
+```toml
+[highlight]
+grammars = ["rust", "python", "typescript", "bash", "json", "toml"]
+theme = "default"
+
+[questions]
+headings = ["Questions", "Open questions", "Questions for you"]
+
+[reply]
+command = "wl-copy"
+
+[autoopen]
+claude = false
 ```
-!limpid codex
-!limpid codex 0..2
-```
 
-`limpid codex` finds the current directory's session and opens it. The
-command and its one-line output (`limpid: opened turn 0`) enter the model's
-context, so the output is kept tiny.
-
-### Other agents
-
-Pipe JSON to `limpid`, oldest turn first:
-
-```
-echo '{"model": "my-model", "turns": [{"prompt": "hi", "response": "# Hello"}]}' | limpid --spec 0
-```
-
-```
-limpid [--spec <spec>] [--no-open] [--out <dir>]
-stdin:  {"model": "<string, optional>", "turns": [{"prompt": "...", "response": "..."}]}
-stdout (exit 0): {"file": "<absolute path>", "context": "turn 0"}
-stderr (exit 1): one short human line (bad spec, missing turn, no response, malformed stdin, no viewer)
-exit 2: usage error, with usage on stderr
-```
-
-Turns with an empty or whitespace-only response are ignored. `limpid` assigns
-indices itself, newest first.
-
-## Turn specs
-
-| Spec | Shows |
-|------|-------|
-| `0` | the newest response (default) |
-| `3` | one response, three back |
-| `0..2` | turns 0 and 1, with prompts, oldest first |
-| `1..=3` | turns 1 through 3, inclusive |
-| `2..` | turn 2 and everything older |
-| `..4` | turns 0 through 3 |
-| `..` | every turn |
-
-A range shows at most 10 turns.
-
-## Output and viewer
-
-Pages are written to `~/.cache/limpid/turns-<timestamp>.html`; only the newest 50
-are kept. `--out <dir>` writes elsewhere and disables pruning. `--no-open` skips
-opening.
-
-The viewer is chosen in this order, and is always launched detached:
-
-1. `$LIMPID_VIEWER`, a command (split on whitespace) with the file appended
-2. `htmlview`, on `PATH` or in `~/.local/bin`
-3. `xdg-open` (Linux) or `open` (macOS)
-
-## Optional dependencies
-
-- `nvim`: tree-sitter syntax highlighting for code blocks.
-- [`htmlview`](https://github.com/tjmisko/htmlview): the recommended viewer, with vim keys.
+Run `limpid-core grammars list` to see the catalog and installed grammars, or
+`limpid-core grammars sync` after changing the grammar list. Missing grammars
+render as plain escaped code. `limpid-core instructions` prints the one-line
+question convention for agent instruction files.
 
 ## Development
 
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 ```
-npm install
-npm test
-```
+
+The Rust workspace is in `crates/`; `catalog.toml` pins grammar sources, and
+`vendor/` contains the lazy CodeMirror bundle and its license notices. The
+older TypeScript implementation remains during the migration for parity tests.
 
 ## License
 
