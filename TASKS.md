@@ -28,10 +28,10 @@ DESIGN.md's open questions are answered or updated.
 
 ## Phase 1: limpid-core renders markdown
 
-- [ ] **P1.1** Create the Cargo workspace (`limpid-core`, `limpid`,
+- [x] **P1.1** Create the Cargo workspace (`limpid-core`, `limpid`,
   `limpid-host`) next to the TypeScript code. CI runs `cargo test` and
   `cargo clippy`.
-- [ ] **P1.2** Settings: `~/.config/limpid/config.toml` with every key
+- [x] **P1.2** Settings: `~/.config/limpid/config.toml` with every key
   optional, defaults when the file is absent, and an error naming any unknown
   key.
 - [ ] **P1.3** Port the page template (`page.ts`): rail, compact TOC, styles,
@@ -39,13 +39,13 @@ DESIGN.md's open questions are answered or updated.
 - [ ] **P1.4** Render markdown with `pulldown-cmark` (GFM, footnotes, front
   matter title), heading ids, TOC (depth 3), table wrapping and `data-src`
   ranges.
-- [ ] **P1.5** Grammar catalog: generate `catalog.toml` from Helix's
+- [x] **P1.5** Grammar catalog: generate `catalog.toml` from Helix's
   `languages.toml` (repository, commit, aliases, query paths). Implement
   `limpid-core grammars sync | list`.
 - [ ] **P1.6** Highlighting: load grammars at runtime, compile each language's
   queries on first use, output highlight classes, and ship a default theme as
   light and dark CSS. Plain text when a grammar is missing or fails to load.
-- [ ] **P1.7** Escape raw HTML (agent mode) or sanitize it with `ammonia` (file
+- [x] **P1.7** Escape raw HTML (agent mode) or sanitize it with `ammonia` (file
   mode).
 - [ ] **P1.8** `limpid-core render FILE.md`, golden tests, and the adversarial
   input set.
@@ -56,11 +56,11 @@ adversarial tests pass.
 
 ## Phase 2: limpid-core reads agents
 
-- [ ] **P2.1** Port the turn specs (`spec.ts`) and their tests.
+- [x] **P2.1** Port the turn specs (`spec.ts`) and their tests.
 - [ ] **P2.2** Port the Claude Code reader (`turns.ts`) and the `read` tests.
-- [ ] **P2.3** Port the Codex reader (`codex.ts`) and its tests and fixtures.
-- [ ] **P2.4** Add the pi transcript reader; today pi passes turns in-process.
-- [ ] **P2.5** Port `cli.ts`: `limpid-core <agent> [spec]` writes the page and
+- [x] **P2.3** Port the Codex reader (`codex.ts`) and its tests and fixtures.
+- [x] **P2.4** Add the pi transcript reader; today pi passes turns in-process.
+- [x] **P2.5** Port `cli.ts`: `limpid-core <agent> [spec]` writes the page and
   `<page>.meta.json` (agent, session id, spec, source), prints the page path,
   and keeps the newest 50 pages.
 - [ ] **P2.6** Parity check: pages from the existing fixtures match the
@@ -106,7 +106,7 @@ of a 2,000-line `.md` is under 150 ms.
 
 ## Phase 5: Richer markdown
 
-- [ ] **P5.1** Shared assets written once to `~/.cache/limpid/assets/`. `--out`
+- [x] **P5.1** Shared assets written once to `~/.cache/limpid/assets/`. `--out`
   inlines everything except lazy bundles.
 - [ ] **P5.2** Math as MathML, or lazy KaTeX, following P0.4.
 - [ ] **P5.3** Mermaid: vendor `mermaid.min.js` (`vendor/README.md` records
@@ -115,20 +115,20 @@ of a 2,000-line `.md` is under 150 ms.
   diagrams on later renders.
 - [ ] **P5.4** `--watch` with scroll kept by `data-src` anchor. Watch opened
   `.md` files by default.
-- [ ] **P5.5** `t` toggles the rail, `{` / `}` jump between headings.
+- [x] **P5.5** `t` toggles the rail, `{` / `}` jump between headings.
 
 **Done when:** a document with math, a diagram and footnotes shows readable
 text first and the diagram after, and reopening it loads no Mermaid script.
 
 ## Phase 6: Question fields
 
-- [ ] **P6.1** Find the Questions section (`questions.headings`, any level,
+- [x] **P6.1** Find the Questions section (`questions.headings`, any level,
   case-insensitive): top-level numbered items become `q1`, `q2`, …, and nested
   `- ` items become options. Golden tests, including a heading with no list,
   bulleted lists, nested numbering and two Questions sections.
-- [ ] **P6.2** Render fields: the question, numbered options, an empty reply
+- [x] **P6.2** Render fields: the question, numbered options, an empty reply
   area.
-- [ ] **P6.3** `Tab` / `Shift-Tab` focus moves between fields; `1`–`9` picks an
+- [x] **P6.3** `Tab` / `Shift-Tab` focus moves between fields; `1`–`9` picks an
   option.
 - [ ] **P6.4** `limpid-core instructions`, and the line added to the Claude Code
   plugin, AGENTS.md for Codex, and the pi extension.
@@ -149,7 +149,7 @@ through and pick options in without the mouse.
 - [ ] **P7.4** `S` composes the compact reply for review; `Ctrl-Enter` runs
   `reply.command` with the `LIMPID_*` variables from the page meta and handoff.
   Clipboard by default.
-- [ ] **P7.5** `limpid-core send`: types the reply into `$LIMPID_PANE` with
+- [x] **P7.5** `limpid-core send`: types the reply into `$LIMPID_PANE` with
   `wezterm cli send-text`, without pressing Enter; clipboard when no pane is
   known.
 

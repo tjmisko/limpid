@@ -1,0 +1,2647 @@
+helix_rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc"
+
+[[grammars]]
+name = "ada"
+git = "https://github.com/briot/tree-sitter-ada"
+rev = "ba0894efa03beb70780156b91e28c716b7a4764d"
+query_dir = "runtime/queries/ada"
+aliases = [
+    "adb",
+    "ads",
+]
+
+[[grammars]]
+name = "adl"
+git = "https://github.com/adl-lang/tree-sitter-adl"
+rev = "2787d04beadfbe154d3f2da6e98dc45a1b134bbf"
+query_dir = "runtime/queries/adl"
+aliases = []
+
+[[grammars]]
+name = "agda"
+git = "https://github.com/tree-sitter/tree-sitter-agda"
+rev = "e8d47a6987effe34d5595baf321d82d3519a8527"
+query_dir = "runtime/queries/agda"
+aliases = []
+
+[[grammars]]
+name = "alloy"
+git = "https://github.com/mattsre/tree-sitter-alloy"
+rev = "58d462b1cdb077682b130caa324f3822aeb00b8e"
+query_dir = "runtime/queries/alloy"
+aliases = []
+
+[[grammars]]
+name = "amber"
+git = "https://github.com/amber-lang/tree-sitter-amber"
+rev = "107c6d4a420fb0c5962b62ebd9347b7eb0015957"
+query_dir = "runtime/queries/amber"
+aliases = ["ab"]
+
+[[grammars]]
+name = "astro"
+git = "https://github.com/virchau13/tree-sitter-astro"
+rev = "947e93089e60c66e681eba22283f4037841451e7"
+query_dir = "runtime/queries/astro"
+aliases = []
+
+[[grammars]]
+name = "awk"
+git = "https://github.com/Beaglefoot/tree-sitter-awk"
+rev = "34bbdc7cce8e803096f47b625979e34c1be38127"
+query_dir = "runtime/queries/awk"
+aliases = [
+    "gawk",
+    "mawk",
+    "nawk",
+]
+
+[[grammars]]
+name = "bash"
+git = "https://github.com/tree-sitter/tree-sitter-bash"
+rev = "a06c2e4415e9bc0346c6b86d401879ffb44058f7"
+query_dir = "runtime/queries/bash"
+aliases = [
+    "ash",
+    "bazelrc",
+    "cshrc",
+    "dash",
+    "ebuild",
+    "eclass",
+    "env",
+    "ksh",
+    "mksh",
+    "pkgbuild",
+    "renviron",
+    "sh",
+    "tcshrc",
+    "zlogin",
+    "zlogout",
+    "zprofile",
+    "zsh",
+    "zsh-theme",
+    "zshenv",
+    "zshrc",
+    "zshrc_apple_terminal",
+]
+
+[[grammars]]
+name = "basic"
+git = "https://github.com/Ra77a3l3-jar/tree-sitter-basic"
+rev = "a98449c11d6c688b54c1ca132148a62d7e586a2a"
+query_dir = "runtime/queries/basic"
+aliases = ["bas"]
+
+[[grammars]]
+name = "bass"
+git = "https://github.com/vito/tree-sitter-bass"
+rev = "501133e260d768ed4e1fd7374912ed5c86d6fd90"
+query_dir = "runtime/queries/bass"
+aliases = []
+
+[[grammars]]
+name = "batch"
+git = "https://github.com/wharflab/tree-sitter-batch"
+rev = "5fc5f54267ef9a78e7a5319b80e092194252aabf"
+query_dir = "runtime/queries/batch"
+aliases = [
+    "bat",
+    "btm",
+    "cmd",
+]
+
+[[grammars]]
+name = "beancount"
+git = "https://github.com/polarmutex/tree-sitter-beancount"
+rev = "429cff869513cf9e34a2cf604fbfaaedc467e809"
+query_dir = "runtime/queries/beancount"
+aliases = ["bean"]
+
+[[grammars]]
+name = "bibtex"
+git = "https://github.com/latex-lsp/tree-sitter-bibtex"
+rev = "8d04ed27b3bc7929f14b7df9236797dab9f3fa66"
+query_dir = "runtime/queries/bibtex"
+aliases = ["bib"]
+
+[[grammars]]
+name = "bicep"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-bicep"
+rev = "bff59884307c0ab009bd5e81afd9324b46a6c0f9"
+query_dir = "runtime/queries/bicep"
+aliases = ["bicepparam"]
+
+[[grammars]]
+name = "bitbake"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-bitbake"
+rev = "10bacac929ff36a1e8f4056503fe4f8717b21b94"
+query_dir = "runtime/queries/bitbake"
+aliases = [
+    "bb",
+    "bbappend",
+    "bbclass",
+]
+
+[[grammars]]
+name = "blade"
+git = "https://github.com/EmranMR/tree-sitter-blade"
+rev = "5dbdcb0ccbe91e64b038b41545d3acc26c74907a"
+query_dir = "runtime/queries/blade"
+aliases = []
+
+[[grammars]]
+name = "blueprint"
+git = "https://gitlab.com/gabmus/tree-sitter-blueprint"
+rev = "355ef84ef8a958ac822117b652cf4d49bac16c79"
+query_dir = "runtime/queries/blueprint"
+aliases = ["blp"]
+
+[[grammars]]
+name = "c"
+git = "https://github.com/tree-sitter/tree-sitter-c"
+rev = "b780e47fc780ddc8da13afa35a3f4ed5c157823d"
+query_dir = "runtime/queries/c"
+aliases = []
+
+[[grammars]]
+name = "c-sharp"
+git = "https://github.com/tree-sitter/tree-sitter-c-sharp"
+rev = "cac6d5fb595f5811a076336682d5d595ac1c9e85"
+query_dir = "runtime/queries/c-sharp"
+aliases = [
+    "cake",
+    "cs",
+    "csx",
+]
+
+[[grammars]]
+name = "c3"
+git = "https://github.com/c3lang/tree-sitter-c3"
+rev = "15d3502510af0a6c888c663ec8d6aca8791216ce"
+query_dir = "runtime/queries/c3"
+aliases = [
+    "c3i",
+    "c3t",
+]
+
+[[grammars]]
+name = "caddyfile"
+git = "https://github.com/caddyserver/tree-sitter-caddyfile"
+rev = "15437433b7deec0f0431fb4a5bedb64ecae01513"
+query_dir = "runtime/queries/caddyfile"
+aliases = []
+
+[[grammars]]
+name = "cairo"
+git = "https://github.com/starkware-libs/tree-sitter-cairo"
+rev = "4c6a25680546761b80a710ead1dd34e76c203125"
+query_dir = "runtime/queries/cairo"
+aliases = []
+
+[[grammars]]
+name = "capnp"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-capnp"
+rev = "7b0883c03e5edd34ef7bcf703194204299d7099f"
+query_dir = "runtime/queries/capnp"
+aliases = []
+
+[[grammars]]
+name = "cel"
+git = "https://github.com/bufbuild/tree-sitter-cel"
+rev = "9f2b65da14c216df53933748e489db0f11121464"
+query_dir = "runtime/queries/cel"
+aliases = []
+
+[[grammars]]
+name = "chuck"
+git = "https://github.com/tymbalodeon/tree-sitter-chuck"
+rev = "68fb7bdba480915d87177feaa5593a666c0bb602"
+query_dir = "runtime/queries/chuck"
+aliases = []
+
+[[grammars]]
+name = "circom"
+git = "https://github.com/Decurity/tree-sitter-circom"
+rev = "02150524228b1e6afef96949f2d6b7cc0aaf999e"
+query_dir = "runtime/queries/circom"
+aliases = []
+
+[[grammars]]
+name = "clarity"
+git = "https://github.com/xlittlerag/tree-sitter-clarity"
+rev = "1436da3946359fcd7ac2d81917aaa78ef1e01755"
+query_dir = "runtime/queries/clarity"
+aliases = ["clar"]
+
+[[grammars]]
+name = "clojure"
+git = "https://github.com/sogaiu/tree-sitter-clojure"
+rev = "e43eff80d17cf34852dcd92ca5e6986d23a7040f"
+query_dir = "runtime/queries/clojure"
+aliases = [
+    "boot",
+    "clj",
+    "cljc",
+    "clje",
+    "cljr",
+    "cljs",
+    "cljx",
+    "edn",
+]
+
+[[grammars]]
+name = "cmake"
+git = "https://github.com/uyha/tree-sitter-cmake"
+rev = "c7b2a71e7f8ecb167fad4c97227c838439280175"
+query_dir = "runtime/queries/cmake"
+aliases = []
+
+[[grammars]]
+name = "comment"
+git = "https://github.com/stsewd/tree-sitter-comment"
+rev = "66272d2b6c73fb61157541b69dd0a7ce7b42a5ad"
+query_dir = "runtime/queries/comment"
+aliases = []
+
+[[grammars]]
+name = "commonlisp"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-commonlisp"
+rev = "32323509b3d9fe96607d151c2da2c9009eb13a2f"
+query_dir = "runtime/queries/common-lisp"
+aliases = [
+    "asd",
+    "cl",
+    "common-lisp",
+    "l",
+    "lisp",
+    "lsp",
+    "ny",
+    "podsl",
+    "ros",
+    "sexp",
+]
+
+[[grammars]]
+name = "concerto"
+git = "https://github.com/accordproject/concerto-tree-sitter"
+rev = "920ba23ea93af56b19dfc38fcddf80b3ddc62685"
+query_dir = "runtime/queries/concerto"
+aliases = ["cto"]
+
+[[grammars]]
+name = "cpon"
+git = "https://github.com/fvacek/tree-sitter-cpon"
+rev = "0d01fcdae5a53191df5b1349f9bce053833270e7"
+query_dir = "runtime/queries/cpon"
+aliases = ["cp"]
+
+[[grammars]]
+name = "cpp"
+git = "https://github.com/tree-sitter/tree-sitter-cpp"
+rev = "8b5b49eb196bec7040441bee33b2c9a4838d6967"
+query_dir = "runtime/queries/cpp"
+aliases = [
+    "c",
+    "c++",
+    "cc",
+    "cppm",
+    "cu",
+    "cuh",
+    "cxx",
+    "h",
+    "h++",
+    "hh",
+    "hpp",
+    "hxx",
+    "ii",
+    "inl",
+    "ino",
+    "ipp",
+    "ixx",
+    "tpp",
+    "txx",
+]
+
+[[grammars]]
+name = "crystal"
+git = "https://github.com/crystal-lang-tools/tree-sitter-crystal"
+rev = "50ca9e6fcfb16a2cbcad59203cfd8ad650e25c49"
+query_dir = "runtime/queries/crystal"
+aliases = ["cr"]
+
+[[grammars]]
+name = "css"
+git = "https://github.com/tree-sitter/tree-sitter-css"
+rev = "dda5cfc5722c429eaba1c910ca32c2c0c5bb1a3f"
+query_dir = "runtime/queries/css"
+aliases = []
+
+[[grammars]]
+name = "csv"
+git = "https://github.com/weartist/rainbow-csv-tree-sitter"
+rev = "d3dbf916446131417e4c2ea9eb8591b23b466d27"
+query_dir = "runtime/queries/csv"
+aliases = []
+
+[[grammars]]
+name = "cue"
+git = "https://github.com/eonpatapon/tree-sitter-cue"
+rev = "8a5f273bfa281c66354da562f2307c2d394b6c81"
+query_dir = "runtime/queries/cue"
+aliases = []
+
+[[grammars]]
+name = "cylc"
+git = "https://github.com/elliotfontaine/tree-sitter-cylc"
+rev = "6d1d81137112299324b526477ce1db989ab58fb8"
+query_dir = "runtime/queries/cylc"
+aliases = []
+
+[[grammars]]
+name = "cython"
+git = "https://github.com/b0o/tree-sitter-cython"
+rev = "62f44f5e7e41dde03c5f0a05f035e293bcf2bcf8"
+query_dir = "runtime/queries/cython"
+aliases = [
+    "pxd",
+    "pxi",
+    "pyx",
+]
+
+[[grammars]]
+name = "d"
+git = "https://github.com/gdamore/tree-sitter-d"
+rev = "8bcb13dbddf16ca44a42f8e98e8cf3d86b2b2e48"
+query_dir = "runtime/queries/d"
+aliases = ["dd"]
+
+[[grammars]]
+name = "dart"
+git = "https://github.com/UserNobody14/tree-sitter-dart"
+rev = "a9bdfa3db2fbc9b9f12c93450d04a671f33a5102"
+query_dir = "runtime/queries/dart"
+aliases = []
+
+[[grammars]]
+name = "dbml"
+git = "https://github.com/dynamotn/tree-sitter-dbml"
+rev = "2e2fa5640268c33c3d3f27f7e676f631a9c68fd9"
+query_dir = "runtime/queries/dbml"
+aliases = []
+
+[[grammars]]
+name = "debian"
+git = "https://gitlab.com/MggMuggins/tree-sitter-debian"
+rev = "9b3f4b78c45aab8a2f25a5f9e7bbc00995bc3dde"
+query_dir = "runtime/queries/debian"
+aliases = [
+    "changes",
+    "dsc",
+]
+
+[[grammars]]
+name = "devicetree"
+git = "https://github.com/joelspadin/tree-sitter-devicetree"
+rev = "e78bf56f206cb47bee28a217423acb651e076848"
+query_dir = "runtime/queries/devicetree"
+aliases = [
+    "dts",
+    "dtsi",
+]
+
+[[grammars]]
+name = "dhall"
+git = "https://github.com/jbellerb/tree-sitter-dhall"
+rev = "affb6ee38d629c9296749767ab832d69bb0d9ea8"
+query_dir = "runtime/queries/dhall"
+aliases = []
+
+[[grammars]]
+name = "diff"
+git = "https://github.com/the-mikedavis/tree-sitter-diff"
+rev = "2520c3f934b3179bb540d23e0ef45f75304b5fed"
+query_dir = "runtime/queries/diff"
+aliases = [
+    "patch",
+    "rej",
+]
+
+[[grammars]]
+name = "djot"
+git = "https://github.com/treeman/tree-sitter-djot"
+rev = "759a61896ccb2200a4becec4443e768638a21d58"
+query_dir = "runtime/queries/djot"
+aliases = ["dj"]
+
+[[grammars]]
+name = "dockerfile"
+git = "https://github.com/camdencheek/tree-sitter-dockerfile"
+rev = "971acdd908568b4531b0ba28a445bf0bb720aba5"
+query_dir = "runtime/queries/dockerfile"
+aliases = ["containerfile"]
+
+[[grammars]]
+name = "dot"
+git = "https://github.com/rydesun/tree-sitter-dot"
+rev = "917230743aa10f45a408fea2ddb54bbbf5fbe7b7"
+query_dir = "runtime/queries/dot"
+aliases = []
+
+[[grammars]]
+name = "doxyfile"
+git = "https://github.com/tingerrr/tree-sitter-doxyfile/"
+rev = "18e44c6da639632a4e42264c7193df34be915f34"
+query_dir = "runtime/queries/doxyfile"
+aliases = []
+
+[[grammars]]
+name = "drools"
+git = "https://github.com/iByteABit256/tree-sitter-drools"
+rev = "f1404d2a3974dfcfd4193246e763edeeb4b399c1"
+query_dir = "runtime/queries/drools"
+aliases = ["drl"]
+
+[[grammars]]
+name = "dtd"
+git = "https://github.com/KMikeeU/tree-sitter-dtd"
+rev = "6116becb02a6b8e9588ef73d300a9ba4622e156f"
+query_dir = "runtime/queries/dtd"
+aliases = ["ent"]
+
+[[grammars]]
+name = "dunstrc"
+git = "https://github.com/rotmh/tree-sitter-dunstrc"
+rev = "9cb9d5cc51cf5e2a47bb2a0e2f2e519ff11c1431"
+query_dir = "runtime/queries/dunstrc"
+aliases = []
+
+[[grammars]]
+name = "earthfile"
+git = "https://github.com/glehmann/tree-sitter-earthfile"
+rev = "dbfb970a59cd87b628d087eb8e3fbe19c8e20601"
+query_dir = "runtime/queries/earthfile"
+aliases = []
+
+[[grammars]]
+name = "ebnf"
+git = "https://github.com/RubixDev/ebnf/"
+rev = "8e635b0b723c620774dfb8abf382a7f531894b40"
+subpath = "crates/tree-sitter-ebnf"
+query_dir = "runtime/queries/ebnf"
+aliases = []
+
+[[grammars]]
+name = "edoc"
+git = "https://github.com/the-mikedavis/tree-sitter-edoc"
+rev = "74774af7b45dd9cefbf9510328fc6ff2374afc50"
+query_dir = "runtime/queries/edoc"
+aliases = []
+
+[[grammars]]
+name = "eex"
+git = "https://github.com/connorlay/tree-sitter-eex"
+rev = "f742f2fe327463335e8671a87c0b9b396905d1d1"
+query_dir = "runtime/queries/eex"
+aliases = []
+
+[[grammars]]
+name = "eiffel"
+git = "https://github.com/imustafin/tree-sitter-eiffel"
+rev = "d934fb44f1d22bb76be6b56a7b2425ab3b1daf8b"
+query_dir = "runtime/queries/eiffel"
+aliases = ["e"]
+
+[[grammars]]
+name = "elisp"
+git = "https://github.com/Wilfred/tree-sitter-elisp"
+rev = "29b4e49275f4a947ce17c8533bc20a1f97768c70"
+query_dir = "runtime/queries/elisp"
+aliases = ["el"]
+
+[[grammars]]
+name = "elixir"
+git = "https://github.com/elixir-lang/tree-sitter-elixir"
+rev = "7937d3b4d65fa574163cfa59394515d3c1cf16f4"
+query_dir = "runtime/queries/elixir"
+aliases = [
+    "ex",
+    "exs",
+]
+
+[[grammars]]
+name = "elm"
+git = "https://github.com/elm-tooling/tree-sitter-elm"
+rev = "6d9511c28181db66daee4e883f811f6251220943"
+query_dir = "runtime/queries/elm"
+aliases = []
+
+[[grammars]]
+name = "elvish"
+git = "https://github.com/ckafi/tree-sitter-elvish"
+rev = "e50787cadd3bc54f6d9c0704493a79078bb8a4e5"
+query_dir = "runtime/queries/elvish"
+aliases = ["elv"]
+
+[[grammars]]
+name = "embedded-perl"
+git = "https://github.com/jobindex-open/tree-sitter-embedded-perl"
+rev = "5557a53f1f59a67cbd54c25bacd0c56d43158818"
+query_dir = "runtime/queries/embedded-perl"
+aliases = ["ep"]
+
+[[grammars]]
+name = "embedded-template"
+git = "https://github.com/tree-sitter/tree-sitter-embedded-template"
+rev = "5bce9d580d3b78f48e13e331f69dfa0abd4ff68b"
+query_dir = "runtime/queries/erb"
+aliases = [
+    "ejs",
+    "erb",
+]
+
+[[grammars]]
+name = "erlang"
+git = "https://github.com/the-mikedavis/tree-sitter-erlang"
+rev = "d85b18e76962d6a3ba131bc5b514d77558e82762"
+query_dir = "runtime/queries/erlang"
+aliases = [
+    "app",
+    "erl",
+    "hrl",
+]
+
+[[grammars]]
+name = "esdl"
+git = "https://github.com/hongquan/tree-sitter-esdl"
+rev = "c824fe2bbbed6b29e50c694420aa2b377782f80a"
+query_dir = "runtime/queries/esdl"
+aliases = ["gel"]
+
+[[grammars]]
+name = "fennel"
+git = "https://github.com/alexmozaidze/tree-sitter-fennel"
+rev = "3f0f6b24d599e92460b969aabc4f4c5a914d15a0"
+query_dir = "runtime/queries/fennel"
+aliases = [
+    "fnl",
+    "fnlm",
+]
+
+[[grammars]]
+name = "fga"
+git = "https://github.com/matoous/tree-sitter-fga"
+rev = "ce72d1c484ba133a18e966d67be66bce85695451"
+query_dir = "runtime/queries/fga"
+aliases = []
+
+[[grammars]]
+name = "fidl"
+git = "https://github.com/google/tree-sitter-fidl"
+rev = "0a8910f293268e27ff554357c229ba172b0eaed2"
+query_dir = "runtime/queries/fidl"
+aliases = []
+
+[[grammars]]
+name = "fish"
+git = "https://github.com/ram02z/tree-sitter-fish"
+rev = "f435b0bd772578c70e5d158b85267bb886316f88"
+query_dir = "runtime/queries/fish"
+aliases = []
+
+[[grammars]]
+name = "flatbuffers"
+git = "https://github.com/yuanchenxi95/tree-sitter-flatbuffers"
+rev = "95e6f9ef101ea97e870bf6eebc0bd1fdfbaf5490"
+query_dir = "runtime/queries/flatbuffers"
+aliases = ["fbs"]
+
+[[grammars]]
+name = "forth"
+git = "https://github.com/alexanderbrevig/tree-sitter-forth"
+rev = "360ef13f8c609ec6d2e80782af69958b84e36cd0"
+query_dir = "runtime/queries/forth"
+aliases = [
+    "4th",
+    "fs",
+    "fth",
+]
+
+[[grammars]]
+name = "fortran"
+git = "https://github.com/stadelmanma/tree-sitter-fortran"
+rev = "2880b7aab4fb7cc618de1ef3d4c6d93b2396c031"
+query_dir = "runtime/queries/fortran"
+aliases = [
+    "f",
+    "f03",
+    "f90",
+    "f95",
+    "for",
+]
+
+[[grammars]]
+name = "freebasic"
+git = "https://github.com/Ra77a3l3-jar/tree-sitter-freebasic"
+rev = "dbf696adb4c0b9c020074e75043c90592981ee7f"
+query_dir = "runtime/queries/freebasic"
+aliases = [
+    "bas",
+    "bi",
+]
+
+[[grammars]]
+name = "fsharp"
+git = "https://github.com/ionide/tree-sitter-fsharp"
+rev = "cfc12456941da47b64b7a3994f8dccdc9fe7d2c9"
+subpath = "fsharp"
+query_dir = "runtime/queries/fsharp"
+aliases = [
+    "fs",
+    "fsi",
+    "fsscript",
+    "fsx",
+]
+
+[[grammars]]
+name = "gas"
+git = "https://github.com/sirius94/tree-sitter-gas"
+rev = "5d6c0a0b4d7b6f35913906ba922fe38064a9bede"
+query_dir = "runtime/queries/gas"
+aliases = ["s"]
+
+[[grammars]]
+name = "gdscript"
+git = "https://github.com/PrestonKnopp/tree-sitter-gdscript"
+rev = "1f1e782fe2600f50ae57b53876505b8282388d77"
+query_dir = "runtime/queries/gdscript"
+aliases = ["gd"]
+
+[[grammars]]
+name = "gemini"
+git = "https://git.sr.ht/~nbsp/tree-sitter-gemini"
+rev = "3cc5e4bdf572d5df4277fc2e54d6299bd59a54b3"
+query_dir = "runtime/queries/gemini"
+aliases = ["gmi"]
+
+[[grammars]]
+name = "gherkin"
+git = "https://github.com/SamyAB/tree-sitter-gherkin"
+rev = "43873ee8de16476635b48d52c46f5b6407cb5c09"
+query_dir = "runtime/queries/gherkin"
+aliases = ["feature"]
+
+[[grammars]]
+name = "ghostty"
+git = "https://github.com/bezhermoso/tree-sitter-ghostty"
+rev = "4a0fd2ae492c6bbfd13a134067ee4258f0e0f189"
+query_dir = "runtime/queries/ghostty"
+aliases = []
+
+[[grammars]]
+name = "git-config"
+git = "https://github.com/the-mikedavis/tree-sitter-git-config"
+rev = "0fbc9f99d5a28865f9de8427fb0672d66f9d83a5"
+query_dir = "runtime/queries/git-config"
+aliases = ["gitconfig"]
+
+[[grammars]]
+name = "git-rebase"
+git = "https://github.com/the-mikedavis/tree-sitter-git-rebase"
+rev = "32686d6b72980b36f876ae2d07719c9c3ed154e2"
+query_dir = "runtime/queries/git-rebase"
+aliases = []
+
+[[grammars]]
+name = "gitattributes"
+git = "https://github.com/mtoohey31/tree-sitter-gitattributes"
+rev = "3dd50808e3096f93dccd5e9dc7dc3dba2eb12dc4"
+query_dir = "runtime/queries/git-attributes"
+aliases = ["git-attributes"]
+
+[[grammars]]
+name = "gitcommit"
+git = "https://github.com/gbprod/tree-sitter-gitcommit"
+rev = "49715a9e6f19ce3d33b875aacdd6ad8ddaee0ffe"
+query_dir = "runtime/queries/git-commit"
+aliases = [
+    "git-commit",
+    "git-notes",
+]
+
+[[grammars]]
+name = "gitignore"
+git = "https://github.com/shunsambongi/tree-sitter-gitignore"
+rev = "f4685bf11ac466dd278449bcfe5fd014e94aa504"
+query_dir = "runtime/queries/git-ignore"
+aliases = ["git-ignore"]
+
+[[grammars]]
+name = "gleam"
+git = "https://github.com/gleam-lang/tree-sitter-gleam"
+rev = "c610c282ef73f830d80c1f0999dce8e83f024ef5"
+query_dir = "runtime/queries/gleam"
+aliases = []
+
+[[grammars]]
+name = "glimmer"
+git = "https://github.com/ember-tooling/tree-sitter-glimmer"
+rev = "88af85568bde3b91acb5d4c352ed094d0c1f9d84"
+query_dir = "runtime/queries/glimmer"
+aliases = []
+
+[[grammars]]
+name = "glimmer-javascript"
+git = "https://github.com/ember-tooling/tree-sitter-glimmer-javascript"
+rev = "d9cf7a2f1dad3c6b660148eaf77e955d418fdb8b"
+query_dir = "runtime/queries/gjs"
+aliases = ["gjs"]
+
+[[grammars]]
+name = "glimmer-typescript"
+git = "https://github.com/ember-tooling/tree-sitter-glimmer-typescript"
+rev = "12d98944c1d5077b957cbdb90d663a7c4d50118c"
+query_dir = "runtime/queries/gts"
+aliases = ["gts"]
+
+[[grammars]]
+name = "glsl"
+git = "https://github.com/theHamsta/tree-sitter-glsl"
+rev = "24a6c8ef698e4480fecf8340d771fbcb5de8fbb4"
+query_dir = "runtime/queries/glsl"
+aliases = [
+    "comp",
+    "frag",
+    "geom",
+    "tesc",
+    "tese",
+    "vert",
+]
+
+[[grammars]]
+name = "gn"
+git = "https://github.com/willcassella/tree-sitter-gn"
+rev = "fbaa7b3d52b958e3ac06e15416e1785138bde063"
+query_dir = "runtime/queries/gn"
+aliases = ["gni"]
+
+[[grammars]]
+name = "gnuplot"
+git = "https://codeberg.org/maribu/tree-sitter-gnuplot"
+rev = "21a3a3929facb964b3592daeb69119294ff84cf2"
+query_dir = "runtime/queries/gnuplot"
+aliases = [
+    "plot",
+    "plt",
+]
+
+[[grammars]]
+name = "go"
+git = "https://github.com/tree-sitter/tree-sitter-go"
+rev = "2346a3ab1bb3857b48b29d779a1ef9799a248cd7"
+query_dir = "runtime/queries/go"
+aliases = []
+
+[[grammars]]
+name = "go-format-string"
+git = "https://codeberg.org/kpbaks/tree-sitter-go-format-string"
+rev = "06587ea641155db638f46a32c959d68796cd36bb"
+query_dir = "runtime/queries/go-format-string"
+aliases = []
+
+[[grammars]]
+name = "godot-resource"
+git = "https://github.com/PrestonKnopp/tree-sitter-godot-resource"
+rev = "2ffb90de47417018651fc3b970e5f6b67214dc9d"
+query_dir = "runtime/queries/godot-resource"
+aliases = [
+    "gdextension",
+    "godot",
+    "tres",
+    "tscn",
+]
+
+[[grammars]]
+name = "gomod"
+git = "https://github.com/camdencheek/tree-sitter-go-mod"
+rev = "6efb59652d30e0e9cd5f3b3a669afd6f1a926d3c"
+query_dir = "runtime/queries/gomod"
+aliases = []
+
+[[grammars]]
+name = "gotmpl"
+git = "https://github.com/ngalaiko/tree-sitter-go-template"
+rev = "aa71f63de226c5592dfbfc1f29949522d7c95fac"
+query_dir = "runtime/queries/gotmpl"
+aliases = ["helm"]
+
+[[grammars]]
+name = "gowork"
+git = "https://github.com/omertuc/tree-sitter-go-work"
+rev = "6dd9dd79fb51e9f2abc829d5e97b15015b6a8ae2"
+query_dir = "runtime/queries/gowork"
+aliases = []
+
+[[grammars]]
+name = "gpr"
+git = "https://github.com/brownts/tree-sitter-gpr"
+rev = "cea857d3c18d1385d1f5b66cd09ea1e44173945c"
+query_dir = "runtime/queries/gpr"
+aliases = []
+
+[[grammars]]
+name = "graphql"
+git = "https://github.com/bkegley/tree-sitter-graphql"
+rev = "5e66e961eee421786bdda8495ed1db045e06b5fe"
+query_dir = "runtime/queries/graphql"
+aliases = [
+    "gql",
+    "graphqls",
+]
+
+[[grammars]]
+name = "gren"
+git = "https://github.com/MaeBrooks/tree-sitter-gren"
+rev = "76554f4f2339f5a24eed19c58f2079b51c694152"
+query_dir = "runtime/queries/gren"
+aliases = []
+
+[[grammars]]
+name = "groovy"
+git = "https://github.com/murtaza64/tree-sitter-groovy"
+rev = "235009aad0f580211fc12014bb0846c3910130c1"
+query_dir = "runtime/queries/groovy"
+aliases = [
+    "gradle",
+    "jenkinsfile",
+]
+
+[[grammars]]
+name = "hare"
+git = "https://git.sr.ht/~ecs/tree-sitter-hare"
+rev = "07035a248943575444aa0b893ffe306e1444c0ab"
+query_dir = "runtime/queries/hare"
+aliases = ["ha"]
+
+[[grammars]]
+name = "haskell"
+git = "https://github.com/tree-sitter/tree-sitter-haskell"
+rev = "0975ef72fc3c47b530309ca93937d7d143523628"
+query_dir = "runtime/queries/haskell"
+aliases = [
+    "hs",
+    "hs-boot",
+    "hsc",
+]
+
+[[grammars]]
+name = "haskell-literate"
+git = "https://github.com/LaurentRDC/tree-sitter-haskell-literate"
+rev = "8ad7bd1b1595f4cc1a4ccc775d4a3c460f43a596"
+query_dir = "runtime/queries/haskell-literate"
+aliases = ["lhs"]
+
+[[grammars]]
+name = "haskell-persistent"
+git = "https://github.com/MercuryTechnologies/tree-sitter-haskell-persistent"
+rev = "58a6ccfd56d9f1de8fb9f77e6c42151f8f0d0f3d"
+query_dir = "runtime/queries/haskell-persistent"
+aliases = ["persistentmodels"]
+
+[[grammars]]
+name = "haxe"
+git = "https://github.com/vantreeseba/tree-sitter-haxe"
+rev = "f2a2394d9ca7a6099f78d8b0d178530e7c9a8e26"
+query_dir = "runtime/queries/haxe"
+aliases = ["hx"]
+
+[[grammars]]
+name = "hcl"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-hcl"
+rev = "64ad62785d442eb4d45df3a1764962dafd5bc98b"
+query_dir = "runtime/queries/hcl"
+aliases = [
+    "docker-bake",
+    "nomad",
+    "tf",
+    "tfvars",
+]
+
+[[grammars]]
+name = "hdl"
+git = "https://github.com/quantonganh/tree-sitter-hdl"
+rev = "2199fdf1d302100a53002ea2cf540999119836a0"
+query_dir = "runtime/queries/hdl"
+aliases = []
+
+[[grammars]]
+name = "heex"
+git = "https://github.com/phoenixframework/tree-sitter-heex"
+rev = "f6b83f305a755cd49cf5f6a66b2b789be93dc7b9"
+query_dir = "runtime/queries/heex"
+aliases = []
+
+[[grammars]]
+name = "hocon"
+git = "https://github.com/antosha417/tree-sitter-hocon"
+rev = "c390f10519ae69fdb03b3e5764f5592fb6924bcc"
+query_dir = "runtime/queries/hocon"
+aliases = []
+
+[[grammars]]
+name = "hoon"
+git = "https://github.com/urbit-pilled/tree-sitter-hoon"
+rev = "1545137aadcc63660c47db9ad98d02fa602655d0"
+query_dir = "runtime/queries/hoon"
+aliases = []
+
+[[grammars]]
+name = "hosts"
+git = "https://github.com/ath3/tree-sitter-hosts"
+rev = "301b9379ce7dfc8bdbe2c2699a6887dcb73953f9"
+query_dir = "runtime/queries/hosts"
+aliases = []
+
+[[grammars]]
+name = "html"
+git = "https://github.com/tree-sitter/tree-sitter-html"
+rev = "73a3947324f6efddf9e17c0ea58d454843590cc0"
+query_dir = "runtime/queries/html"
+aliases = [
+    "asp",
+    "aspx",
+    "cshtml",
+    "htm",
+    "jshtm",
+    "jsp",
+    "rhtml",
+    "shtml",
+    "volt",
+    "webc",
+    "xht",
+    "xhtml",
+]
+
+[[grammars]]
+name = "htmldjango"
+git = "https://github.com/interdependence/tree-sitter-htmldjango"
+rev = "a10318892603d9a0b925df7cc7771a840304b997"
+query_dir = "runtime/queries/htmldjango"
+aliases = []
+
+[[grammars]]
+name = "hurl"
+git = "https://github.com/pfeiferj/tree-sitter-hurl"
+rev = "597efbd7ce9a814bb058f48eabd055b1d1e12145"
+query_dir = "runtime/queries/hurl"
+aliases = []
+
+[[grammars]]
+name = "hyprlang"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-hyprlang"
+rev = "27af9b74acf89fa6bed4fb8cb8631994fcb2e6f3"
+query_dir = "runtime/queries/hyprlang"
+aliases = []
+
+[[grammars]]
+name = "iex"
+git = "https://github.com/elixir-lang/tree-sitter-iex"
+rev = "39f20bb51f502e32058684e893c0c0b00bb2332c"
+query_dir = "runtime/queries/iex"
+aliases = []
+
+[[grammars]]
+name = "ini"
+git = "https://github.com/justinmk/tree-sitter-ini"
+rev = "e4018b5176132b4f3c5d6e61cea383f42288d0f5"
+query_dir = "runtime/queries/systemd"
+aliases = [
+    "automount",
+    "build",
+    "cfg",
+    "container",
+    "desktop",
+    "device",
+    "directory",
+    "image",
+    "kube",
+    "mount",
+    "network",
+    "nspawn",
+    "path",
+    "properties",
+    "scope",
+    "service",
+    "slice",
+    "socket",
+    "swap",
+    "systemd",
+    "target",
+    "timer",
+    "volume",
+]
+
+[[grammars]]
+name = "ink"
+git = "https://github.com/wldmr/tree-sitter-ink"
+rev = "632072bab485ab4c705c39cb9aae9eaeac6893ba"
+query_dir = "runtime/queries/ink"
+aliases = []
+
+[[grammars]]
+name = "inko"
+git = "https://github.com/inko-lang/tree-sitter-inko"
+rev = "f58a87ac4dc6a7955c64c9e4408fbd693e804686"
+query_dir = "runtime/queries/inko"
+aliases = []
+
+[[grammars]]
+name = "janet-simple"
+git = "https://github.com/sogaiu/tree-sitter-janet-simple"
+rev = "3c1bdcfff374138da03a1db25c75efce623910fe"
+query_dir = "runtime/queries/janet"
+aliases = [
+    "cgen",
+    "janet",
+    "jdn",
+]
+
+[[grammars]]
+name = "java"
+git = "https://github.com/tree-sitter/tree-sitter-java"
+rev = "e10607b45ff745f5f876bfa3e94fbcc6b44bdc11"
+query_dir = "runtime/queries/java"
+aliases = [
+    "jav",
+    "pde",
+]
+
+[[grammars]]
+name = "javascript"
+git = "https://github.com/tree-sitter/tree-sitter-javascript"
+rev = "58404d8cf191d69f2674a8fd507bd5776f46cb11"
+query_dir = "runtime/queries/javascript"
+aliases = [
+    "cjs",
+    "es6",
+    "gs",
+    "js",
+    "jsx",
+    "mjs",
+    "pac",
+    "rules",
+]
+
+[[grammars]]
+name = "jinja2"
+git = "https://github.com/varpeti/tree-sitter-jinja2"
+rev = "a533cd3c33aea6acb0f9bf9a56f35dcfe6a8eb53"
+query_dir = "runtime/queries/nunjucks"
+aliases = [
+    "j2",
+    "jinja",
+    "njk",
+    "nunjucks",
+]
+
+[[grammars]]
+name = "jjdescription"
+git = "https://github.com/kareigu/tree-sitter-jjdescription"
+rev = "1613b8c85b6ead48464d73668f39910dcbb41911"
+query_dir = "runtime/queries/jjdescription"
+aliases = []
+
+[[grammars]]
+name = "jjrevset"
+git = "https://github.com/bryceberger/tree-sitter-jjrevset"
+rev = "d9af23944b884ec528b505f41d81923bb3136a51"
+query_dir = "runtime/queries/jjrevset"
+aliases = []
+
+[[grammars]]
+name = "jjtemplate"
+git = "https://github.com/bryceberger/tree-sitter-jjtemplate"
+rev = "4313eda8ac31c60e550e3ad5841b100a0a686715"
+query_dir = "runtime/queries/jjtemplate"
+aliases = []
+
+[[grammars]]
+name = "jq"
+git = "https://github.com/flurie/tree-sitter-jq"
+rev = "13990f530e8e6709b7978503da9bc8701d366791"
+query_dir = "runtime/queries/jq"
+aliases = []
+
+[[grammars]]
+name = "jsdoc"
+git = "https://github.com/tree-sitter/tree-sitter-jsdoc"
+rev = "658d18dcdddb75c760363faa4963427a7c6b52db"
+query_dir = "runtime/queries/jsdoc"
+aliases = []
+
+[[grammars]]
+name = "json"
+git = "https://github.com/tree-sitter/tree-sitter-json"
+rev = "001c28d7a29832b06b0e831ec77845553c89b56d"
+query_dir = "runtime/queries/json"
+aliases = [
+    "arb",
+    "avsc",
+    "code-workspace",
+    "geojson",
+    "gltf",
+    "ipynb",
+    "json-ld",
+    "jsonc",
+    "jsonl",
+    "jsonld",
+    "ldtk",
+    "ldtkl",
+    "sublime-build",
+    "sublime-color-scheme",
+    "sublime-commands",
+    "sublime-completions",
+    "sublime-keymap",
+    "sublime-macro",
+    "sublime-menu",
+    "sublime-mousemap",
+    "sublime-project",
+    "sublime-settings",
+    "sublime-theme",
+    "sublime-workspace",
+    "tfstate",
+    "webmanifest",
+]
+
+[[grammars]]
+name = "json5"
+git = "https://github.com/Joakker/tree-sitter-json5"
+rev = "248b8564567087d7866be76569b182f6dd7e14e9"
+query_dir = "runtime/queries/json5"
+aliases = []
+
+[[grammars]]
+name = "jsonnet"
+git = "https://github.com/sourcegraph/tree-sitter-jsonnet"
+rev = "ddd075f1939aed8147b7aa67f042eda3fce22790"
+query_dir = "runtime/queries/jsonnet"
+aliases = ["libsonnet"]
+
+[[grammars]]
+name = "julia"
+git = "https://github.com/tree-sitter/tree-sitter-julia"
+rev = "e0f9dcd180fdcfcfa8d79a3531e11d99e79321d3"
+query_dir = "runtime/queries/julia"
+aliases = ["jl"]
+
+[[grammars]]
+name = "just"
+git = "https://github.com/poliorcetics/tree-sitter-just"
+rev = "00859eebfb774d371af174ea1e582d46e697b469"
+query_dir = "runtime/queries/just"
+aliases = []
+
+[[grammars]]
+name = "kcl"
+git = "https://github.com/KittyCAD/tree-sitter-kcl"
+rev = "8905e0bdbf5870b50bc3f24345f1af27746f42e8"
+query_dir = "runtime/queries/kcl"
+aliases = []
+
+[[grammars]]
+name = "kconfig"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-kconfig"
+rev = "9ac99fe4c0c27a35dc6f757cef534c646e944881"
+query_dir = "runtime/queries/kconfig"
+aliases = []
+
+[[grammars]]
+name = "kdl"
+git = "https://github.com/amaanq/tree-sitter-kdl"
+rev = "b37e3d58e5c5cf8d739b315d6114e02d42e66664"
+query_dir = "runtime/queries/kdl"
+aliases = []
+
+[[grammars]]
+name = "klog"
+git = "https://github.com/Ansimorph/tree-sitter-klog/"
+rev = "0b215fe75bdeb8368546e3cee36aca8c19212d06"
+query_dir = "runtime/queries/klog"
+aliases = ["klg"]
+
+[[grammars]]
+name = "koka"
+git = "https://github.com/koka-community/tree-sitter-koka"
+rev = "fd3b482274d6988349ba810ea5740e29153b1baf"
+query_dir = "runtime/queries/koka"
+aliases = ["kk"]
+
+[[grammars]]
+name = "kotlin"
+git = "https://github.com/fwcd/tree-sitter-kotlin"
+rev = "f66d2908542e93c0204c6c241f794afe4e9cd5d1"
+query_dir = "runtime/queries/kotlin"
+aliases = [
+    "kt",
+    "kts",
+]
+
+[[grammars]]
+name = "koto"
+git = "https://github.com/koto-lang/tree-sitter-koto"
+rev = "633744bca404ae4edb961a3c2d7bc947a987afa4"
+query_dir = "runtime/queries/koto"
+aliases = []
+
+[[grammars]]
+name = "latex"
+git = "https://github.com/latex-lsp/tree-sitter-latex"
+rev = "8c75e93cd08ccb7ce1ccab22c1fbd6360e3bcea6"
+query_dir = "runtime/queries/latex"
+aliases = [
+    "bbx",
+    "cbx",
+    "cls",
+    "dtx",
+    "ins",
+    "rd",
+    "sty",
+    "tex",
+]
+
+[[grammars]]
+name = "ld"
+git = "https://github.com/mtoohey31/tree-sitter-ld"
+rev = "0e9695ae0ede47b8744a8e2ad44d4d40c5d4e4c9"
+query_dir = "runtime/queries/ld"
+aliases = []
+
+[[grammars]]
+name = "ldif"
+git = "https://github.com/kepet19/tree-sitter-ldif"
+rev = "0a917207f65ba3e3acfa9cda16142ee39c4c1aaa"
+query_dir = "runtime/queries/ldif"
+aliases = []
+
+[[grammars]]
+name = "lean"
+git = "https://github.com/Julian/tree-sitter-lean"
+rev = "d98426109258b266e1e92358c5f11716d2e8f638"
+query_dir = "runtime/queries/lean"
+aliases = []
+
+[[grammars]]
+name = "ledger"
+git = "https://github.com/cbarrete/tree-sitter-ledger"
+rev = "1f864fb2bf6a87fe1b48545cc6adc6d23090adf7"
+query_dir = "runtime/queries/ledger"
+aliases = [
+    "journal",
+    "ldg",
+]
+
+[[grammars]]
+name = "less"
+git = "https://github.com/jimliang/tree-sitter-less"
+rev = "e5ae6245f841b5778c79ac93b28fa4f56b679c5d"
+query_dir = "runtime/queries/less"
+aliases = []
+
+[[grammars]]
+name = "llvm"
+git = "https://github.com/benwilliamgraham/tree-sitter-llvm"
+rev = "c14cb839003348692158b845db9edda201374548"
+query_dir = "runtime/queries/llvm"
+aliases = ["ll"]
+
+[[grammars]]
+name = "llvm-mir"
+git = "https://github.com/Flakebi/tree-sitter-llvm-mir"
+rev = "d166ff8c5950f80b0a476956e7a0ad2f27c12505"
+query_dir = "runtime/queries/llvm-mir"
+aliases = []
+
+[[grammars]]
+name = "log"
+git = "https://github.com/Tudyx/tree-sitter-log"
+rev = "62cfe307e942af3417171243b599cc7deac5eab9"
+query_dir = "runtime/queries/log"
+aliases = []
+
+[[grammars]]
+name = "lpf"
+git = "https://gitlab.com/TheZoq2/tree-sitter-lpf"
+rev = "db7372e60c722ca7f12ab359e57e6bf7611ab126"
+query_dir = "runtime/queries/lpf"
+aliases = []
+
+[[grammars]]
+name = "lua"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-lua"
+rev = "10fe0054734eec83049514ea2e718b2a56acd0c9"
+query_dir = "runtime/queries/lua"
+aliases = ["rockspec"]
+
+[[grammars]]
+name = "lua-format-string"
+git = "https://codeberg.org/kpbaks/tree-sitter-lua-format-string"
+rev = "b667c8cab109df307e1b4d56b0b43f5c4a353533"
+query_dir = "runtime/queries/lua-format-string"
+aliases = []
+
+[[grammars]]
+name = "luap"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-luap"
+rev = "c134aaec6acf4fa95fe4aa0dc9aba3eacdbbe55a"
+query_dir = "runtime/queries/luap"
+aliases = []
+
+[[grammars]]
+name = "luau"
+git = "https://github.com/polychromatist/tree-sitter-luau"
+rev = "ec187cafba510cddac265329ca7831ec6f3b9955"
+query_dir = "runtime/queries/luau"
+aliases = []
+
+[[grammars]]
+name = "mail"
+git = "https://codeberg.org/ficd/tree-sitter-mail"
+rev = "5eddbfdbec4c893182c79047499901c196332e78"
+query_dir = "runtime/queries/mail"
+aliases = ["eml"]
+
+[[grammars]]
+name = "make"
+git = "https://github.com/alemuller/tree-sitter-make"
+rev = "a4b9187417d6be349ee5fd4b6e77b4172c6827dd"
+query_dir = "runtime/queries/make"
+aliases = [
+    "mak",
+    "mk",
+]
+
+[[grammars]]
+name = "markdoc"
+git = "https://github.com/markdoc-extra/tree-sitter-markdoc"
+rev = "e4211fe541a13350275e4684de79adfebe9a91f8"
+query_dir = "runtime/queries/markdoc"
+aliases = ["mdoc"]
+
+[[grammars]]
+name = "markdown"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-markdown"
+rev = "f969cd3ae3f9fbd4e43205431d0ae286014c05b5"
+subpath = "tree-sitter-markdown"
+query_dir = "runtime/queries/markdown"
+aliases = [
+    "livemd",
+    "markdn",
+    "markdown-rustdoc",
+    "md",
+    "mdown",
+    "mdtext",
+    "mdtxt",
+    "mdwn",
+    "mdx",
+    "mkd",
+    "mkdn",
+    "qmd",
+    "quarto",
+    "rmarkdown",
+    "rmd",
+    "workbook",
+]
+
+[[grammars]]
+name = "markdown_inline"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-markdown"
+rev = "f969cd3ae3f9fbd4e43205431d0ae286014c05b5"
+subpath = "tree-sitter-markdown-inline"
+query_dir = "runtime/queries/markdown.inline"
+aliases = ["markdown.inline"]
+
+[[grammars]]
+name = "matlab"
+git = "https://github.com/acristoffers/tree-sitter-matlab"
+rev = "c2390a59016f74e7d5f75ef09510768b4f30217e"
+query_dir = "runtime/queries/matlab"
+aliases = ["m"]
+
+[[grammars]]
+name = "mermaid"
+git = "https://github.com/monaqa/tree-sitter-mermaid"
+rev = "d787c66276e7e95899230539f556e8b83ee16f6d"
+query_dir = "runtime/queries/mermaid"
+aliases = ["mmd"]
+
+[[grammars]]
+name = "meson"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-meson"
+rev = "c84f3540624b81fc44067030afce2ff78d6ede05"
+query_dir = "runtime/queries/meson"
+aliases = []
+
+[[grammars]]
+name = "metamath"
+git = "https://git.sr.ht/~m4dh0rs3/tree-sitter-metamath"
+rev = "d6a57b0ddb4feba4a88f8cbb2f497b718e0c5c1d"
+query_dir = "runtime/queries/metamath"
+aliases = ["mm"]
+
+[[grammars]]
+name = "mojo"
+git = "https://github.com/lsh/tree-sitter-mojo"
+rev = "3d7c53b8038f9ebbb57cd2e61296180aa5c1cf64"
+query_dir = "runtime/queries/mojo"
+aliases = []
+
+[[grammars]]
+name = "moonbit"
+git = "https://github.com/moonbitlang/tree-sitter-moonbit"
+rev = "36191d7fe4ec4298c8c1f251af6a82939f8e9a67"
+query_dir = "runtime/queries/moonbit"
+aliases = [
+    "mbt",
+    "mbti",
+]
+
+[[grammars]]
+name = "move"
+git = "https://github.com/tzakian/tree-sitter-move"
+rev = "8bc0d1692caa8763fef54d48068238d9bf3c0264"
+query_dir = "runtime/queries/move"
+aliases = []
+
+[[grammars]]
+name = "nasm"
+git = "https://github.com/naclsn/tree-sitter-nasm"
+rev = "570f3d7be01fffc751237f4cfcf52d04e20532d1"
+query_dir = "runtime/queries/nasm"
+aliases = [
+    "asm",
+    "s",
+]
+
+[[grammars]]
+name = "nearley"
+git = "https://github.com/mi2ebi/tree-sitter-nearley"
+rev = "12d01113e194c8e83f6341aab8c2a5f21db9cac9"
+query_dir = "runtime/queries/nearley"
+aliases = ["ne"]
+
+[[grammars]]
+name = "nginx"
+git = "https://gitlab.com/joncoole/tree-sitter-nginx"
+rev = "f6d13cf6281b25f2ce342a49a41a10a0381e00f0"
+query_dir = "runtime/queries/nginx"
+aliases = []
+
+[[grammars]]
+name = "nickel"
+git = "https://github.com/nickel-lang/tree-sitter-nickel"
+rev = "88d836a24b3b11c8720874a1a9286b8ae838d30a"
+query_dir = "runtime/queries/nickel"
+aliases = ["ncl"]
+
+[[grammars]]
+name = "nim"
+git = "https://github.com/alaviss/tree-sitter-nim"
+rev = "c5f0ce3b65222f5dbb1a12f9fe894524881ad590"
+query_dir = "runtime/queries/nim"
+aliases = [
+    "nimble",
+    "nims",
+]
+
+[[grammars]]
+name = "nix"
+git = "https://github.com/numtide/tree-sitter-nix"
+rev = "70f34e95e30b7ebcc40815d4385d68576c4a15cd"
+query_dir = "runtime/queries/nix"
+aliases = []
+
+[[grammars]]
+name = "nu"
+git = "https://github.com/nushell/tree-sitter-nu"
+rev = "cc4624fbc6ec3563d98fbe8f215a8b8e10b16f32"
+query_dir = "runtime/queries/nu"
+aliases = ["nuon"]
+
+[[grammars]]
+name = "ocaml"
+git = "https://github.com/tree-sitter/tree-sitter-ocaml"
+rev = "59e2b9f63526db8b95cf59dde6b2402ec2e48b52"
+subpath = "grammars/ocaml"
+query_dir = "runtime/queries/ocaml"
+aliases = ["ml"]
+
+[[grammars]]
+name = "ocaml-interface"
+git = "https://github.com/tree-sitter/tree-sitter-ocaml"
+rev = "59e2b9f63526db8b95cf59dde6b2402ec2e48b52"
+subpath = "grammars/interface"
+query_dir = "runtime/queries/ocaml-interface"
+aliases = ["mli"]
+
+[[grammars]]
+name = "odin"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-odin"
+rev = "6c6b07e354a52f8f2a9bc776cbc262a74e74fd26"
+query_dir = "runtime/queries/odin"
+aliases = []
+
+[[grammars]]
+name = "ohm"
+git = "https://github.com/novusnota/tree-sitter-ohm"
+rev = "a1de3e748a185a335b446613aaeff1eb10e83cdf"
+query_dir = "runtime/queries/ohm"
+aliases = []
+
+[[grammars]]
+name = "opencl"
+git = "https://github.com/lefp/tree-sitter-opencl"
+rev = "8e1d24a57066b3cd1bb9685bbc1ca9de5c1b78fb"
+query_dir = "runtime/queries/opencl"
+aliases = ["cl"]
+
+[[grammars]]
+name = "openscad"
+git = "https://github.com/openscad/tree-sitter-openscad"
+rev = "4c36a4fb569688c97cfa28090031e039a6079244"
+query_dir = "runtime/queries/openscad"
+aliases = ["scad"]
+
+[[grammars]]
+name = "org"
+git = "https://github.com/milisims/tree-sitter-org"
+rev = "698bb1a34331e68f83fc24bdd1b6f97016bb30de"
+query_dir = "runtime/queries/org"
+aliases = []
+
+[[grammars]]
+name = "p"
+git = "https://github.com/battesonb/tree-sitter-p"
+rev = "701dcc1c72f425f78bc128d2b8031686a60ae058"
+query_dir = "runtime/queries/p"
+aliases = []
+
+[[grammars]]
+name = "pascal"
+git = "https://github.com/Isopod/tree-sitter-pascal"
+rev = "042119eca2e18a60e56317fb06ee3ba5c32cb447"
+query_dir = "runtime/queries/pascal"
+aliases = [
+    "inc",
+    "lfm",
+    "lpr",
+    "pas",
+]
+
+[[grammars]]
+name = "passwd"
+git = "https://github.com/ath3/tree-sitter-passwd"
+rev = "20239395eacdc2e0923a7e5683ad3605aee7b716"
+query_dir = "runtime/queries/passwd"
+aliases = []
+
+[[grammars]]
+name = "pem"
+git = "https://github.com/mtoohey31/tree-sitter-pem"
+rev = "62842ea106ff66876f9af4cccdf87913d1ed912e"
+query_dir = "runtime/queries/pem"
+aliases = [
+    "cert",
+    "crt",
+]
+
+[[grammars]]
+name = "penrose"
+git = "https://github.com/klukaszek/tree-sitter-penrose"
+rev = "d9368ff7f743b2ac2145a3342db13b1ad950cba5"
+query_dir = "runtime/queries/penrose"
+aliases = [
+    "domain",
+    "style",
+    "substance",
+]
+
+[[grammars]]
+name = "perl"
+git = "https://github.com/tree-sitter-perl/tree-sitter-perl"
+rev = "72a08a496a23212f23802490ef6f4700d68cfd0e"
+query_dir = "runtime/queries/perl"
+aliases = [
+    "nqp",
+    "p6",
+    "pl",
+    "pl6",
+    "pm",
+    "pm6",
+    "psgi",
+    "raku",
+    "rakudoc",
+    "rakumod",
+    "rakutest",
+    "t",
+]
+
+[[grammars]]
+name = "pest"
+git = "https://github.com/pest-parser/tree-sitter-pest"
+rev = "c19629a0c50e6ca2485c3b154b1dde841a08d169"
+query_dir = "runtime/queries/pest"
+aliases = []
+
+[[grammars]]
+name = "php"
+git = "https://github.com/tree-sitter/tree-sitter-php"
+rev = "3f2465c217d0a966d41e584b42d75522f2a3149e"
+subpath = "php"
+query_dir = "runtime/queries/php"
+aliases = [
+    "ctp",
+    "inc",
+    "php4",
+    "php5",
+    "phtml",
+]
+
+[[grammars]]
+name = "php-only"
+git = "https://github.com/tree-sitter/tree-sitter-php"
+rev = "3f2465c217d0a966d41e584b42d75522f2a3149e"
+subpath = "php_only"
+query_dir = "runtime/queries/php-only"
+aliases = []
+
+[[grammars]]
+name = "picat"
+git = "https://github.com/dlr-ft/tree-sitter-picat"
+rev = "ecb6b07d280f2cef8214bc4b999ad83ac1d9205c"
+query_dir = "runtime/queries/picat"
+aliases = ["pi"]
+
+[[grammars]]
+name = "pkl"
+git = "https://github.com/apple/tree-sitter-pkl"
+rev = "c03f04a313b712f8ab00a2d862c10b37318699ae"
+query_dir = "runtime/queries/pkl"
+aliases = ["pcf"]
+
+[[grammars]]
+name = "po"
+git = "https://github.com/erasin/tree-sitter-po"
+rev = "417cee9abb2053ed26b19e7de972398f2da9b29e"
+query_dir = "runtime/queries/po"
+aliases = ["pot"]
+
+[[grammars]]
+name = "pod"
+git = "https://github.com/tree-sitter-perl/tree-sitter-pod"
+rev = "cd1931314beafeebc957964c65802961e283411e"
+query_dir = "runtime/queries/pod"
+aliases = []
+
+[[grammars]]
+name = "ponylang"
+git = "https://github.com/mfelsche/tree-sitter-ponylang"
+rev = "ef66b151bc2604f431b5668fcec4747db4290e11"
+query_dir = "runtime/queries/ponylang"
+aliases = ["pony"]
+
+[[grammars]]
+name = "powershell"
+git = "https://github.com/airbus-cert/tree-sitter-powershell"
+rev = "c9316be0faca5d5b9fd3b57350de650755f42dc0"
+query_dir = "runtime/queries/powershell"
+aliases = [
+    "ps1",
+    "pscc",
+    "psd1",
+    "psm1",
+    "psrc",
+]
+
+[[grammars]]
+name = "prisma"
+git = "https://github.com/victorhqc/tree-sitter-prisma"
+rev = "eca2596a355b1a9952b4f80f8f9caed300a272b5"
+query_dir = "runtime/queries/prisma"
+aliases = []
+
+[[grammars]]
+name = "prolog"
+git = "https://codeberg.org/foxy/tree-sitter-prolog"
+rev = "d8d415f6a1cf80ca138524bcc395810b176d40fa"
+subpath = "grammars/prolog"
+query_dir = "runtime/queries/prolog"
+aliases = ["pl"]
+
+[[grammars]]
+name = "properties"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-properties"
+rev = "6310671b24d4e04b803577b1c675d765cbd5773b"
+query_dir = "runtime/queries/properties"
+aliases = ["prefs"]
+
+[[grammars]]
+name = "proto"
+git = "https://github.com/sdoerner/tree-sitter-proto"
+rev = "35a6a3b543e418b7037328261f40e912c767c598"
+query_dir = "runtime/queries/protobuf"
+aliases = ["protobuf"]
+
+[[grammars]]
+name = "proverif"
+git = "https://codeberg.org/maribu/tree-sitter-proverif"
+rev = "7741807092c4009c1fe4c3648da60ca72b1b80f1"
+query_dir = "runtime/queries/proverif"
+aliases = ["pv"]
+
+[[grammars]]
+name = "prql"
+git = "https://github.com/PRQL/tree-sitter-prql"
+rev = "09e158cd3650581c0af4c49c2e5b10c4834c8646"
+query_dir = "runtime/queries/prql"
+aliases = []
+
+[[grammars]]
+name = "ptx"
+git = "https://codeberg.org/jer-gremlin/tree-sitter-ptx"
+rev = "3dfa6758d4c15832d051f933101992b9e01d6611"
+query_dir = "runtime/queries/ptx"
+aliases = []
+
+[[grammars]]
+name = "pug"
+git = "https://github.com/zealot128/tree-sitter-pug"
+rev = "13e9195370172c86a8b88184cc358b23b677cc46"
+query_dir = "runtime/queries/pug"
+aliases = []
+
+[[grammars]]
+name = "puppet"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-puppet"
+rev = "15f192929b7d317f5914de2b4accd37b349182a6"
+query_dir = "runtime/queries/puppet"
+aliases = ["pp"]
+
+[[grammars]]
+name = "purescript"
+git = "https://github.com/postsolar/tree-sitter-purescript"
+rev = "f541f95ffd6852fbbe88636317c613285bc105af"
+query_dir = "runtime/queries/purescript"
+aliases = ["purs"]
+
+[[grammars]]
+name = "python"
+git = "https://github.com/tree-sitter/tree-sitter-python"
+rev = "293fdc02038ee2bf0e2e206711b69c90ac0d413f"
+query_dir = "runtime/queries/python"
+aliases = [
+    "bazel",
+    "bxl",
+    "bzl",
+    "cpy",
+    "ipy",
+    "ptl",
+    "py",
+    "py3",
+    "pyi",
+    "pyt",
+    "pyw",
+    "rpy",
+    "sage",
+    "star",
+    "starlark",
+    "tilt",
+    "tiltfile",
+]
+
+[[grammars]]
+name = "ql"
+git = "https://github.com/tree-sitter/tree-sitter-ql"
+rev = "1fd627a4e8bff8c24c11987474bd33112bead857"
+query_dir = "runtime/queries/codeql"
+aliases = [
+    "codeql",
+    "qll",
+]
+
+[[grammars]]
+name = "qmljs"
+git = "https://github.com/yuja/tree-sitter-qmljs"
+rev = "0b2b25bcaa7d4925d5f0dda16f6a99c588a437f1"
+query_dir = "runtime/queries/qml"
+aliases = ["qml"]
+
+[[grammars]]
+name = "query"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-query"
+rev = "a6674e279b14958625d7a530cabe06119c7a1532"
+query_dir = "runtime/queries/tsq"
+aliases = ["tsq"]
+
+[[grammars]]
+name = "quint"
+git = "https://github.com/gruhn/tree-sitter-quint"
+rev = "eebbd01edfeff6404778c92efe5554e42e506a18"
+query_dir = "runtime/queries/quint"
+aliases = ["qnt"]
+
+[[grammars]]
+name = "r"
+git = "https://github.com/r-lib/tree-sitter-r"
+rev = "0e6ef7741712c09dc3ee6e81c42e919820cc65ef"
+query_dir = "runtime/queries/r"
+aliases = []
+
+[[grammars]]
+name = "regex"
+git = "https://github.com/tree-sitter/tree-sitter-regex"
+rev = "b2ac15e27fce703d2f37a79ccd94a5c0cbe9720b"
+query_dir = "runtime/queries/regex"
+aliases = []
+
+[[grammars]]
+name = "rego"
+git = "https://github.com/FallenAngel97/tree-sitter-rego"
+rev = "ddd39af81fe8b0288102a7cb97959dfce723e0f3"
+query_dir = "runtime/queries/rego"
+aliases = []
+
+[[grammars]]
+name = "requirements"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-requirements"
+rev = "2c3bb291f497258ba417d052faa14a2dfee6d401"
+query_dir = "runtime/queries/pip-requirements"
+aliases = ["pip-requirements"]
+
+[[grammars]]
+name = "rescript"
+git = "https://github.com/rescript-lang/tree-sitter-rescript"
+rev = "5e2a44a9d886b0a509f5bfd0437d33b4871fbac5"
+query_dir = "runtime/queries/rescript"
+aliases = ["res"]
+
+[[grammars]]
+name = "ripple"
+git = "https://github.com/Ripple-TS/ripple"
+rev = "49762f0a63de0d1845fcd2e6632639c095995336"
+subpath = "packages/tree-sitter"
+query_dir = "runtime/queries/ripple"
+aliases = []
+
+[[grammars]]
+name = "robot"
+git = "https://github.com/Hubro/tree-sitter-robot"
+rev = "93c48ca74274a60688a3beda7f6c8ae3145efce7"
+query_dir = "runtime/queries/robot"
+aliases = ["resource"]
+
+[[grammars]]
+name = "robots-txt"
+git = "https://github.com/opa-oz/tree-sitter-robots-txt"
+rev = "0c066107e3548de79316a6a4ec771e2f7cf7c468"
+query_dir = "runtime/queries/robots.txt"
+aliases = ["robots.txt"]
+
+[[grammars]]
+name = "ron"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-ron"
+rev = "78938553b93075e638035f624973083451b29055"
+query_dir = "runtime/queries/ron"
+aliases = []
+
+[[grammars]]
+name = "rpmspec"
+git = "https://gitlab.com/cryptomilk/tree-sitter-rpmspec"
+rev = "d0275cd1316d9b7a2e0fae028ce95a5a18741e1d"
+query_dir = "runtime/queries/rpmspec"
+aliases = ["spec"]
+
+[[grammars]]
+name = "rshtml"
+git = "https://github.com/rshtml/tree-sitter-rshtml"
+rev = "a1499c58d4692ec5bc0faed790b4e90ab0fb8996"
+query_dir = "runtime/queries/rshtml"
+aliases = []
+
+[[grammars]]
+name = "rst"
+git = "https://github.com/stsewd/tree-sitter-rst"
+rev = "6322f2629f29d8b442f4ca897904d407672ebb78"
+query_dir = "runtime/queries/rst"
+aliases = []
+
+[[grammars]]
+name = "ruby"
+git = "https://github.com/tree-sitter/tree-sitter-ruby"
+rev = "ad907a69da0c8a4f7a943a7fe012712208da6dee"
+query_dir = "runtime/queries/ruby"
+aliases = [
+    "gemspec",
+    "irb",
+    "jb",
+    "jbuilder",
+    "podspec",
+    "rabl",
+    "rake",
+    "rb",
+    "rbi",
+    "rbs",
+    "rjs",
+]
+
+[[grammars]]
+name = "rust"
+git = "https://github.com/tree-sitter/tree-sitter-rust"
+rev = "77a3747266f4d621d0757825e6b11edcbf991ca5"
+query_dir = "runtime/queries/rust"
+aliases = [
+    "rs",
+    "rust-format-args-macro",
+]
+
+[[grammars]]
+name = "rust-format-args"
+git = "https://github.com/nik-rev/tree-sitter-rust-format-args"
+rev = "84ffe550e261cf5ea40a0ec31849ba2443bae99f"
+query_dir = "runtime/queries/rust-format-args"
+aliases = []
+
+[[grammars]]
+name = "scala"
+git = "https://github.com/tree-sitter/tree-sitter-scala"
+rev = "4d081d98670ff6e98ca42c085294fc75eec15e1d"
+query_dir = "runtime/queries/scala"
+aliases = [
+    "sbt",
+    "sc",
+]
+
+[[grammars]]
+name = "scfg"
+git = "https://github.com/rockorager/tree-sitter-scfg"
+rev = "d850fd470445d73de318a21d734d1e09e29b773c"
+query_dir = "runtime/queries/scfg"
+aliases = []
+
+[[grammars]]
+name = "scheme"
+git = "https://github.com/6cdh/tree-sitter-scheme"
+rev = "c6cb7c7d7a04b3f5d999c28e2e9c0c31b2d50ece"
+query_dir = "runtime/queries/dune"
+aliases = [
+    "dune",
+    "hy",
+    "racket",
+    "rkt",
+    "rktd",
+    "rktl",
+    "scm",
+    "scrbl",
+    "sld",
+    "ss",
+    "zuo",
+]
+
+[[grammars]]
+name = "scss"
+git = "https://github.com/serenadeai/tree-sitter-scss"
+rev = "c478c6868648eff49eb04a4df90d703dc45b312a"
+query_dir = "runtime/queries/scss"
+aliases = []
+
+[[grammars]]
+name = "sgf"
+git = "https://github.com/lykahb/tree-sitter-sgf"
+rev = "b7e0fb713b29495722e056fdc3dc4f889f6d6ed2"
+query_dir = "runtime/queries/sgf"
+aliases = []
+
+[[grammars]]
+name = "shellcheckrc"
+git = "https://codeberg.org/kpbaks/tree-sitter-shellcheckrc"
+rev = "ad3da4e8f7fd72dcc5e93a6b89822c59a7cd10ff"
+query_dir = "runtime/queries/shellcheckrc"
+aliases = []
+
+[[grammars]]
+name = "slang"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-slang"
+rev = "327b1b821c255867a4fb724c8eee48887e3d014b"
+query_dir = "runtime/queries/slang"
+aliases = []
+
+[[grammars]]
+name = "slint"
+git = "https://github.com/slint-ui/tree-sitter-slint"
+rev = "f94f96ce093ec153f037228ac2fac5f1a3cd9ac6"
+query_dir = "runtime/queries/slint"
+aliases = []
+
+[[grammars]]
+name = "slisp"
+git = "https://git.sr.ht/~xguerin/tree-sitter-slisp"
+rev = "e14f62169145d9661c1ab16790f527770d157bb8"
+query_dir = "runtime/queries/slisp"
+aliases = ["sl"]
+
+[[grammars]]
+name = "smali"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-smali"
+rev = "fdfa6a1febc43c7467aa7e937b87b607956f2346"
+query_dir = "runtime/queries/smali"
+aliases = []
+
+[[grammars]]
+name = "smithy"
+git = "https://github.com/indoorvivants/tree-sitter-smithy"
+rev = "ec4fe14586f2b0a1bc65d6db17f8d8acd8a90433"
+query_dir = "runtime/queries/smithy"
+aliases = []
+
+[[grammars]]
+name = "sml"
+git = "https://github.com/Giorbo/tree-sitter-sml"
+rev = "bd4055d5554614520d4a0706b34dc0c317c6b608"
+query_dir = "runtime/queries/sml"
+aliases = [
+    "fun",
+    "sig",
+]
+
+[[grammars]]
+name = "snakemake"
+git = "https://github.com/osthomas/tree-sitter-snakemake"
+rev = "e909815acdbe37e69440261ebb1091ed52e1dec6"
+query_dir = "runtime/queries/snakemake"
+aliases = ["smk"]
+
+[[grammars]]
+name = "solidity"
+git = "https://github.com/JoranHonig/tree-sitter-solidity"
+rev = "048fe686cb1fde267243739b8bdbec8fc3a55272"
+query_dir = "runtime/queries/solidity"
+aliases = ["sol"]
+
+[[grammars]]
+name = "sourcepawn"
+git = "https://github.com/nilshelmig/tree-sitter-sourcepawn"
+rev = "5a8fdd446b516c81e218245c12129c6ad4bccfa2"
+query_dir = "runtime/queries/sourcepawn"
+aliases = [
+    "inc",
+    "sp",
+]
+
+[[grammars]]
+name = "spade"
+git = "https://codeberg.org/spade-lang/tree-sitter-spade"
+rev = "4eb2fc0173e48564421721f8e4f25a0fde89ac70"
+query_dir = "runtime/queries/spade"
+aliases = []
+
+[[grammars]]
+name = "spicedb"
+git = "https://github.com/jzelinskie/tree-sitter-spicedb"
+rev = "a4e4645651f86d6684c15dfa9931b7841dc52a66"
+query_dir = "runtime/queries/spicedb"
+aliases = ["zed"]
+
+[[grammars]]
+name = "sql"
+git = "https://github.com/DerekStride/tree-sitter-sql"
+rev = "851e9cb257ba7c66cc8c14214a31c44d2f1e954e"
+query_dir = "runtime/queries/sql"
+aliases = ["dsql"]
+
+[[grammars]]
+name = "ssh_client_config"
+git = "https://github.com/metio/tree-sitter-ssh-client-config"
+rev = "4abd07dc3884124d60e37e1f2dd98a1676859ae0"
+query_dir = "runtime/queries/ssh_client_config"
+aliases = []
+
+[[grammars]]
+name = "strace"
+git = "https://github.com/sigmaSd/tree-sitter-strace"
+rev = "2b18fdf9a01e7ec292cc6006724942c81beb7fd5"
+query_dir = "runtime/queries/strace"
+aliases = []
+
+[[grammars]]
+name = "strictdoc"
+git = "https://github.com/manueldiagostino/tree-sitter-strictdoc"
+rev = "bba07bd4d41835e3e5f456a9603ce601b1be1937"
+query_dir = "runtime/queries/strictdoc"
+aliases = [
+    "sdoc",
+    "sgra",
+]
+
+[[grammars]]
+name = "styx"
+git = "https://github.com/bearcove/styx"
+rev = "51feb2a67f211e806e5e2764bc5c06738a6c40d7"
+subpath = "crates/tree-sitter-styx"
+query_dir = "runtime/queries/styx"
+aliases = []
+
+[[grammars]]
+name = "supercollider"
+git = "https://github.com/madskjeldgaard/tree-sitter-supercollider"
+rev = "3b35bd0fded4423c8fb30e9585c7bacbcd0e8095"
+query_dir = "runtime/queries/supercollider"
+aliases = [
+    "quark",
+    "sc",
+    "scd",
+]
+
+[[grammars]]
+name = "svelte"
+git = "https://github.com/themixednuts/tree-sitter-htmlx"
+rev = "c9b9cc35709fff494a3a9e41cd9471b633649e45"
+subpath = "crates/tree-sitter-svelte"
+query_dir = "runtime/queries/svelte"
+aliases = []
+
+[[grammars]]
+name = "sway"
+git = "https://github.com/FuelLabs/tree-sitter-sway"
+rev = "e491a005ee1d310f4c138bf215afd44cfebf959c"
+query_dir = "runtime/queries/sway"
+aliases = ["sw"]
+
+[[grammars]]
+name = "swift"
+git = "https://github.com/alex-pinkus/tree-sitter-swift"
+rev = "7b7909f2f6b9414be0958275f4c8e5d69c3bca43"
+query_dir = "runtime/queries/swift"
+aliases = ["swiftinterface"]
+
+[[grammars]]
+name = "systemverilog"
+git = "https://github.com/gmlarumbe/tree-sitter-systemverilog"
+rev = "5f7a4121ef40e8d38317833968fe861fd6913d28"
+query_dir = "runtime/queries/systemverilog"
+aliases = [
+    "sv",
+    "svh",
+]
+
+[[grammars]]
+name = "t32"
+git = "https://gitlab.com/xasc/tree-sitter-t32"
+rev = "6da5e3cbabd376b566d04282005e52ffe67ef74a"
+query_dir = "runtime/queries/t32"
+aliases = ["cmm"]
+
+[[grammars]]
+name = "tablegen"
+git = "https://github.com/Flakebi/tree-sitter-tablegen"
+rev = "3e9c4822ab5cdcccf4f8aa9dcd42117f736d51d9"
+query_dir = "runtime/queries/tablegen"
+aliases = ["td"]
+
+[[grammars]]
+name = "tact"
+git = "https://github.com/tact-lang/tree-sitter-tact"
+rev = "ec57ab29c86d632639726631fb2bb178d23e1c91"
+query_dir = "runtime/queries/tact"
+aliases = []
+
+[[grammars]]
+name = "task"
+git = "https://github.com/alexanderbrevig/tree-sitter-task"
+rev = "f2cb435c5dbf3ee19493e224485d977cb2d36d8b"
+query_dir = "runtime/queries/task"
+aliases = []
+
+[[grammars]]
+name = "tcl"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-tcl"
+rev = "56ad1fa6a34ba800e5495d1025a9b0fda338d5b8"
+query_dir = "runtime/queries/tcl"
+aliases = []
+
+[[grammars]]
+name = "teal"
+git = "https://github.com/euclidianAce/tree-sitter-teal"
+rev = "3db655924b2ff1c54fdf6371b5425ea6b5dccefe"
+query_dir = "runtime/queries/teal"
+aliases = ["tl"]
+
+[[grammars]]
+name = "templ"
+git = "https://github.com/vrischmann/tree-sitter-templ"
+rev = "68d6707ed20159ae7525241b8161c126dc1c620c"
+query_dir = "runtime/queries/templ"
+aliases = []
+
+[[grammars]]
+name = "tera"
+git = "https://github.com/uncenter/tree-sitter-tera"
+rev = "3a38c368e806268daac9923a27e72bcafbbc16bb"
+query_dir = "runtime/queries/tera"
+aliases = []
+
+[[grammars]]
+name = "textproto"
+git = "https://github.com/PorterAtGoogle/tree-sitter-textproto"
+rev = "568471b80fd8793d37ed01865d8c2208a9fefd1b"
+query_dir = "runtime/queries/textproto"
+aliases = [
+    "textpb",
+    "txtpb",
+]
+
+[[grammars]]
+name = "thrift"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-thrift"
+rev = "68fd0d80943a828d9e6f49c58a74be1e9ca142cf"
+query_dir = "runtime/queries/thrift"
+aliases = []
+
+[[grammars]]
+name = "tlaplus"
+git = "https://github.com/tlaplus-community/tree-sitter-tlaplus"
+rev = "add40814fda369f6efd989977b2c498aaddde984"
+query_dir = "runtime/queries/tlaplus"
+aliases = ["tla"]
+
+[[grammars]]
+name = "todotxt"
+git = "https://github.com/arnarg/tree-sitter-todotxt"
+rev = "3937c5cd105ec4127448651a21aef45f52d19609"
+query_dir = "runtime/queries/todotxt"
+aliases = []
+
+[[grammars]]
+name = "tolk"
+git = "https://github.com/ton-blockchain/ton-language-server"
+rev = "e90dbb89f8ec8fbf8a16b61a31d6cc19a840de4f"
+subpath = "server/src/languages/tolk/tree-sitter-tolk"
+query_dir = "runtime/queries/tolk"
+aliases = []
+
+[[grammars]]
+name = "toml"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-toml"
+rev = "64b56832c2cffe41758f28e05c756a3a98d16f41"
+query_dir = "runtime/queries/toml"
+aliases = [
+    "cross-config",
+    "git-cliff-config",
+    "jjconfig",
+    "miseconfig",
+]
+
+[[grammars]]
+name = "tql"
+git = "https://github.com/tenzir/tree-sitter-tql"
+rev = "477e8ba230867b9135deb7af88ea96f160900173"
+query_dir = "runtime/queries/tql"
+aliases = []
+
+[[grammars]]
+name = "tsx"
+git = "https://github.com/tree-sitter/tree-sitter-typescript"
+rev = "75b3874edb2dc714fb1fd77a32013d0f8699989f"
+subpath = "tsx"
+query_dir = "runtime/queries/tsx"
+aliases = []
+
+[[grammars]]
+name = "twig"
+git = "https://github.com/gbprod/tree-sitter-twig"
+rev = "0afd9a6d808944e65a7be393e31868b85345735f"
+query_dir = "runtime/queries/twig"
+aliases = []
+
+[[grammars]]
+name = "typescript"
+git = "https://github.com/tree-sitter/tree-sitter-typescript"
+rev = "75b3874edb2dc714fb1fd77a32013d0f8699989f"
+subpath = "typescript"
+query_dir = "runtime/queries/typescript"
+aliases = [
+    "cts",
+    "mts",
+    "ts",
+]
+
+[[grammars]]
+name = "typespec"
+git = "https://github.com/happenslol/tree-sitter-typespec"
+rev = "0ee05546d73d8eb64635ed8125de6f35c77759fe"
+query_dir = "runtime/queries/typespec"
+aliases = ["tsp"]
+
+[[grammars]]
+name = "typst"
+git = "https://github.com/uben0/tree-sitter-typst"
+rev = "13863ddcbaa7b68ee6221cea2e3143415e64aea4"
+query_dir = "runtime/queries/typst"
+aliases = ["typ"]
+
+[[grammars]]
+name = "ungrammar"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-ungrammar"
+rev = "debd26fed283d80456ebafa33a06957b0c52e451"
+query_dir = "runtime/queries/ungrammar"
+aliases = ["ungram"]
+
+[[grammars]]
+name = "unison"
+git = "https://github.com/kylegoetz/tree-sitter-unison"
+rev = "3c97db76d3cdbd002dfba493620c2d5df2fd6fa9"
+query_dir = "runtime/queries/unison"
+aliases = ["u"]
+
+[[grammars]]
+name = "uxntal"
+git = "https://github.com/Jummit/tree-sitter-uxntal"
+rev = "1a44f8d31053096b79c52f10a39da12479edbf64"
+query_dir = "runtime/queries/uxntal"
+aliases = ["tal"]
+
+[[grammars]]
+name = "v"
+git = "https://github.com/vlang/v-analyzer"
+rev = "59a8889d84a293d7c0366d14c8dbb0eec24fe889"
+subpath = "tree_sitter_v"
+query_dir = "runtime/queries/v"
+aliases = [
+    "vsh",
+    "vv",
+]
+
+[[grammars]]
+name = "vala"
+git = "https://github.com/vala-lang/tree-sitter-vala"
+rev = "97e6db3c8c73b15a9541a458d8e797a07f588ef4"
+query_dir = "runtime/queries/vala"
+aliases = ["vapi"]
+
+[[grammars]]
+name = "varlink"
+git = "https://github.com/bachorp/tree-sitter-varlink"
+rev = "a80ecffda60b28612cbda652e38d97c1d8b90568"
+query_dir = "runtime/queries/varlink"
+aliases = []
+
+[[grammars]]
+name = "vento"
+git = "https://github.com/ventojs/tree-sitter-vento"
+rev = "3b32474bc29584ea214e4e84b47102408263fe0e"
+query_dir = "runtime/queries/vento"
+aliases = ["vto"]
+
+[[grammars]]
+name = "verilog"
+git = "https://github.com/tree-sitter/tree-sitter-verilog"
+rev = "4457145e795b363f072463e697dfe2f6973c9a52"
+query_dir = "runtime/queries/verilog"
+aliases = [
+    "v",
+    "vh",
+]
+
+[[grammars]]
+name = "vhdl"
+git = "https://github.com/jpt13653903/tree-sitter-vhdl"
+rev = "b8e31d110c6b039899d0f307792bdb0ff50ece2c"
+query_dir = "runtime/queries/vhdl"
+aliases = ["vhd"]
+
+[[grammars]]
+name = "vhs"
+git = "https://github.com/charmbracelet/tree-sitter-vhs"
+rev = "9534865e614c95eb9418e5e73f061c32fa4d9540"
+query_dir = "runtime/queries/vhs"
+aliases = ["tape"]
+
+[[grammars]]
+name = "vim"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-vim"
+rev = "f3cd62d8bd043ef20507e84bb6b4b53731ccf3a7"
+query_dir = "runtime/queries/vim"
+aliases = []
+
+[[grammars]]
+name = "vue"
+git = "https://github.com/ikatyang/tree-sitter-vue"
+rev = "91fe2754796cd8fba5f229505a23fa08f3546c06"
+query_dir = "runtime/queries/vue"
+aliases = []
+
+[[grammars]]
+name = "wast"
+git = "https://github.com/wasm-lsp/tree-sitter-wasm"
+rev = "2ca28a9f9d709847bf7a3de0942a84e912f59088"
+subpath = "wast"
+query_dir = "runtime/queries/wast"
+aliases = []
+
+[[grammars]]
+name = "wat"
+git = "https://github.com/wasm-lsp/tree-sitter-wasm"
+rev = "2ca28a9f9d709847bf7a3de0942a84e912f59088"
+subpath = "wat"
+query_dir = "runtime/queries/wat"
+aliases = []
+
+[[grammars]]
+name = "werk"
+git = "https://github.com/little-bonsai/tree-sitter-werk"
+rev = "92b0f7fe98465c4c435794a58e961306193d1c1e"
+query_dir = "runtime/queries/werk"
+aliases = []
+
+[[grammars]]
+name = "wesl"
+git = "https://github.com/wgsl-tooling-wg/tree-sitter-wesl"
+rev = "94ee6122680ef8ce2173853ca7c99f7aaeeda8ce"
+query_dir = "runtime/queries/wesl"
+aliases = []
+
+[[grammars]]
+name = "wgsl"
+git = "https://github.com/szebniok/tree-sitter-wgsl"
+rev = "272e89ef2aeac74178edb9db4a83c1ffef80a463"
+query_dir = "runtime/queries/wgsl"
+aliases = []
+
+[[grammars]]
+name = "wikitext"
+git = "https://github.com/santhoshtr/tree-sitter-wikitext"
+rev = "444214b31695e9dd4d32fb06247397fb8778a9d2"
+query_dir = "runtime/queries/wikitext"
+aliases = [
+    "mediawiki",
+    "wikimedia",
+]
+
+[[grammars]]
+name = "wit"
+git = "https://github.com/hh9527/tree-sitter-wit"
+rev = "c917790ab9aec50c5fd664cbfad8dd45110cfff3"
+query_dir = "runtime/queries/wit"
+aliases = []
+
+[[grammars]]
+name = "wren"
+git = "https://git.sr.ht/~jummit/tree-sitter-wren"
+rev = "6748694be32f11e7ec6b5faeb1b48ca6156d4e06"
+query_dir = "runtime/queries/wren"
+aliases = []
+
+[[grammars]]
+name = "xit"
+git = "https://github.com/synaptiko/tree-sitter-xit"
+rev = "7d7902456061bc2ad21c64c44054f67b5515734c"
+query_dir = "runtime/queries/xit"
+aliases = []
+
+[[grammars]]
+name = "xml"
+git = "https://github.com/RenjiSann/tree-sitter-xml"
+rev = "48a7c2b6fb9d515577e115e6788937e837815651"
+query_dir = "runtime/queries/xml"
+aliases = [
+    "ascx",
+    "atom",
+    "axaml",
+    "axml",
+    "bpmn",
+    "checkstyle",
+    "cpt",
+    "csl",
+    "csproj",
+    "dita",
+    "ditamap",
+    "dtml",
+    "fods",
+    "fodt",
+    "fsproj",
+    "fxml",
+    "gir",
+    "glif",
+    "gml",
+    "gpx",
+    "iml",
+    "isml",
+    "itermcolors",
+    "jmx",
+    "kml",
+    "launch",
+    "menu",
+    "mobileconfig",
+    "mpd",
+    "msbuild",
+    "musicxml",
+    "mxml",
+    "ncx",
+    "nuspec",
+    "opml",
+    "osc",
+    "osm",
+    "plist",
+    "policy",
+    "pproj",
+    "proj",
+    "props",
+    "pt",
+    "publishsettings",
+    "pubxml",
+    "rbxlx",
+    "rbxmx",
+    "resx",
+    "rng",
+    "rss",
+    "shproj",
+    "smil",
+    "storyboard",
+    "sublime-snippet",
+    "svg",
+    "targets",
+    "terminal",
+    "tld",
+    "tmx",
+    "ui",
+    "vbproj",
+    "vcxproj",
+    "wixproj",
+    "wsdl",
+    "wxi",
+    "wxs",
+    "xaml",
+    "xbl",
+    "xib",
+    "xlf",
+    "xliff",
+    "xmp",
+    "xoml",
+    "xpdl",
+    "xrc",
+    "xsd",
+    "xsl",
+    "xul",
+]
+
+[[grammars]]
+name = "xtc"
+git = "https://github.com/Alexis-Lapierre/tree-sitter-xtc"
+rev = "7bc11b736250c45e25cfb0215db2f8393779957e"
+query_dir = "runtime/queries/xtc"
+aliases = [
+    "xoa",
+    "xpc",
+]
+
+[[grammars]]
+name = "xwiki"
+git = "https://github.com/battesonb/tree-sitter-xwiki"
+rev = "58010c62c63fabbf5a94762bfa8849d4733d1f6c"
+query_dir = "runtime/queries/xwiki"
+aliases = []
+
+[[grammars]]
+name = "yaml"
+git = "https://github.com/ikatyang/tree-sitter-yaml"
+rev = "0e36bed171768908f331ff7dff9d956bae016efb"
+query_dir = "runtime/queries/yaml"
+aliases = [
+    "bu",
+    "docker-compose",
+    "github-action",
+    "gitlab-ci",
+    "nestedtext",
+    "nt",
+    "sublime-syntax",
+    "woodpecker-ci",
+    "yml",
+]
+
+[[grammars]]
+name = "yara"
+git = "https://github.com/egibs/tree-sitter-yara"
+rev = "eb3ede203275c38000177f72ec0f9965312806ef"
+query_dir = "runtime/queries/yara"
+aliases = ["yar"]
+
+[[grammars]]
+name = "yuck"
+git = "https://github.com/Philipp-M/tree-sitter-yuck"
+rev = "6c60112b3b3e739fb1ca4a8ea4bea2b6ffe11318"
+query_dir = "runtime/queries/yuck"
+aliases = []
+
+[[grammars]]
+name = "zig"
+git = "https://github.com/tree-sitter-grammars/tree-sitter-zig"
+rev = "6479aa13f32f701c383083d8b28360ebd682fb7d"
+query_dir = "runtime/queries/zig"
+aliases = ["zon"]

@@ -1,0 +1,13 @@
+name: Rust
+on: [push, pull_request]
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: sudo apt-get update && sudo apt-get install -y libwebkitgtk-6.0-dev libgtk-4-dev
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
