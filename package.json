@@ -3,8 +3,15 @@
   "version": "0.1.0",
   "description": "Render AI-agent conversation turns as a styled HTML page",
   "type": "module",
-  "private": true,
+  "license": "MIT",
+  "author": "Tristan Misko",
+  "repository": { "type": "git", "url": "git+https://github.com/tjmisko/limpid.git" },
+  "homepage": "https://github.com/tjmisko/limpid",
+  "keywords": ["pi-package", "claude-code", "codex", "markdown", "html"],
+  "engines": { "node": ">=22.6" },
   "bin": { "limpid": "./limpid" },
+  "files": ["limpid", "src", "integrations", ".claude-plugin", "install.sh", "LICENSE"],
+  "pi": { "extensions": ["./integrations/pi/read.ts"] },
   "scripts": { "test": "node --test --no-warnings=ExperimentalWarning \"test/*.test.ts\"" },
   "dependencies": { "marked": "^15.0.0" }
 }
