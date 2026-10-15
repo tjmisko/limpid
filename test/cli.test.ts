@@ -1,7 +1,7 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -150,12 +150,78 @@ function runWithHome(home: string, args: string[], stdin: string, path?: string)
 	return { code: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
-test("should exit 1 when htmlview cannot be found and opening is requested", () => {
+function fakeViewer(dir: string, name: string, marker: string): string {
+	mkdirSync(dir, { recursive: true });
+	const script = join(dir, name);
+	writeFileSync(script, `#!/bin/sh\necho "$@" >> '${marker}'\n`);
+	chmodSync(script, 0o755);
+	return script;
+}
+
+function waitFor(path: string): string | undefined {
+	for (let i = 0; i < 50; i++) {
+		if (existsSync(path)) return readFileSync(path, "utf8");
+		spawnSync("sleep", ["0.1"]);
+	}
+	return undefined;
+}
+
+function runWithEnv(env: Record<string, string>, args: string[], stdin: string) {
+	const result = spawnSync(process.execPath, ["--no-warnings=ExperimentalWarning", CLI, ...args], {
+		input: stdin,
+		encoding: "utf8",
+		env: { ...process.env, LIMPID_VIEWER: "", ...env },
+	});
+	return { code: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+test("should exit 1 when no viewer can be found and opening is requested", () => {
 	const home = mkdtempSync(join(SCRATCH, "home-"));
 	const result = runWithHome(home, [], turns("a"), "/nonexistent");
 	assert.equal(result.code, 1);
-	assert.match(result.stderr, /htmlview was not found/);
+	assert.match(result.stderr, /No viewer found/);
 	assert.equal(result.stdout, "");
+});
+
+test("should launch LIMPID_VIEWER with its arguments and the file when it is set", () => {
+	const dir = mkdtempSync(join(SCRATCH, "viewer-"));
+	const marker = join(dir, "marker");
+	const script = fakeViewer(dir, "myviewer", marker);
+	const result = runWithEnv({ LIMPID_VIEWER: `${script} --flag`, PATH: "/nonexistent" }, ["--out", out], turns("a"));
+	assert.equal(result.code, 0, result.stderr);
+	const file = JSON.parse(result.stdout).file as string;
+	assert.equal(waitFor(marker)?.trim(), `--flag ${file}`);
+});
+
+test("should prefer htmlview over xdg-open when LIMPID_VIEWER is unset", () => {
+	const dir = mkdtempSync(join(SCRATCH, "viewer-"));
+	const htmlMarker = join(dir, "html");
+	const xdgMarker = join(dir, "xdg");
+	fakeViewer(join(dir, "bin"), "htmlview", htmlMarker);
+	fakeViewer(join(dir, "bin"), "xdg-open", xdgMarker);
+	const result = runWithEnv({ PATH: join(dir, "bin") }, ["--out", out], turns("a"));
+	assert.equal(result.code, 0, result.stderr);
+	assert.ok(waitFor(htmlMarker));
+	assert.ok(!existsSync(xdgMarker));
+});
+
+test("should fall back to xdg-open when htmlview is absent", { skip: process.platform === "darwin" }, () => {
+	const dir = mkdtempSync(join(SCRATCH, "viewer-"));
+	const marker = join(dir, "xdg");
+	fakeViewer(join(dir, "bin"), "xdg-open", marker);
+	const home = mkdtempSync(join(SCRATCH, "home-"));
+	const result = runWithEnv({ PATH: join(dir, "bin"), HOME: home }, ["--out", out], turns("a"));
+	assert.equal(result.code, 0, result.stderr);
+	assert.ok(waitFor(marker));
+});
+
+test("should use ~/.local/bin/htmlview when it is not on PATH", () => {
+	const home = mkdtempSync(join(SCRATCH, "home-"));
+	const marker = join(home, "marker");
+	fakeViewer(join(home, ".local", "bin"), "htmlview", marker);
+	const result = runWithEnv({ PATH: "/nonexistent", HOME: home }, ["--out", out], turns("a"));
+	assert.equal(result.code, 0, result.stderr);
+	assert.ok(waitFor(marker));
 });
 
 test("should write under ~/.cache/limpid and keep the newest 50 files when using the default directory", () => {

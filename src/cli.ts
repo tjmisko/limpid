@@ -1,23 +1,9 @@
-import { spawn } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
-import { indexTurns, renderPageFor } from "./render.ts";
+import { readFileSync } from "node:fs";
 import type { InputTurn } from "./render.ts";
-import { parseTurnSpec, resolveTurnSpec } from "./spec.ts";
-import { findExecutable } from "./util.ts";
+import { Fail, renderAndOpen } from "./pipeline.ts";
 
-const USAGE = "Usage: limpid [--spec <spec>] [--no-open] [--out <dir>]  (JSON turns on stdin)";
-const DEFAULT_DIR = join(homedir(), ".cache", "limpid");
-const KEEP_FILES = 50;
-
-class Fail extends Error {
-	code: number;
-	constructor(message: string, code = 1) {
-		super(message);
-		this.code = code;
-	}
-}
+const USAGE =
+	"Usage: limpid [--spec <spec>] [--no-open] [--out <dir>]  (JSON turns on stdin)\n       limpid codex [spec] [--no-open] [--out <dir>]";
 
 type Options = { spec: string; open: boolean; out?: string };
 
@@ -67,62 +53,22 @@ function readInput(): { model?: string; turns: InputTurn[] } {
 	};
 }
 
-/** Keep only the newest KEEP_FILES `*.html` files in `dir`. */
-function prune(dir: string): void {
-	try {
-		const files = readdirSync(dir)
-			.filter((name) => name.endsWith(".html"))
-			.map((name) => ({ name, mtime: statSync(join(dir, name)).mtimeMs }))
-			.sort((a, b) => b.mtime - a.mtime || (a.name < b.name ? 1 : -1));
-		for (const stale of files.slice(KEEP_FILES)) unlinkSync(join(dir, stale.name));
-	} catch {
-		/* pruning is best effort */
-	}
-}
-
-function open(htmlview: string, file: string): void {
-	const setsid = findExecutable("setsid", ["/usr/bin/setsid"]);
-	const [command, args] = setsid ? [setsid, ["-f", htmlview, file]] : [htmlview, [file]];
-	const child = spawn(command, args, { detached: true, stdio: "ignore" });
-	child.on("error", () => {});
-	child.unref();
-}
-
 async function main(): Promise<void> {
-	const options = parseArgs(process.argv.slice(2));
+	const argv = process.argv.slice(2);
+	if (argv[0] === "codex") {
+		const { runCodexCommand } = await import("./codex-command.ts");
+		await runCodexCommand(argv.slice(1));
+		return;
+	}
+
+	const options = parseArgs(argv);
 	if (options === "help") {
 		process.stdout.write(`${USAGE}\n`);
 		return;
 	}
 
-	const parsed = parseTurnSpec(options.spec);
-	if (!parsed.ok) throw new Fail(parsed.error);
-
 	const input = readInput();
-	const turns = indexTurns(input.turns);
-	const resolved = resolveTurnSpec(parsed.spec, turns.length);
-	if (!resolved.ok) throw new Fail(resolved.error);
-
-	let htmlview: string | undefined;
-	if (options.open) {
-		htmlview = findExecutable("htmlview", [join(homedir(), ".local", "bin", "htmlview")]);
-		if (!htmlview) throw new Fail("htmlview was not found on PATH or in ~/.local/bin.");
-	}
-
-	const now = new Date();
-	const { html, context } = await renderPageFor({ turns, resolved, model: input.model, now });
-
-	const dir = options.out ? resolve(options.out) : DEFAULT_DIR;
-	const file = join(dir, `turns-${now.toISOString().replace(/[:.]/g, "-")}.html`);
-	try {
-		mkdirSync(dir, { recursive: true });
-		writeFileSync(file, html, "utf8");
-	} catch (error) {
-		throw new Fail(`Could not write ${file}: ${(error as Error).message}`);
-	}
-	if (!options.out) prune(dir);
-
-	if (htmlview) open(htmlview, file);
+	const { file, context } = await renderAndOpen({ ...input, spec: options.spec, open: options.open, out: options.out });
 	process.stdout.write(`${JSON.stringify({ file, context })}\n`);
 }
 
