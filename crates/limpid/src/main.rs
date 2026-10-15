@@ -22,7 +22,10 @@ fn run() -> Result<(), Box<dyn Error>> {
         if arguments.len() < 2 || arguments.len() > 3 {
             return Err("hook requires an agent and optional JSON payload".into());
         }
-        return hook(&arguments[1], arguments.get(2).map(|value| value.as_os_str()));
+        return hook(
+            &arguments[1],
+            arguments.get(2).map(|value| value.as_os_str()),
+        );
     }
     let mut args = arguments.into_iter();
     let mut out = None;
@@ -199,7 +202,10 @@ fn hook(
         return Err("hook requires claude or codex".into());
     }
     let input = if let Some(value) = payload_argument {
-        value.to_str().ok_or("hook payload is not UTF-8")?.to_owned()
+        value
+            .to_str()
+            .ok_or("hook payload is not UTF-8")?
+            .to_owned()
     } else {
         let mut input = String::new();
         std::io::stdin().read_to_string(&mut input)?;

@@ -132,10 +132,21 @@ fn open_request(
             .iter()
             .find(|state| state.request.borrow().slot.as_ref() == Some(slot))
     {
+        let old_source = source_identity(&existing.request.borrow())?;
+        let new_source = source_identity(&request)?;
         let view = existing.view.clone();
         let active_request = existing.request.clone();
         let restore_anchor = existing.restore_anchor.clone();
         let window = existing.window.clone();
+        if old_source.is_none() || old_source != new_source {
+            *restore_anchor.borrow_mut() = None;
+            *active_request.borrow_mut() = request.clone();
+            view.load_uri(&uri);
+            if request.origin == limpid_core::transport::Origin::User {
+                window.present();
+            }
+            return Ok(());
+        }
         existing.view.evaluate_javascript(
             "window.limpidCaptureAnchor()",
             None,
@@ -157,7 +168,7 @@ fn open_request(
         return Ok(());
     }
     let manager = webkit6::UserContentManager::new();
-    for name in ["reply", "comment", "mermaid-svg", "review", "send"] {
+    for name in ["reply", "comment", "mermaid-svg", "review", "send", "close"] {
         manager.register_script_message_handler(name, None);
     }
     let active_request = Rc::new(RefCell::new(request.clone()));
@@ -348,6 +359,12 @@ fn open_request(
         .default_height(800)
         .build();
     window.set_child(Some(&view));
+    let close_window = window.downgrade();
+    manager.connect_script_message_received(Some("close"), move |_, _| {
+        if let Some(window) = close_window.upgrade() {
+            window.close();
+        }
+    });
     let title_window = window.clone();
     view.connect_title_notify(move |view| {
         if let Some(title) = view.title() {
@@ -375,6 +392,16 @@ fn open_request(
         window.present();
     }
     Ok(())
+}
+
+fn source_identity(request: &Handoff) -> Result<Option<std::path::PathBuf>, Box<dyn Error>> {
+    if let Some(source) = &request.source {
+        return Ok(Some(source.clone()));
+    }
+    Ok(page_meta(request)?
+        .get("source")
+        .and_then(serde_json::Value::as_str)
+        .map(std::path::PathBuf::from))
 }
 
 fn refresh_file(state: &WindowState) -> Result<(), Box<dyn Error>> {

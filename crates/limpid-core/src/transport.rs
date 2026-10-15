@@ -157,4 +157,40 @@ mod tests {
             .unwrap();
         assert!(receive(server).is_none());
     }
+
+    #[test]
+    fn handoff_rejects_malformed_enums_and_missing_required_fields() {
+        for payload in [
+            r#"{"path":"/tmp/a.html","theme":"sepia"}"#,
+            r#"{"path":"/tmp/a.html","theme":"dark","origin":"other"}"#,
+            r#"{"path":"/tmp/a.html"}"#,
+            r#"{"theme":"dark"}"#,
+            "garbage",
+        ] {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            client.write_all(payload.as_bytes()).unwrap();
+            client.write_all(b"\n").unwrap();
+            assert!(receive(server).is_none(), "accepted {payload}");
+        }
+    }
+
+    #[test]
+    fn handoff_limits_payload_size_and_preserves_optional_fields() {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client
+            .write_all(b"{\"path\":\"/tmp/a.html\",\"theme\":\"dark\"}\n")
+            .unwrap();
+        let request = receive(server).unwrap();
+        assert_eq!(request.origin, Origin::User);
+        assert!(request.slot.is_none());
+        assert!(request.pane.is_none());
+
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let oversized = "x".repeat(1 << 20);
+        let payload = format!("{{\"path\":\"{oversized}\",\"theme\":\"dark\"}}\n");
+        std::thread::spawn(move || {
+            let _ = client.write_all(payload.as_bytes());
+        });
+        assert!(receive(server).is_none());
+    }
 }

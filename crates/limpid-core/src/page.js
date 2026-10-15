@@ -256,6 +256,7 @@
       return;
     }
     if (event.key === 'G') { window.scrollTo({top: document.body.scrollHeight}); event.preventDefault(); return; }
+    if (event.key === 'q') { window.webkit?.messageHandlers?.close?.postMessage({}); event.preventDefault(); return; }
     if (event.key === '/') { openSearch(); event.preventDefault(); return; }
     if (event.key === 'n' || event.key === 'N') { find(event.key === 'N'); event.preventDefault(); return; }
     if (event.key === 'r') { location.reload(); event.preventDefault(); return; }
