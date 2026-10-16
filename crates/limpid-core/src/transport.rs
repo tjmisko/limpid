@@ -73,6 +73,9 @@ pub fn receive(stream: UnixStream) -> Option<Handoff> {
         .take(1 << 20)
         .read_until(b'\n', &mut bytes)
         .ok()?;
+    if bytes.last() != Some(&b'\n') {
+        return None;
+    }
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -192,5 +195,63 @@ mod tests {
             let _ = client.write_all(payload.as_bytes());
         });
         assert!(receive(server).is_none());
+    }
+
+    #[test]
+    fn rejects_incomplete_and_overlong_lines() {
+        for payload in [
+            b"{\"path\":\"/tmp/a.html\",\"theme\":\"dark\"}".to_vec(),
+            format!(
+                "{{\"path\":\"/tmp/{}\",\"theme\":\"dark\"}}\n",
+                "a".repeat(1 << 20)
+            )
+            .into_bytes(),
+        ] {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            std::thread::spawn(move || {
+                let _ = client.write_all(&payload);
+            });
+            assert!(receive(server).is_none());
+        }
+    }
+
+    #[test]
+    fn server_skips_bad_handoffs_and_delivers_the_next_valid_one() {
+        let directory = std::env::temp_dir().join(format!(
+            "limpid-transport-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let socket = directory.join("handoff.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || serve(listener, sender));
+
+        let mut invalid = UnixStream::connect(&socket).unwrap();
+        invalid.write_all(b"not json\n").unwrap();
+        drop(invalid);
+
+        let request = Handoff {
+            path: "/tmp/valid.html".into(),
+            slot: Some("session".into()),
+            origin: Origin::Hook,
+            theme: Scheme::Light,
+            pane: Some("7".into()),
+            source: None,
+            source_hash: None,
+        };
+        send(&socket, &request).unwrap();
+        assert_eq!(
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap(),
+            request
+        );
+        drop(receiver);
+        send(&socket, &request).unwrap();
+        server.join().unwrap();
+        std::fs::remove_file(socket).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 }

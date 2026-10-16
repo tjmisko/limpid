@@ -630,3 +630,32 @@ fn cache_mermaid(hash: &str, svg: &str) -> Result<(), Box<dyn Error>> {
     fs::write(directory.join(format!("{hash}.svg")), svg)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bind_socket_replaces_stale_socket_and_rejects_live_host() {
+        let directory = std::env::temp_dir().join(format!(
+            "limpid-host-socket-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("handoff.sock");
+
+        let stale = UnixListener::bind(&path).unwrap();
+        drop(stale);
+        let live = bind_socket(&path).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(bind_socket(&path).is_err());
+
+        drop(live);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+}
