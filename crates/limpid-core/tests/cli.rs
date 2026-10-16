@@ -179,11 +179,15 @@ fn pi_page_path_is_stable_and_session_specific() {
 }
 
 #[test]
-fn feedback_reads_agent_sidecars_and_file_annotations() {
+fn feedback_reads_agent_pages_and_file_annotations() {
     let temp = std::env::temp_dir().join(format!("limpid-feedback-cli-{}", std::process::id()));
     fs::create_dir_all(&temp).unwrap();
     let page = temp.join("pi-abc.html");
-    fs::write(&page, "<html></html>").unwrap();
+    fs::write(
+        &page,
+        r#"<html><body><script type="application/json" id="limpid-annotations">{"replies":{"q1":"SQLite"},"comments":{}}</script></body></html>"#,
+    )
+    .unwrap();
     let mut meta = page.clone();
     meta.set_extension("meta.json");
     fs::write(
@@ -196,13 +200,6 @@ fn feedback_reads_agent_sidecars_and_file_annotations() {
             "title": "Plan",
         }))
         .unwrap(),
-    )
-    .unwrap();
-    let mut sidecar = page.clone();
-    sidecar.set_extension("replies.json");
-    fs::write(
-        &sidecar,
-        br#"{"replies":{"q1":"SQLite"},"comments":{}}"#,
     )
     .unwrap();
 

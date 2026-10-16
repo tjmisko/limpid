@@ -277,6 +277,66 @@ impl AgentReplies {
     }
 }
 
+pub const ANNOTATIONS_ID: &str = "limpid-annotations";
+
+/// The page block that carries replies and comments inside the artifact.
+pub fn annotations_block(replies: &AgentReplies) -> String {
+    let json = serde_json::to_string(replies)
+        .unwrap_or_else(|_| "{}".into())
+        .replace('<', "\\u003c");
+    format!("<script type=\"application/json\" id=\"{ANNOTATIONS_ID}\">{json}</script>")
+}
+
+/// Read the embedded annotations, or an empty set when the page has none.
+pub fn read_annotations(html: &str) -> AgentReplies {
+    let marker = format!("id=\"{ANNOTATIONS_ID}\"");
+    let Some(open) = html.find(&marker) else {
+        return AgentReplies::default();
+    };
+    let Some(head) = html[open..].find('>') else {
+        return AgentReplies::default();
+    };
+    let start = open + head + 1;
+    let Some(tail) = html[start..].find("</script>") else {
+        return AgentReplies::default();
+    };
+    serde_json::from_str(html[start..start + tail].trim()).unwrap_or_default()
+}
+
+/// Replace the embedded annotations block, appending one when absent.
+pub fn write_annotations(html: &str, replies: &AgentReplies) -> String {
+    let block = annotations_block(replies);
+    let marker = format!("id=\"{ANNOTATIONS_ID}\"");
+    if let Some(open) = html.find(&marker)
+        && let Some(tag) = html[..open].rfind("<script")
+        && let Some(close) = html[open..].find("</script>")
+    {
+        let end = open + close + "</script>".len();
+        return format!("{}{}{}", &html[..tag], block, &html[end..]);
+    }
+    if let Some(body) = html.rfind("</body>") {
+        return format!("{}{}{}", &html[..body], block, &html[body..]);
+    }
+    format!("{html}{block}")
+}
+
+pub fn read_annotations_file(path: &Path) -> Result<AgentReplies, Box<dyn std::error::Error>> {
+    match fs::read_to_string(path) {
+        Ok(html) => Ok(read_annotations(&html)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AgentReplies::default()),
+        Err(error) => Err(Box::new(error)),
+    }
+}
+
+pub fn write_annotations_file(
+    path: &Path,
+    replies: &AgentReplies,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let html = fs::read_to_string(path)?;
+    atomic_write(path, write_annotations(&html, replies).as_bytes())?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct FileRevision {
     pub path: PathBuf,
@@ -768,6 +828,33 @@ mod tests {
         replies.save(&path).unwrap();
         assert_eq!(AgentReplies::load(&path).unwrap(), replies);
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn embedded_annotations_round_trip() {
+        let mut replies = AgentReplies::default();
+        replies.replies.insert("q1".into(), "SQLite".into());
+        replies.comments.insert(
+            "turn-0:12-34".into(),
+            Comment {
+                text: "Fix <this> & that".into(),
+                quote: "Use the existing pool".into(),
+                start_line: 42,
+                end_line: 48,
+            },
+        );
+        let page = write_annotations("<html><body><p>Body</p></body></html>", &replies);
+        assert!(page.contains("<p>Body</p>"));
+        assert!(!page.contains("Fix <this>"));
+        assert_eq!(read_annotations(&page), replies);
+        let again = write_annotations(&page, &replies);
+        assert_eq!(read_annotations(&again), replies);
+        assert_eq!(again.matches("limpid-annotations").count(), 1);
+    }
+
+    #[test]
+    fn missing_annotations_are_empty() {
+        assert_eq!(read_annotations("<html></html>"), AgentReplies::default());
     }
 
     #[test]

@@ -1254,6 +1254,16 @@ body.limpid-visual .limpid-focused::before{display:none}
     }
     if (event.key === 'Escape') { document.activeElement?.blur(); event.preventDefault(); }
   });
+  // Saved replies and comments ride in the page itself, after this script.
+  const restore = () => {
+    let stored = {};
+    try { stored = JSON.parse(document.getElementById('limpid-annotations')?.textContent || '{}'); }
+    catch { stored = {}; }
+    if (stored.replies) window.limpidRestoreReplies(stored.replies);
+    if (stored.comments) window.limpidRestoreComments(stored.comments);
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', restore, {once: true});
+  else restore();
   requestAnimationFrame(() => { initFocus(); updateScrollSpy(); });
 })();
 </script></body></html>

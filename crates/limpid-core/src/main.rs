@@ -254,21 +254,17 @@ fn prune_agent_pages(cache: &Path) -> Result<(), Box<dyn Error>> {
     let keep = 50usize.saturating_sub(protected.len());
     for page in unprotected.into_iter().skip(keep) {
         std::fs::remove_file(&page)?;
-        for extension in ["meta.json", "replies.json"] {
-            let mut associated = page.clone();
-            associated.set_extension(extension);
-            if associated.exists() {
-                std::fs::remove_file(associated)?;
-            }
+        let mut associated = page.clone();
+        associated.set_extension("meta.json");
+        if associated.exists() {
+            std::fs::remove_file(associated)?;
         }
     }
     Ok(())
 }
 
 fn page_has_feedback(page: &Path) -> bool {
-    let mut path = page.to_path_buf();
-    path.set_extension("replies.json");
-    match limpid_core::replies::AgentReplies::load(&path) {
+    match limpid_core::replies::read_annotations_file(page) {
         Ok(replies) => !replies.replies.is_empty() || !replies.comments.is_empty(),
         Err(_) => false,
     }
@@ -374,8 +370,6 @@ fn feedback(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
             let mut meta_path = page.clone();
             meta_path.set_extension("meta.json");
             let meta: PageMeta = serde_json::from_slice(&std::fs::read(&meta_path)?)?;
-            let mut sidecar = page.clone();
-            sidecar.set_extension("replies.json");
             let spec = if meta.turn_spec.is_empty() {
                 "0".to_owned()
             } else {
@@ -397,7 +391,7 @@ fn feedback(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
                 title,
                 meta.agent.clone(),
                 context,
-                limpid_core::replies::AgentReplies::load(&sidecar)?,
+                limpid_core::replies::read_annotations_file(&page)?,
             )
         };
     if parsed.json {
@@ -501,14 +495,22 @@ mod tests {
                 )
                 .unwrap();
         }
-        let protected = cache.join("pi-00.replies.json");
+        let protected = cache.join("pi-00.html");
         std::fs::write(
             &protected,
-            br#"{"replies":{"q1":"keep"},"comments":{}}"#,
+            r#"<html><body><script type="application/json" id="limpid-annotations">{"replies":{"q1":"keep"},"comments":{}}</script></body></html>"#,
         )
         .unwrap();
-        let corrupt = cache.join("pi-02.replies.json");
-        std::fs::write(&corrupt, b"not json").unwrap();
+        let corrupt = cache.join("pi-02.html");
+        std::fs::write(&corrupt, b"<html>not json</html>").unwrap();
+        File::open(&protected)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(base))
+            .unwrap();
+        File::open(&corrupt)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(base + std::time::Duration::from_secs(2)))
+            .unwrap();
 
         prune_agent_pages(&cache).unwrap();
 

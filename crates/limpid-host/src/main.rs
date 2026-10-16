@@ -200,7 +200,6 @@ fn open_request(
     } else {
         builder.web_context(context).build()
     };
-    let restore_request = active_request.clone();
     let anchor_on_load = restore_anchor.clone();
     view.connect_load_changed(move |view, event| {
         if event != webkit6::LoadEvent::Finished {
@@ -215,34 +214,6 @@ fn open_request(
                 |_| {},
             );
         }
-        let request = restore_request.borrow();
-        if request.source.is_some() {
-            return;
-        }
-        let mut path = request.path.clone();
-        path.set_extension("replies.json");
-        if !path.exists() {
-            return;
-        }
-        let Ok(replies) = limpid_core::replies::AgentReplies::load(&path) else {
-            return;
-        };
-        let Ok(json) = serde_json::to_string(&replies.replies) else {
-            return;
-        };
-        let Ok(comments) = serde_json::to_string(&replies.comments) else {
-            return;
-        };
-        view.evaluate_javascript(
-            &format!(
-                "if (typeof window.limpidRestoreReplies === 'function') window.limpidRestoreReplies({json}); \
-                 if (typeof window.limpidRestoreComments === 'function') window.limpidRestoreComments({comments})"
-            ),
-            None,
-            None,
-            None::<&gio::Cancellable>,
-            |_| {},
-        );
     });
     let reply_request = active_request.clone();
     let reply_view = view.clone();
@@ -691,11 +662,9 @@ fn save_reply(
         request.source_hash = Some(limpid_core::replies::source_hash(updated.as_bytes()));
         return Ok(true);
     } else {
-        let mut path = request.path.clone();
-        path.set_extension("replies.json");
-        let mut replies = limpid_core::replies::AgentReplies::load(&path)?;
+        let mut replies = limpid_core::replies::read_annotations_file(&request.path)?;
         replies.replies.insert(field.to_owned(), text.to_owned());
-        replies.save(&path)?;
+        limpid_core::replies::write_annotations_file(&request.path, &replies)?;
     }
     Ok(false)
 }
@@ -733,9 +702,7 @@ fn save_comment(
         request.source_hash = Some(limpid_core::replies::source_hash(updated.as_bytes()));
         return Ok(true);
     }
-    let mut path = request.path.clone();
-    path.set_extension("replies.json");
-    let mut replies = limpid_core::replies::AgentReplies::load(&path)?;
+    let mut replies = limpid_core::replies::read_annotations_file(&request.path)?;
     let key = if turn.is_empty() {
         range.to_owned()
     } else {
@@ -750,7 +717,7 @@ fn save_comment(
             end_line: line_end,
         },
     );
-    replies.save(&path)?;
+    limpid_core::replies::write_annotations_file(&request.path, &replies)?;
     Ok(false)
 }
 
@@ -758,9 +725,7 @@ fn has_feedback(request: &Handoff) -> Result<bool, Box<dyn Error>> {
     let replies = if let Some(source) = &request.source {
         limpid_core::replies::from_file_annotations(&fs::read_to_string(source)?)
     } else {
-        let mut path = request.path.clone();
-        path.set_extension("replies.json");
-        limpid_core::replies::AgentReplies::load(&path)?
+        limpid_core::replies::read_annotations_file(&request.path)?
     };
     Ok(replies.has_feedback())
 }
@@ -793,9 +758,7 @@ fn compose_review(request: &Handoff, title: &str) -> Result<String, Box<dyn Erro
     let replies = if let Some(source) = &request.source {
         limpid_core::replies::from_file_annotations(&fs::read_to_string(source)?)
     } else {
-        let mut path = request.path.clone();
-        path.set_extension("replies.json");
-        limpid_core::replies::AgentReplies::load(&path)?
+        limpid_core::replies::read_annotations_file(&request.path)?
     };
     Ok(limpid_core::replies::compose_message(
         title, agent, &context, &replies,
@@ -966,9 +929,7 @@ fn save_pending(
         rerender_file(request, &source)?;
         Ok(true)
     } else {
-        let mut path = request.path.clone();
-        path.set_extension("replies.json");
-        let mut saved = limpid_core::replies::AgentReplies::load(&path)?;
+        let mut saved = limpid_core::replies::read_annotations_file(&request.path)?;
         for (field, text) in replies.replies {
             saved.replies.insert(field, text);
         }
@@ -980,7 +941,7 @@ fn save_pending(
                 saved.comments.remove(key);
             }
         }
-        saved.save(&path)?;
+        limpid_core::replies::write_annotations_file(&request.path, &saved)?;
         Ok(false)
     }
 }
@@ -1124,7 +1085,6 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         let page = directory.join("agent.html");
         let meta = directory.join("agent.meta.json");
-        let replies = directory.join("agent.replies.json");
         let delivered = directory.join("delivered.txt");
         let context = directory.join("context.txt");
         let source = directory.join("transcript.jsonl");
@@ -1150,7 +1110,7 @@ mod tests {
 
         assert!(!save_reply(&mut request, "q1", "Use SQLite", "10-20").unwrap());
         assert!(!save_comment(&mut request, "30-40", "t0", "quoted", "Check size", 3, 4).unwrap());
-        let stored = limpid_core::replies::AgentReplies::load(&replies).unwrap();
+        let stored = limpid_core::replies::read_annotations_file(&page).unwrap();
         assert_eq!(stored.replies["q1"], "Use SQLite");
         assert_eq!(stored.comments["t0:30-40"].text, "Check size");
         let review = compose_review(&request, "Design decision").unwrap();
@@ -1173,7 +1133,6 @@ mod tests {
 
         fs::remove_file(context).unwrap();
         fs::remove_file(delivered).unwrap();
-        fs::remove_file(replies).unwrap();
         fs::remove_file(meta).unwrap();
         fs::remove_file(page).unwrap();
         fs::remove_dir(directory).unwrap();
@@ -1267,12 +1226,9 @@ mod tests {
         ));
         fs::create_dir_all(&directory).unwrap();
         let page = directory.join("agent.html");
-        fs::write(&page, "<html></html>").unwrap();
-        let mut sidecar = page.clone();
-        sidecar.set_extension("replies.json");
         fs::write(
-            &sidecar,
-            br#"{"replies":{"q9":"old"},"comments":{}}"#,
+            &page,
+            r#"<html><body><script type="application/json" id="limpid-annotations">{"replies":{"q9":"old"},"comments":{}}</script></body></html>"#,
         )
         .unwrap();
         let mut request = Handoff {
@@ -1287,7 +1243,7 @@ mod tests {
             "comments": [{"src": "10-20", "turn": "turn-0", "lineStart": 1, "lineEnd": 2, "quote": "q", "text": "fix"}],
         });
         assert!(!save_pending(&mut request, &value).unwrap());
-        let saved = limpid_core::replies::AgentReplies::load(&sidecar).unwrap();
+        let saved = limpid_core::replies::read_annotations_file(&page).unwrap();
         assert_eq!(saved.replies["q1"], "SQLite");
         assert_eq!(saved.replies["q9"], "new");
         assert_eq!(saved.comments["turn-0:10-20"].text, "fix");
@@ -1303,9 +1259,6 @@ mod tests {
         ));
         fs::create_dir_all(&directory).unwrap();
         let page = directory.join("agent.html");
-        fs::write(&page, "<html></html>").unwrap();
-        let mut sidecar = page.clone();
-        sidecar.set_extension("replies.json");
         let request = Handoff {
             path: page.clone(),
             theme: Scheme::Dark,
@@ -1314,9 +1267,9 @@ mod tests {
             source_hash: None,
         };
         assert!(!has_feedback(&request).unwrap());
-        fs::write(&sidecar, br#"{"replies":{"q1":"  "},"comments":{}}"#).unwrap();
+        fs::write(&page, r#"<html><body><script type="application/json" id="limpid-annotations">{"replies":{"q1":"  "},"comments":{}}</script></body></html>"#).unwrap();
         assert!(!has_feedback(&request).unwrap());
-        fs::write(&sidecar, br#"{"replies":{},"comments":{"1-2":{"text":"note","quote":"q","start_line":1,"end_line":1}}}"#).unwrap();
+        fs::write(&page, r#"<html><body><script type="application/json" id="limpid-annotations">{"replies":{},"comments":{"1-2":{"text":"note","quote":"q","start_line":1,"end_line":1}}}</script></body></html>"#).unwrap();
         assert!(has_feedback(&request).unwrap());
         fs::remove_dir_all(directory).unwrap();
     }
