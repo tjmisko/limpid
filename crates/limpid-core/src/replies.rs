@@ -259,6 +259,8 @@ pub enum FileAnnotation<'a> {
 pub enum FileEdit {
     Reply { field: String, text: String },
     Comment { byte_end: usize, text: String },
+    CommentReplace { start: usize, end: usize, text: String },
+    CommentDelete { start: usize, end: usize },
 }
 
 impl FileRevision {
@@ -335,6 +337,27 @@ impl FileRevision {
                     operations.push(Op::Insert {
                         at: *byte_end,
                         text: format!("\n\n<!-- limpid comment\n{}\n-->\n", escape_comment(text)),
+                    });
+                }
+                FileEdit::CommentReplace { start, end, text } => {
+                    check_annotation_range(source, *start, *end)?;
+                    let suffix = if source[*start..*end].ends_with('\n') {
+                        "\n"
+                    } else {
+                        ""
+                    };
+                    operations.push(Op::Replace {
+                        start: *start,
+                        end: *end,
+                        text: format!("<!-- limpid comment\n{}\n-->{suffix}", escape_comment(text)),
+                    });
+                }
+                FileEdit::CommentDelete { start, end } => {
+                    check_annotation_range(source, *start, *end)?;
+                    operations.push(Op::Replace {
+                        start: *start,
+                        end: *end,
+                        text: String::new(),
                     });
                 }
             }
@@ -456,6 +479,21 @@ pub fn valid_question_id(field: &str) -> bool {
 
 fn escape_comment(text: &str) -> String {
     text.replace("-->", "--&gt;")
+}
+
+fn check_annotation_range(
+    source: &str,
+    start: usize,
+    end: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if start > end
+        || end > source.len()
+        || !source.is_char_boundary(start)
+        || !source.is_char_boundary(end)
+    {
+        return Err("annotation source range is invalid".into());
+    }
+    Ok(())
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
@@ -598,6 +636,44 @@ mod tests {
         assert_eq!(saved.matches("<!-- limpid reply q1").count(), 1);
         assert_eq!(from_file_annotations(&saved).replies["q1"], "New");
         assert!(revision.apply(&[]).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn edits_and_deletes_a_file_comment_by_annotation_range() {
+        let path = std::env::temp_dir().join(format!(
+            "limpid-edit-comment-{}-{:?}.md",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let source = "## Heading\n\nBody.\n\n<!-- limpid comment\nFirst note\n-->\n";
+        fs::write(&path, source).unwrap();
+        let start = source.find("<!-- limpid comment").unwrap();
+        let end = source[start..].find("-->").unwrap() + start + "-->".len();
+        let revision = FileRevision::open(&path).unwrap();
+        revision
+            .apply(&[FileEdit::CommentReplace {
+                start,
+                end,
+                text: "Edited note".into(),
+            }])
+            .unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert_eq!(saved.matches("<!-- limpid comment").count(), 1);
+        assert_eq!(
+            from_file_annotations(&saved).comments.values().next().unwrap().text,
+            "Edited note"
+        );
+
+        let start = saved.find("<!-- limpid comment").unwrap();
+        let end = saved[start..].find("-->").unwrap() + start + "-->".len();
+        let revision = FileRevision::open(&path).unwrap();
+        revision
+            .apply(&[FileEdit::CommentDelete { start, end }])
+            .unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("limpid comment"));
+        assert!(from_file_annotations(&saved).comments.is_empty());
         fs::remove_file(path).unwrap();
     }
 

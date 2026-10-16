@@ -883,6 +883,11 @@ fn save_pending(
         .and_then(serde_json::Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let deletions = value
+        .get("deletions")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     if let (Some(source), Some(hash)) = (request.source.clone(), request.source_hash.clone()) {
         let mut edits = Vec::new();
         for (field, text) in &replies.replies {
@@ -892,10 +897,23 @@ fn save_pending(
             });
         }
         for item in &comments {
-            let Some(src) = item.get("src").and_then(serde_json::Value::as_str) else {
+            let Some(text) = item.get("text").and_then(serde_json::Value::as_str) else {
                 continue;
             };
-            let Some(text) = item.get("text").and_then(serde_json::Value::as_str) else {
+            let key = item
+                .get("key")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if let Some(range) = key.strip_prefix("file:") {
+                let (start, end) = parse_range(range)?;
+                edits.push(limpid_core::replies::FileEdit::CommentReplace {
+                    start,
+                    end,
+                    text: text.to_owned(),
+                });
+                continue;
+            }
+            let Some(src) = item.get("src").and_then(serde_json::Value::as_str) else {
                 continue;
             };
             let byte_end = src
@@ -907,6 +925,13 @@ fn save_pending(
                 byte_end,
                 text: text.to_owned(),
             });
+        }
+        for key in &deletions {
+            let Some(range) = key.as_str().and_then(|key| key.strip_prefix("file:")) else {
+                continue;
+            };
+            let (start, end) = parse_range(range)?;
+            edits.push(limpid_core::replies::FileEdit::CommentDelete { start, end });
         }
         let revision = limpid_core::replies::FileRevision::open_checked(&source, &hash)?;
         revision.apply(&edits)?;
@@ -922,9 +947,19 @@ fn save_pending(
         for (key, comment) in replies.comments {
             saved.comments.insert(key, comment);
         }
+        for key in &deletions {
+            if let Some(key) = key.as_str() {
+                saved.comments.remove(key);
+            }
+        }
         saved.save(&path)?;
         Ok(false)
     }
+}
+
+fn parse_range(range: &str) -> Result<(usize, usize), Box<dyn Error>> {
+    let (start, end) = range.split_once('-').ok_or("invalid source range")?;
+    Ok((start.parse()?, end.parse()?))
 }
 
 fn rerender_file(request: &mut Handoff, source: &Path) -> Result<(), Box<dyn Error>> {
@@ -1275,6 +1310,58 @@ mod tests {
             )
             .is_err()
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn save_pending_replaces_and_deletes_file_comments() {
+        let directory = std::env::temp_dir().join(format!(
+            "limpid-host-edit-comment-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("notes.md");
+        let markdown = "## Heading\n\nBody.\n\n<!-- limpid comment\nFirst\n-->\n";
+        fs::write(&source, markdown).unwrap();
+        let page = directory.join("notes.html");
+        let mut request = Handoff {
+            path: page.clone(),
+            theme: Scheme::Dark,
+            pane: None,
+            source: Some(source.clone()),
+            source_hash: Some(limpid_core::replies::source_hash(markdown.as_bytes())),
+        };
+        let start = markdown.find("<!-- limpid comment").unwrap();
+        let end = markdown[start..].find("-->").unwrap() + start + "-->".len();
+        let value = serde_json::json!({
+            "replies": {},
+            "comments": [{"key": format!("file:{start}-{end}"), "src": format!("{start}-{end}"), "turn": "", "text": "Edited", "quote": "Body."}],
+            "deletions": [],
+        });
+        assert!(save_pending(&mut request, &value).unwrap());
+        let saved = fs::read_to_string(&source).unwrap();
+        assert_eq!(saved.matches("<!-- limpid comment").count(), 1);
+        assert_eq!(
+            limpid_core::replies::from_file_annotations(&saved)
+                .comments
+                .values()
+                .next()
+                .unwrap()
+                .text,
+            "Edited"
+        );
+
+        let start = saved.find("<!-- limpid comment").unwrap();
+        let end = saved[start..].find("-->").unwrap() + start + "-->".len();
+        let value = serde_json::json!({
+            "replies": {},
+            "comments": [],
+            "deletions": [format!("file:{start}-{end}")],
+        });
+        assert!(save_pending(&mut request, &value).unwrap());
+        let saved = fs::read_to_string(&source).unwrap();
+        assert!(!saved.contains("limpid comment"));
         fs::remove_dir_all(directory).unwrap();
     }
 

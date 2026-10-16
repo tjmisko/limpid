@@ -19,8 +19,6 @@ pub enum Action {
     Inspector,
     Back,
     Forward,
-    ScrollDown,
-    ScrollUp,
     HalfPageDown,
     HalfPageUp,
     SectionNext,
@@ -119,8 +117,6 @@ impl KeyDispatcher {
             "0" => Some(ZoomReset),
             "bracketleft" => Some(Back),
             "bracketright" => Some(Forward),
-            "j" => Some(ScrollDown),
-            "k" => Some(ScrollUp),
             "G" => Some(Bottom),
             "Page_Down" => Some(HalfPageDown),
             "Page_Up" => Some(HalfPageUp),
@@ -154,9 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn scroll_and_page_keys() {
-        assert_eq!(plain("j"), Some(ScrollDown));
-        assert_eq!(plain("k"), Some(ScrollUp));
+    fn page_keys() {
         assert_eq!(plain("Page_Down"), Some(HalfPageDown));
         assert_eq!(plain("Page_Up"), Some(HalfPageUp));
     }
@@ -260,8 +254,8 @@ mod tests {
         let dispatcher = KeyDispatcher::new();
         press(&dispatcher, "g", 0, false, false, false, false);
         assert_eq!(
-            press(&dispatcher, "j", 100, false, false, false, false),
-            Some(ScrollDown)
+            press(&dispatcher, "r", 100, false, false, false, false),
+            Some(Reload)
         );
         assert_ne!(
             press(&dispatcher, "g", 200, false, false, false, false),

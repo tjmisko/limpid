@@ -101,7 +101,7 @@ fn cached_mermaid(source: &str) -> Option<String> {
     svg.trim_start().starts_with("<svg").then_some(svg)
 }
 
-fn saved_annotation(raw: &str) -> Option<String> {
+fn saved_annotation(raw: &str, start: usize, end: usize) -> Option<String> {
     let value = raw.trim();
     let (label, body) = if let Some(rest) = value.strip_prefix("<!-- limpid reply ") {
         let (field, body) = rest.split_once('\n')?;
@@ -119,7 +119,7 @@ fn saved_annotation(raw: &str) -> Option<String> {
         .trim_end()
         .replace("--&gt;", "-->");
     Some(format!(
-        "<aside class=\"limpid-annotation\"><strong>{}</strong><p>{}</p></aside>",
+        "<aside class=\"limpid-annotation\" data-src=\"{start}-{end}\"><strong>{}</strong><p>{}</p></aside>",
         escape_html(&label),
         escape_html(&body)
     ))
@@ -245,7 +245,7 @@ pub(crate) fn render_with_state(
                     match mode {
                         RenderMode::Agent => output.push(Event::Text(raw.into())),
                         RenderMode::File => output.push(Event::Html(
-                            saved_annotation(&raw)
+                            saved_annotation(&raw, range.start, range.end)
                                 .unwrap_or_else(|| ammonia::clean(&raw))
                                 .into(),
                         )),
@@ -465,7 +465,8 @@ pub(crate) fn render_with_state(
             Event::Html(value) | Event::InlineHtml(value) => match mode {
                 RenderMode::Agent => output.push(Event::Text(value.clone())),
                 RenderMode::File => {
-                    let html = saved_annotation(value).unwrap_or_else(|| ammonia::clean(value));
+                    let html = saved_annotation(value, range.start, range.end)
+                        .unwrap_or_else(|| ammonia::clean(value));
                     output.push(Event::Html(html.into()));
                 }
             },

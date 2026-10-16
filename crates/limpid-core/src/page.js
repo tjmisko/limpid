@@ -46,6 +46,7 @@
   const currentComments = new Map();
   const dirtyReplies = new Set();
   const dirtyComments = new Set();
+  const deletedComments = new Set();
   window.limpidCaptureAnchor = () => {
     const blocks = [...document.querySelectorAll('article [data-src]')];
     const block = blocks.filter(item => item.getBoundingClientRect().top <= 25).at(-1) || blocks[0];
@@ -56,6 +57,7 @@
     const block = [...document.querySelectorAll('article [data-src]')]
       .find(item => item.dataset.src === anchor.src && (item.closest('.turn')?.id || '') === anchor.turn);
     if (block) window.scrollTo({top: block.getBoundingClientRect().top + scrollY - anchor.offset});
+    initFocus(true);
   };
   window.limpidRestoreReplies = replies => {
     for (const [id, text] of Object.entries(replies)) {
@@ -89,9 +91,11 @@
       const text = document.createElement('p');
       text.textContent = comment.text;
       note.append(heading, text);
+      note.dataset.commentKey = key;
       placeAtSectionEnd(note, target);
-      currentComments.set(key, {src: range, turn, lineStart: comment.start_line || 0, lineEnd: comment.end_line || 0, quote: comment.quote || '', text: comment.text});
+      currentComments.set(key, {key, src: range, turn, lineStart: comment.start_line || 0, lineEnd: comment.end_line || 0, quote: comment.quote || '', text: comment.text});
     }
+    initFocus(true);
   };
   const headings = [...document.querySelectorAll('article h1[id],article h2[id],article h3[id],article h4[id],article h5[id],article h6[id]')];
   // Highlight the section at the current scroll position. The page top and
@@ -118,6 +122,75 @@
   window.addEventListener('scroll', queueScrollSpy, {passive: true});
   window.addEventListener('resize', queueScrollSpy);
   updateScrollSpy();
+  const STOP_SELECTOR = 'article p[data-src],article blockquote[data-src],article figure.code[data-src],article figure.diagram[data-src],article div.table-wrap[data-src],article li[data-src],article .limpid-annotation';
+  let focused = null;
+  // Only the outermost stop counts, except that every list item is its own
+  // stop. Question options are part of their field, not stops.
+  function focusStops() {
+    return [...document.querySelectorAll(STOP_SELECTOR)].filter(element => {
+      if (element.matches('.question-option')) return false;
+      if (element.matches('.limpid-annotation')) {
+        return element.querySelector('strong')?.textContent.trim() === 'Comment';
+      }
+      if (element.matches('li')) return true;
+      return !element.parentElement?.closest('li[data-src],blockquote[data-src]');
+    });
+  }
+  function setFocus(element, reveal = false) {
+    if (!element) return;
+    if (focused !== element) {
+      focused?.classList.remove('limpid-focused');
+      element.classList.add('limpid-focused');
+      focused = element;
+    }
+    if (reveal) revealStop(element);
+  }
+  function revealStop(element) {
+    const rect = element.getBoundingClientRect();
+    const margin = 12;
+    if (rect.top < margin) window.scrollBy({top: rect.top - margin, behavior: 'instant'});
+    else if (rect.bottom > innerHeight - margin) window.scrollBy({top: rect.bottom - (innerHeight - margin), behavior: 'instant'});
+  }
+  function moveFocus(delta) {
+    const stops = focusStops();
+    if (!stops.length) return;
+    const index = stops.indexOf(focused);
+    const next = index < 0
+      ? (delta > 0 ? 0 : stops.length - 1)
+      : Math.min(stops.length - 1, Math.max(0, index + delta));
+    setFocus(stops[next], true);
+  }
+  function alignFocus(where) {
+    if (!focused) return;
+    const rect = focused.getBoundingClientRect();
+    const top = where === 't' ? rect.top - 8
+      : where === 'b' ? rect.bottom - innerHeight + 8
+      : rect.top - (innerHeight - rect.height) / 2;
+    window.scrollBy({top, behavior: 'instant'});
+  }
+  function sectionJump(direction) {
+    const stops = focusStops();
+    if (!stops.length) return;
+    const position = focused
+      ? focused.getBoundingClientRect().top + window.scrollY
+      : window.scrollY + 25;
+    const tops = headings.map(head => head.getBoundingClientRect().top + window.scrollY);
+    const target = direction > 0
+      ? tops.find(top => top > position + 2)
+      : tops.filter(top => top < position - 2).at(-1);
+    if (target === undefined) {
+      setFocus(direction > 0 ? stops.at(-1) : stops[0], true);
+      return;
+    }
+    const stop = stops.find(element => element.getBoundingClientRect().top + window.scrollY >= target - 1);
+    setFocus(stop || (direction > 0 ? stops.at(-1) : stops[0]), true);
+  }
+  function initFocus(force = false) {
+    if (!force && focused?.isConnected) return;
+    const stops = focusStops();
+    if (!stops.length) return;
+    setFocus(stops.find(element => element.getBoundingClientRect().bottom > 0) || stops[0]);
+  }
   let search = '';
   let searchBox;
   let commandBox;
@@ -147,9 +220,12 @@
     dirtyReplies.add(field);
   }
   function rememberComment(record) {
-    const key = record.turn ? `${record.turn}:${record.src}` : record.src;
+    const key = record.key || (record.turn ? `${record.turn}:${record.src}` : record.src);
+    record.key = key;
+    deletedComments.delete(key);
     currentComments.set(key, record);
     dirtyComments.add(key);
+    return key;
   }
   function currentPayload() {
     return {replies: Object.fromEntries(currentReplies), comments: [...currentComments.values()]};
@@ -158,6 +234,7 @@
     return {
       replies: Object.fromEntries([...dirtyReplies].map(field => [field, currentReplies.get(field)])),
       comments: [...dirtyComments].map(key => currentComments.get(key)),
+      deletions: [...deletedComments],
     };
   }
   function openCommand() {
@@ -211,6 +288,7 @@
   window.limpidSaved = () => {
     dirtyReplies.clear();
     dirtyComments.clear();
+    deletedComments.clear();
   };
   for (const figure of document.querySelectorAll('figure.code,figure.diagram')) {
     const pre = figure.querySelector('pre');
@@ -249,55 +327,100 @@
     return ok;
   }
   // Saved comments are stored beside their block; show them at the section end.
+  // File pages render them inline, so give each one a key for edit and delete.
   for (const note of [...document.querySelectorAll('article .limpid-annotation')]) {
     if (note.querySelector('strong')?.textContent.trim() !== 'Comment') continue;
+    if (!note.dataset.commentKey) {
+      const range = note.dataset.src || '';
+      if (range) {
+        const key = `file:${range}`;
+        note.dataset.commentKey = key;
+        const body = note.querySelector('p')?.textContent || '';
+        currentComments.set(key, {
+          key,
+          src: range,
+          turn: '',
+          lineStart: Number(note.dataset.lineStart || 0),
+          lineEnd: Number(note.dataset.lineEnd || 0),
+          quote: body.trim().slice(0, 80),
+          text: body,
+        });
+      }
+    }
     placeAtSectionEnd(note, note);
   }
-  function jumpSection(direction) {
-    const fromToc = [...document.querySelectorAll('nav a[href^="#"]')]
-      .map(link => document.getElementById(decodeURIComponent(link.hash.slice(1))))
-      .filter(Boolean);
-    const targets = fromToc.length ? fromToc : [...document.querySelectorAll('h1, h2, h3')];
-    const tops = [...new Set(targets
-      .filter(head => head.getClientRects().length)
-      .map(head => {
-        const margin = parseFloat(getComputedStyle(head).scrollMarginTop) || 0;
-        return Math.round(head.getBoundingClientRect().top + window.scrollY - margin);
-      }))].sort((a, b) => a - b);
-    const position = window.scrollY;
-    const target = direction > 0
-      ? tops.find(top => top > position + 8)
-      : tops.reverse().find(top => top < position - 8);
-    const top = target !== undefined ? target : direction < 0 ? 0 : position;
-    window.scrollTo({top, behavior: 'instant'});
+  function commentRecord(target, quote) {
+    return {
+      src: target.dataset.src || '',
+      turn: target.closest('.turn')?.id || '',
+      lineStart: Number(target.dataset.lineStart || 0),
+      lineEnd: Number(target.dataset.lineEnd || 0),
+      quote,
+    };
+  }
+  function saveComment(target, existingKey, quote, text) {
+    const existing = existingKey ? currentComments.get(existingKey) : null;
+    const record = existing ? {...existing} : commentRecord(target, quote);
+    record.text = text;
+    record.key = existingKey || '';
+    const key = rememberComment(record);
+    let note = existingKey
+      ? document.querySelector(`.limpid-annotation[data-comment-key="${CSS.escape(existingKey)}"]`)
+      : null;
+    if (!note) {
+      note = document.createElement('aside');
+      note.className = 'limpid-annotation';
+      const heading = document.createElement('strong');
+      heading.textContent = 'Comment';
+      const body = document.createElement('p');
+      note.append(heading, body);
+      placeAtSectionEnd(note, target);
+    }
+    note.dataset.commentKey = key;
+    note.querySelector('p').textContent = text;
+  }
+  function deleteComment(note) {
+    const key = note?.dataset.commentKey;
+    if (!key) return;
+    deletedComments.add(key);
+    dirtyComments.delete(key);
+    currentComments.delete(key);
+    note.remove();
   }
   async function edit(target, kind) {
     if (editing || !target || !await loadEditor()) return;
     editing = true;
-    const quote = target.textContent.trim().slice(0, 80);
+    let quote = '';
+    let current = '';
+    let commentKey = null;
+    if (kind === 'reply') {
+      if (!target.matches?.('.question-field')) { editing = false; return; }
+      current = target.querySelector('.question-reply')?.textContent || '';
+    } else if (target.classList.contains('limpid-annotation')) {
+      commentKey = target.dataset.commentKey || null;
+      const record = commentKey ? currentComments.get(commentKey) : null;
+      current = record?.text || target.querySelector('p')?.textContent || '';
+      quote = record?.quote || target.textContent.trim().slice(0, 80);
+    } else {
+      quote = target.textContent.trim().slice(0, 80);
+    }
     const mount = document.createElement('div');
     mount.className = 'limpid-editor';
     placeAtSectionEnd(mount, target);
-    const current = kind === 'reply' ? target.querySelector('.question-reply')?.textContent || '' : '';
-    const finish = () => { mount.remove(); editing = false; target.focus?.(); };
+    const finish = () => {
+      mount.remove();
+      editing = false;
+      if (target.isConnected) setFocus(target);
+    };
     window.limpidCreateEditor(mount, current, text => {
       if (kind === 'reply') {
         target.querySelector('.question-reply').textContent = text;
         rememberReply(target.dataset.field, text);
       } else {
-        const note = document.createElement('aside');
-        note.className = 'limpid-annotation';
-        note.textContent = `Comment: ${text}`;
-        placeAtSectionEnd(note, target);
-        rememberComment({src: target.dataset.src, turn: target.closest('.turn')?.id || '', lineStart: Number(target.dataset.lineStart || 0), lineEnd: Number(target.dataset.lineEnd || 0), quote, text});
+        saveComment(target, commentKey, quote, text);
       }
       finish();
     }, finish);
-  }
-  function nearestBlock() {
-    const blocks = [...document.querySelectorAll('article [data-src]')];
-    const top = blocks.filter(block => block.getBoundingClientRect().top <= 28).at(-1);
-    return top || blocks.find(block => block.getBoundingClientRect().top > 28);
   }
   window.limpidShowReview = message => {
     let dialog = document.querySelector('.limpid-review');
@@ -379,6 +502,11 @@
     const active = document.activeElement;
     return active && (active.matches('input,textarea,select') || active.isContentEditable);
   }
+  let pendingZ = false;
+  function clearPending() {
+    pendingG = false;
+    pendingZ = false;
+  }
   document.addEventListener('keydown', event => {
     if (event.key === 'F1') {
       event.preventDefault();
@@ -388,31 +516,53 @@
     if (editable()) return;
     if (event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault();
-      jumpSection(event.key === 'ArrowDown' ? 1 : -1);
+      sectionJump(event.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+    if (event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'd' || event.key === 'u')) {
+      event.preventDefault();
+      window.scrollBy({top: (event.key === 'd' ? 1 : -1) * innerHeight / 2, behavior: 'instant'});
       return;
     }
     if (event.ctrlKey || event.altKey || event.metaKey) return;
     if (event.key === 'g') {
+      event.preventDefault();
       if (pendingG) {
-        window.scrollTo({top: 0, behavior: 'instant'});
-        pendingG = false;
+        clearPending();
+        setFocus(focusStops()[0], true);
       } else {
+        clearPending();
         pendingG = true;
         setTimeout(() => { pendingG = false; }, 650);
       }
-      event.preventDefault();
       return;
     }
-    pendingG = false;
-    if (event.key === 'Tab' && fields.length) {
+    if (event.key === 'z') {
       event.preventDefault();
-      const current = fields.indexOf(document.activeElement);
-      const next = (current + (event.shiftKey ? -1 : 1) + fields.length) % fields.length;
-      fields[next].focus();
-      fields[next].scrollIntoView({block: 'center'});
+      if (pendingZ) {
+        clearPending();
+        alignFocus('z');
+      } else {
+        clearPending();
+        pendingZ = true;
+        setTimeout(() => { pendingZ = false; }, 650);
+      }
       return;
     }
-    const field = document.activeElement?.closest?.('.question-field');
+    if (pendingZ && (event.key === 't' || event.key === 'b')) {
+      event.preventDefault();
+      const where = event.key;
+      clearPending();
+      alignFocus(where);
+      return;
+    }
+    if (pendingG) clearPending();
+    if (event.key === 'j' || event.key === 'k' || event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveFocus(event.key === 'j' || event.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+    const field = focused?.matches?.('.question-field') ? focused : null;
     if (field && /^[1-9]$/.test(event.key)) {
       const options = [...field.querySelectorAll('.question-option')];
       const option = options[Number(event.key) - 1];
@@ -432,7 +582,12 @@
     }
     if (event.key === 'c') {
       event.preventDefault();
-      edit(nearestBlock(), 'comment');
+      edit(focused, 'comment');
+      return;
+    }
+    if (event.key === 'x') {
+      event.preventDefault();
+      if (focused?.classList.contains('limpid-annotation')) deleteComment(focused);
       return;
     }
     if (event.key === 'S') {
@@ -445,23 +600,21 @@
       document.querySelector('.shell')?.classList.toggle('rail-hidden');
       return;
     }
-    if ((event.key === '{' || event.key === '}') && headings.length) {
+    if (event.key === '{' || event.key === '}') {
       event.preventDefault();
-      const position = window.scrollY + 25;
-      const anchors = headings.map(head => ({head, top: head.getBoundingClientRect().top + window.scrollY}));
-      const target = event.key === '}'
-        ? anchors.find(item => item.top > position + 2)
-        : anchors.filter(item => item.top < position - 2).at(-1);
-      target?.head.scrollIntoView({block: 'start'});
+      sectionJump(event.key === '}' ? 1 : -1);
       return;
     }
-    const scroll = {j: 80, k: -80, PageDown: innerHeight / 2, PageUp: -innerHeight / 2}[event.key];
-    if (scroll !== undefined) {
-      window.scrollBy({top: scroll, behavior: 'instant'});
+    if (event.key === 'PageDown' || event.key === 'PageUp') {
       event.preventDefault();
+      window.scrollBy({top: (event.key === 'PageDown' ? 1 : -1) * innerHeight / 2, behavior: 'instant'});
       return;
     }
-    if (event.key === 'G') { window.scrollTo({top: document.body.scrollHeight, behavior: 'instant'}); event.preventDefault(); return; }
+    if (event.key === 'G') {
+      event.preventDefault();
+      setFocus(focusStops().at(-1), true);
+      return;
+    }
     if (event.key === ':') { openCommand(); event.preventDefault(); return; }
     if (event.key === '/') { openSearch(); event.preventDefault(); return; }
     if (event.key === 'n' || event.key === 'N') { find(event.key === 'N'); event.preventDefault(); return; }
@@ -476,4 +629,5 @@
     }
     if (event.key === 'Escape') { document.activeElement?.blur(); event.preventDefault(); }
   });
+  requestAnimationFrame(() => initFocus());
 })();
