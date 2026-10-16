@@ -91,3 +91,5 @@ from the keyboard, and the editor and callouts are legible in the page.
   at the new viewport center and center it. A tall element, the element already
   focused, or a center more than a viewport away falls back to a plain
   half-page scroll.
+- `{` / `}` and `Ctrl-Up` / `Ctrl-Down` step one section at a time: focus the
+  section's first stop and scroll so the section title sits at the top.
