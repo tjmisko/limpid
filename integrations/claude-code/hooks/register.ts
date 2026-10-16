@@ -18,9 +18,11 @@ export const register: Register = on => {
     const messages = await $.session.messages()
     let model: string | undefined
     try { model = (await $.session.model()) || undefined } catch { model = undefined }
+    let sessionId: string | undefined
+    try { sessionId = await $.session.id() } catch { sessionId = undefined }
     const home = (await $.env.get('HOME')) ?? '~'
     const spec = (e.args ?? '').trim() || '0'
-    const init = { stdin: JSON.stringify({ model, messages }), timeoutMs: TIMEOUT_MS }
+    const init = { stdin: JSON.stringify({ model, session_id: sessionId, messages }), timeoutMs: TIMEOUT_MS }
 
     let rendered
     try {
@@ -42,6 +44,7 @@ export const register: Register = on => {
       catch { return { text: 'limpid was not found' } }
     }
     if (opened.exitCode !== 0) return { text: opened.stderr.trim().split(/\r?\n/)[0] || `limpid exited with ${opened.exitCode}` }
-    return {}
+    const note = `The user opened limpid page ${path}. Pull saved answers and comments with limpid-core feedback ${path} when they are relevant.`
+    return { context: [note] }
   })
 }
