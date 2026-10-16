@@ -419,10 +419,10 @@ fn refresh_file(state: &WindowState) -> Result<(), Box<dyn Error>> {
     if state.file_stamp.borrow().as_ref() == Some(&stamp) {
         return Ok(());
     }
-    *state.file_stamp.borrow_mut() = Some(stamp);
     let updated = fs::read_to_string(source)?;
     let hash = limpid_core::replies::source_hash(updated.as_bytes());
     if &hash == previous_hash {
+        *state.file_stamp.borrow_mut() = Some(stamp);
         return Ok(());
     }
     let settings = limpid_core::settings::Settings::load_default()?;
@@ -442,6 +442,7 @@ fn refresh_file(state: &WindowState) -> Result<(), Box<dyn Error>> {
     )?;
     drop(request);
     state.request.borrow_mut().source_hash = Some(hash);
+    *state.file_stamp.borrow_mut() = Some(stamp);
     reload_with_anchor(&state.view, &state.restore_anchor);
     Ok(())
 }
