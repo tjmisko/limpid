@@ -27,6 +27,7 @@ pub enum Action {
     SectionPrev,
     Top,
     Bottom,
+    ToggleContents,
     SearchOpen,
     SearchClose,
     SearchNext,
@@ -84,6 +85,9 @@ impl KeyDispatcher {
                 "0" => Some(ZoomReset),
                 _ => None,
             };
+        }
+        if key == "F1" {
+            return Some(ToggleContents);
         }
         if key == "F5" {
             return Some(Reload);
@@ -409,6 +413,16 @@ mod tests {
             Some(Inspector)
         );
         assert_eq!(plain("F12"), Some(Inspector));
+    }
+
+    #[test]
+    fn f1_toggles_the_contents_pane_even_while_typing() {
+        for (editable, search) in [(false, false), (true, false), (false, true)] {
+            assert_eq!(
+                press(&KeyDispatcher::new(), "F1", 0, false, false, editable, search),
+                Some(ToggleContents)
+            );
+        }
     }
 
     #[test]

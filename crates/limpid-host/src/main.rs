@@ -430,6 +430,16 @@ fn open_request(
                 jump_section(&key_view, -1);
                 true
             }
+            Some(keys::Action::ToggleContents) => {
+                key_view.evaluate_javascript(
+                    "document.querySelector('.shell')?.classList.toggle('rail-hidden')",
+                    None,
+                    None,
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+                true
+            }
             _ => false,
         };
         if handled {

@@ -72,8 +72,14 @@ code{font-family:var(--mono);font-size:.87em}
 p code,li code,td code,h1 code,h2 code,h3 code,h4 code{background:var(--raised);border:1px solid var(--rule);border-radius:5px;padding:1px 5px;color:var(--blue)}
 pre{margin:0;padding:16px 18px;background:var(--code);overflow-x:auto;line-height:1.6;font-size:13px}
 pre code{font-size:inherit;background:none;border:0;padding:0;color:var(--ink)}
-figure.code{margin:22px 0;border:1px solid var(--rule);border-radius:10px;overflow:hidden;background:var(--code)}
+figure.code{margin:22px 0;border:1px solid var(--rule);border-radius:10px;overflow:hidden;background:var(--code);position:relative}
 figure.code figcaption{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);background:var(--surface);padding:8px 14px;border-bottom:1px solid var(--rule)}
+figure.diagram{position:relative}
+.limpid-copy{position:absolute;top:7px;right:8px;z-index:2;padding:2px 9px;border:1px solid var(--rule);border-radius:6px;background:var(--surface);color:var(--muted);cursor:pointer;font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;opacity:0;transition:opacity .12s}
+figure.code:hover .limpid-copy,figure.diagram:hover .limpid-copy,.limpid-copy:focus-visible{opacity:1}
+.limpid-copy:hover{color:var(--ink);border-color:var(--teal)}
+.limpid-copy.copied{color:var(--teal);border-color:var(--teal)}
+article ::selection{background:var(--teal);color:var(--bg)}
 /* Neovim tree-sitter token colours arrive as inline styles on each span. */
 figure.code pre code{color:var(--ink)}
 .limpid-search{position:fixed;right:22px;bottom:18px;z-index:20;width:min(340px,calc(100vw - 44px));padding:8px 12px;border:1px solid var(--teal);border-radius:7px;background:var(--surface);color:var(--ink);box-shadow:0 8px 24px #0005;font:14px var(--sans)}
@@ -86,6 +92,7 @@ figure.code pre code{color:var(--ink)}
 .limpid-review textarea{display:block;width:100%;height:min(50vh,420px);resize:vertical;padding:12px;border:1px solid var(--rule);border-radius:6px;background:var(--code);color:var(--ink);font:13px/1.5 var(--mono)}
 .limpid-review p{margin:9px 0 0;color:var(--muted);font-size:12px}
 figure.diagram{margin:22px 0;padding:14px;border:1px solid var(--rule);border-radius:10px;overflow-x:auto;background:var(--surface)}
+figure.diagram .limpid-copy{opacity:1;background:var(--raised)}
 figure.diagram pre.mermaid{padding:0;background:transparent;color:var(--muted)}
 figure.diagram svg{display:block;max-width:100%;height:auto;margin:auto}
 pre code [class^="hl-keyword"]{color:var(--hl-keyword)}
@@ -263,7 +270,7 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
       const text = document.createElement('p');
       text.textContent = comment.text;
       note.append(heading, text);
-      target.after(note);
+      placeAtSectionEnd(note, target);
     }
   };
   const headings = [...document.querySelectorAll('article h1[id],article h2[id],article h3[id],article h4[id],article h5[id],article h6[id]')];
@@ -272,13 +279,87 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
   let zoom = 1;
   let pendingG = false;
   let editing = false;
+  // The section that owns an element ends just before the next heading of the
+  // same or shallower level, else at the end of the article.
+  function sectionEndFor(element) {
+    const article = element.closest('article') || document.querySelector('article') || document.body;
+    const all = [...article.querySelectorAll('h1,h2,h3,h4,h5,h6')];
+    const preceding = all.filter(head => head.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const heading = preceding.at(-1);
+    const level = heading ? Number(heading.tagName.slice(1)) : 7;
+    const following = all.filter(head => (head.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_PRECEDING) && Number(head.tagName.slice(1)) <= level);
+    return {article, before: following[0] || null};
+  }
+  function placeAtSectionEnd(node, element) {
+    const {article, before} = sectionEndFor(element);
+    article.insertBefore(node, before);
+  }
+  for (const figure of document.querySelectorAll('figure.code,figure.diagram')) {
+    const pre = figure.querySelector('pre');
+    if (!pre) continue;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'limpid-copy';
+    button.textContent = 'Copy';
+    button.title = 'Copy code';
+    button.addEventListener('click', () => {
+      copyText(pre.textContent ?? '').then(ok => {
+        button.textContent = ok ? 'Copied' : 'Copy failed';
+        button.classList.toggle('copied', ok);
+        setTimeout(() => { button.textContent = 'Copy'; button.classList.remove('copied'); }, 1400);
+      });
+    });
+    figure.append(button);
+  }
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch { /* Fall through to the selection copy. */ }
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('aria-hidden', 'true');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.append(area);
+    area.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { /* Leave ok false. */ }
+    area.remove();
+    return ok;
+  }
+  // Saved comments are stored beside their block; show them at the section end.
+  for (const note of [...document.querySelectorAll('article .limpid-annotation')]) {
+    if (note.querySelector('strong')?.textContent.trim() !== 'Comment') continue;
+    placeAtSectionEnd(note, note);
+  }
+  function jumpSection(direction) {
+    const fromToc = [...document.querySelectorAll('nav a[href^="#"]')]
+      .map(link => document.getElementById(decodeURIComponent(link.hash.slice(1))))
+      .filter(Boolean);
+    const targets = fromToc.length ? fromToc : [...document.querySelectorAll('h1, h2, h3')];
+    const tops = [...new Set(targets
+      .filter(head => head.getClientRects().length)
+      .map(head => {
+        const margin = parseFloat(getComputedStyle(head).scrollMarginTop) || 0;
+        return Math.round(head.getBoundingClientRect().top + window.scrollY - margin);
+      }))].sort((a, b) => a - b);
+    const position = window.scrollY;
+    const target = direction > 0
+      ? tops.find(top => top > position + 8)
+      : tops.reverse().find(top => top < position - 8);
+    const top = target !== undefined ? target : direction < 0 ? 0 : position;
+    window.scrollTo({top, behavior: 'instant'});
+  }
   async function edit(target, kind) {
     if (editing || !target || !await loadEditor()) return;
     editing = true;
     const quote = target.textContent.trim().slice(0, 80);
     const mount = document.createElement('div');
     mount.className = 'limpid-editor';
-    target.append(mount);
+    placeAtSectionEnd(mount, target);
     const current = kind === 'reply' ? target.querySelector('.question-reply')?.textContent || '' : '';
     const finish = () => { mount.remove(); editing = false; target.focus?.(); };
     window.limpidCreateEditor(mount, current, text => {
@@ -289,7 +370,7 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
         const note = document.createElement('aside');
         note.className = 'limpid-annotation';
         note.textContent = `Comment: ${text}`;
-        target.after(note);
+        placeAtSectionEnd(note, target);
         window.webkit?.messageHandlers?.comment?.postMessage({src: target.dataset.src, turn: target.closest('.turn')?.id || '', lineStart: Number(target.dataset.lineStart || 0), lineEnd: Number(target.dataset.lineEnd || 0), quote, text});
       }
       finish();
@@ -334,10 +415,20 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
     }
     error.textContent = message;
   };
+  function centerMatch() {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return;
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    if (!rect || (!rect.width && !rect.height)) return;
+    const target = rect.top + window.scrollY - innerHeight / 2 + rect.height / 2;
+    window.scrollTo({top: Math.max(0, target), behavior: 'instant'});
+  }
   function find(backwards = false) {
-    if (!search) return;
+    if (!search) return false;
     const smartcase = /[A-Z]/.test(search);
-    window.find(search, smartcase, backwards, true);
+    const found = window.find(search, smartcase, backwards, true);
+    if (found) centerMatch();
+    return found;
   }
   function openSearch() {
     if (!searchBox) {
@@ -371,7 +462,17 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
     return active && (active.matches('input,textarea,select') || active.isContentEditable);
   }
   document.addEventListener('keydown', event => {
+    if (event.key === 'F1') {
+      event.preventDefault();
+      document.querySelector('.shell')?.classList.toggle('rail-hidden');
+      return;
+    }
     if (editable()) return;
+    if (event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      event.preventDefault();
+      jumpSection(event.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
     if (event.ctrlKey || event.altKey || event.metaKey) return;
     if (event.key === 'g') {
       if (pendingG) {

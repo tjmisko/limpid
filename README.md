@@ -60,8 +60,10 @@ top of the view. The editor uses CodeMirror with vim keys: `Esc` then `:w`
 saves, `:q` cancels, and `Ctrl-Enter` saves directly. `S` opens the composed
 message for review; `Ctrl-Enter` there runs the configured reply command.
 
-Navigation keys include `j`, `k`, `gg`, `G`, PageUp, PageDown, `/`, `n`, `N`,
-`{`, `}`, `t`, `r`, `+`, `-`, and `0`.
+Navigation keys include `j`, `k`, `gg`, `G`, PageUp, PageDown, `Ctrl-Up`,
+`Ctrl-Down`, `/`, `n`, `N`, `{`, `}`, `t`, `F1`, `r`, `+`, `-`, and `0`.
+`n` and `N` center the current match like Vim's `nzz`. Hover a code block for
+a copy button, and `F1` toggles the contents rail.
 
 Agent pages save replies beside their cached HTML. Replies to a markdown file
 are stored as HTML comments in that file. limpid refuses to write an annotation

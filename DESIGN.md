@@ -218,19 +218,21 @@ terminal.
 ## Keys
 
 The existing keys stay: `q`, `r`, `+ - 0`, `[ ]` back and forward, `j k`, `gg`,
-`G`, PageUp/PageDown as half pages, `/ n N` with smartcase, and `Esc`.
+`G`, PageUp/PageDown as half pages, `Ctrl-Up`/`Ctrl-Down` section jumps,
+`/ n N` with smartcase, and `Esc`. `n` and `N` center the current match like
+Vim's `nzz`. Code blocks carry a hover copy button.
 
 | Key | Action |
 |---|---|
 | `Tab` / `Shift-Tab` | Next / previous question field. Wraps around and scrolls the field into view |
 | `1`–`9` | On a focused field: pick that option |
 | `Enter` or `i` | Open the reply editor on the focused field (CodeMirror, vim mode, starts in insert) |
-| `c` | Comment on the block nearest the top of the view (any block, not only fields) |
+| `c` | Comment on the block nearest the top of the view (any block, not only fields). Editors and comments appear at the end of the heading's section |
 | `Esc` then `:w`, or `Ctrl-Enter` | Save the reply and close the editor |
 | `:q` | Close the editor without saving |
 | `S` | Show the composed reply message for review |
 | `Ctrl-Enter` (in review) | Send the reply |
-| `t` | Toggle the rail |
+| `t` or `F1` | Toggle the rail |
 | `{` / `}` | Previous / next heading |
 
 The page owns keys while an editor or the search field has focus. The host
