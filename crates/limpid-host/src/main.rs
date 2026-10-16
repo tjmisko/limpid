@@ -74,6 +74,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             std::env::set_var("JSC_useJIT", "0");
         }
     }
+    if std::env::var_os("WEBKIT_DMABUF_RENDERER_FORCE_SHM").is_none() {
+        // The DMA-BUF renderer flashes its uninitialized buffer (magenta) before
+        // the first paint.
+        unsafe {
+            std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
+        }
+    }
     let (sender, receiver) = mpsc::channel::<Handoff>();
     let socket = if separate {
         let request = serde_json::from_reader(std::io::stdin())?;
