@@ -500,6 +500,36 @@ pub fn page(rendered: &Rendered) -> String {
     page_with_meta(rendered, "")
 }
 
+/// The interaction stylesheet, injected into pages limpid did not render.
+pub fn client_css() -> &'static str {
+    include_str!("client.css")
+}
+
+/// The client script, injected into pages limpid did not render.
+pub fn client_js() -> &'static str {
+    include_str!("page.js")
+}
+
+/// Write the lazy editor bundle to the shared asset cache and return its path.
+pub fn client_editor_asset(cache: &Path) -> std::io::Result<std::path::PathBuf> {
+    let assets = cache.join("assets");
+    fs::create_dir_all(&assets)?;
+    let editor = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../vendor/editor.min.js"
+    ));
+    let name = format!("{}.js", blake3::hash(editor.as_bytes()).to_hex());
+    let path = assets.join(&name);
+    if !path.exists() {
+        fs::write(&path, editor)?;
+    }
+    Ok(path)
+}
+
+fn page_css() -> String {
+    format!("{}{}", include_str!("page.css"), include_str!("client.css"))
+}
+
 pub fn page_with_meta(rendered: &Rendered, meta: &str) -> String {
     let items = rendered.toc.iter().enumerate().map(|(index, item)| {
         format!("<li class=\"depth-{}\"><a href=\"#{}\"><span class=\"num\">{:02}</span>{}</a></li>", item.depth, escape_html(&item.id), index + 1, escape_html(&item.text))
@@ -535,7 +565,7 @@ pub fn page_with_meta(rendered: &Rendered, meta: &str) -> String {
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{}</style></head><body><div class=\"{shell}\">{rail}<main class=\"content\"><article class=\"page\">{meta}{compact}{}</article></main></div><script type=\"application/json\" id=\"limpid-sources\">{}</script><script>{}</script></body></html>",
         escape_html(&rendered.title),
-        include_str!("page.css"),
+        page_css(),
         rendered.body,
         sources,
         include_str!("page.js")
@@ -545,15 +575,11 @@ pub fn page_with_meta(rendered: &Rendered, meta: &str) -> String {
 pub fn externalize_assets(html: &str, cache: &Path) -> std::io::Result<String> {
     let assets = cache.join("assets");
     fs::create_dir_all(&assets)?;
-    let editor = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../vendor/editor.min.js"
-    ));
-    let editor_hash = blake3::hash(editor.as_bytes()).to_hex();
-    let editor_name = format!("{editor_hash}.js");
-    if !assets.join(&editor_name).exists() {
-        fs::write(assets.join(&editor_name), editor)?;
-    }
+    let editor_name = client_editor_asset(cache)?
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_owned();
     let mermaid_name = if html.contains("<pre class=\"mermaid\"") {
         let source = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -568,10 +594,11 @@ pub fn externalize_assets(html: &str, cache: &Path) -> std::io::Result<String> {
         None
     };
     let mut page = html.to_owned();
+    let css = page_css();
     for (name, source, inline, reference) in [
         (
             "css",
-            include_str!("page.css"),
+            css.as_str(),
             "<style>{}</style>",
             "<link rel=\"stylesheet\" href=\"assets/{}.css\">",
         ),

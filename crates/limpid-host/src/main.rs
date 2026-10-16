@@ -183,6 +183,31 @@ fn open_request(
     ] {
         manager.register_script_message_handler(name, None);
     }
+    // Pages limpid renders already carry the client; injected pages get it here.
+    if let Ok(editor) = limpid_core::render::client_editor_asset(&cache_dir()) {
+        let editor = gio::File::for_path(&editor).uri();
+        manager.add_script(&webkit6::UserScript::new(
+            &format!("window.limpidAssets = {{ editor: {editor:?} }};"),
+            webkit6::UserContentInjectedFrames::AllFrames,
+            webkit6::UserScriptInjectionTime::Start,
+            &[],
+            &[],
+        ));
+    }
+    manager.add_style_sheet(&webkit6::UserStyleSheet::new(
+        limpid_core::render::client_css(),
+        webkit6::UserContentInjectedFrames::AllFrames,
+        webkit6::UserStyleLevel::User,
+        &[],
+        &[],
+    ));
+    manager.add_script(&webkit6::UserScript::new(
+        limpid_core::render::client_js(),
+        webkit6::UserContentInjectedFrames::AllFrames,
+        webkit6::UserScriptInjectionTime::End,
+        &[],
+        &[],
+    ));
     let active_request = Rc::new(RefCell::new(request.clone()));
     let restore_anchor = Rc::new(RefCell::new(None::<String>));
     let settings = webkit6::Settings::new();
@@ -1032,6 +1057,16 @@ fn deliver_with_command(
         source.as_deref(),
         request.pane.as_deref(),
     )
+}
+
+fn cache_dir() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cache"))
+        })
+        .unwrap_or_default();
+    base.join("limpid")
 }
 
 fn cache_mermaid(hash: &str, svg: &str) -> Result<(), Box<dyn Error>> {

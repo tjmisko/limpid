@@ -1,6 +1,9 @@
 (() => {
-  const editorUrl = document.currentScript?.dataset.editor;
-  const mermaidUrl = document.currentScript?.dataset.mermaid;
+  if (window.__limpidReady) return;
+  window.__limpidReady = true;
+  const assets = window.limpidAssets || {};
+  const editorUrl = document.currentScript?.dataset.editor || assets.editor;
+  const mermaidUrl = document.currentScript?.dataset.mermaid || assets.mermaid;
   const diagrams = [...document.querySelectorAll('pre.mermaid')];
   if (mermaidUrl && diagrams.length) requestAnimationFrame(() => setTimeout(() => {
     const script = document.createElement('script');
@@ -145,7 +148,7 @@
     window.addEventListener(type, () => setInputMode('mouse'), {passive: true});
   }
   window.addEventListener('resize', () => { queueScrollSpy(); if (focused) applyFocusBand(focused); updateVisual(); });
-  const STOP_SELECTOR = 'article h1[data-src],article h2[data-src],article h3[data-src],article h4[data-src],article h5[data-src],article h6[data-src],article p[data-src],article blockquote[data-src],article figure.code[data-src],article figure.diagram[data-src],article div.table-wrap[data-src],article li[data-src],article .limpid-annotation';
+  const STOP_SELECTOR = 'article h1,article h2,article h3,article h4,article h5,article h6,article p,article blockquote,article figure.code,article figure.diagram,article div.table-wrap,article li,article .limpid-annotation';
   const SPECIAL_SELECTOR = 'figure.code,figure.diagram,.table-wrap';
   const BLEED_INSET = 10;
   let focused = null;
@@ -163,8 +166,32 @@
       if (element.matches('.question-option')) return false;
       if (element.matches('.limpid-annotation')) return element.matches('.limpid-comment');
       if (element.matches('li')) return true;
-      return !element.parentElement?.closest('li[data-src],blockquote[data-src]');
+      return !element.parentElement?.closest('li,blockquote');
     });
+  }
+  // Pages limpid did not render have no embedded sources; key each block by
+  // its text so comments can attach and yank can read the DOM.
+  const guideMode = !document.getElementById('limpid-sources');
+  function blockHash(element) {
+    const text = element.textContent.trim();
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `g${(hash >>> 0).toString(16)}`;
+  }
+  function ensureGuideKeys() {
+    if (!guideMode) return;
+    const seen = new Set();
+    for (const element of focusStops()) {
+      if (element.dataset.src || element.classList.contains('limpid-annotation')) continue;
+      let key = blockHash(element);
+      let nth = 2;
+      while (seen.has(key)) key = `${blockHash(element)}-${nth++}`;
+      seen.add(key);
+      element.dataset.src = key;
+    }
   }
   function setFocus(element, reveal = false) {
     if (!element) return;
@@ -273,8 +300,76 @@
     if (!markdown.trim()) return;
     copyText(markdown).then(ok => flashStatus(ok ? `Yanked ${label}` : 'Yank failed'));
   }
+  // Markdown from the DOM, for pages with no embedded source.
+  function inlineMarkdown(node) {
+    let out = '';
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3) { out += child.textContent; continue; }
+      if (child.nodeType !== 1) continue;
+      if (child.classList?.contains('anchor') || child.classList?.contains('limpid-copy') || child.classList?.contains('limpid-annotation')) continue;
+      const tag = child.tagName.toLowerCase();
+      if (tag === 'strong' || tag === 'b') out += `**${inlineMarkdown(child)}**`;
+      else if (tag === 'em' || tag === 'i') out += `*${inlineMarkdown(child)}*`;
+      else if (tag === 'code') out += `\`${child.textContent}\``;
+      else if (tag === 'a') out += `[${inlineMarkdown(child)}](${child.getAttribute('href') || ''})`;
+      else if (tag === 'br') out += '\n';
+      else out += inlineMarkdown(child);
+    }
+    return out;
+  }
+  function listMarkdown(list, depth) {
+    const lines = [];
+    let index = 1;
+    for (const item of list.children) {
+      if (item.tagName.toLowerCase() !== 'li') continue;
+      const marker = list.tagName.toLowerCase() === 'ol' ? `${index}. ` : '- ';
+      let content = '';
+      let nested = '';
+      for (const child of item.childNodes) {
+        if (child.nodeType !== 1) { content += inlineMarkdown(child); continue; }
+        const tag = child.tagName.toLowerCase();
+        if (tag === 'ul' || tag === 'ol') nested += `\n${listMarkdown(child, depth + 1)}`;
+        else if (tag === 'aside' && child.classList.contains('limpid-annotation')) continue;
+        else content += inlineMarkdown(child);
+      }
+      lines.push(`${'  '.repeat(depth)}${marker}${content.trim()}${nested}`);
+      index += 1;
+    }
+    return lines.join('\n');
+  }
+  function tableMarkdown(table) {
+    const rows = [...table.querySelectorAll('tr')].map(row =>
+      [...row.children].map(cell => inlineMarkdown(cell).replace(/\s*\n\s*/g, ' ').trim()));
+    if (!rows.length) return '';
+    const lines = [`| ${rows[0].join(' | ')} |`, `| ${rows[0].map(() => '---').join(' | ')} |`];
+    for (const row of rows.slice(1)) lines.push(`| ${row.join(' | ')} |`);
+    return lines.join('\n');
+  }
+  function elementMarkdown(element) {
+    if (element.matches('figure.code')) {
+      const code = element.querySelector('pre code') || element.querySelector('pre');
+      const match = (code?.className || '').match(/language-([\w-]+)/);
+      return `\`\`\`${match ? match[1] : ''}\n${(code?.textContent || '').replace(/\n$/, '')}\n\`\`\``;
+    }
+    if (element.matches('div.table-wrap')) {
+      const table = element.querySelector('table');
+      return table ? tableMarkdown(table) : element.textContent.trim();
+    }
+    if (element.matches('ul,ol')) return listMarkdown(element, 0);
+    if (element.matches('blockquote')) {
+      return inlineMarkdown(element).trim().split('\n').map(line => `> ${line}`).join('\n');
+    }
+    if (isHeading(element)) return `${'#'.repeat(Number(element.tagName[1]))} ${inlineMarkdown(element).trim()}`;
+    if (element.matches('li')) return `- ${inlineMarkdown(element).trim()}`;
+    return inlineMarkdown(element).trim();
+  }
   function yankBlocks(blocks) {
     if (!blocks.length) return;
+    if (guideMode) {
+      const parts = blocks.map(elementMarkdown).filter(part => part.trim());
+      copyMarkdown(`${parts.join('\n\n').trim()}\n`, `${blocks.length} block${blocks.length === 1 ? '' : 's'}`);
+      return;
+    }
     const groups = new Map();
     for (const element of blocks) {
       const range = stopRange(element);
@@ -314,6 +409,21 @@
     for (let next = index + 1; next < headings.length; next += 1) {
       if (Number(headings[next].tagName[1]) <= level) { boundary = headings[next]; break; }
     }
+    if (guideMode) {
+      const headTop = head.getBoundingClientRect().top;
+      const boundaryTop = boundary ? boundary.getBoundingClientRect().top : Infinity;
+      const parts = focusStops()
+        .filter(element => {
+          if (element.classList.contains('limpid-annotation')) return false;
+          if (element === head) return !inner;
+          const top = element.getBoundingClientRect().top;
+          return top >= headTop && top < boundaryTop;
+        })
+        .map(elementMarkdown)
+        .filter(part => part.trim());
+      copyMarkdown(`${parts.join('\n\n').trim()}\n`, 'section');
+      return;
+    }
     const turn = head.closest('.turn')?.id || '';
     const source = sources[turn] ?? sources[''] ?? '';
     const range = stopRange(head);
@@ -323,6 +433,14 @@
     copyMarkdown(`${source.slice(start, end).trim()}\n`, 'section');
   }
   function yankWholePage() {
+    if (guideMode) {
+      const parts = focusStops()
+        .filter(element => !element.classList.contains('limpid-annotation'))
+        .map(elementMarkdown)
+        .filter(part => part.trim());
+      copyMarkdown(`${parts.join('\n\n').trim()}\n`, 'page');
+      return;
+    }
     let markdown;
     if (sources[''] !== undefined) {
       markdown = sources[''];
@@ -1035,6 +1153,7 @@
   });
   // Saved replies and comments ride in the page itself, after this script.
   const restore = () => {
+    ensureGuideKeys();
     let stored = {};
     try { stored = JSON.parse(document.getElementById('limpid-annotations')?.textContent || '{}'); }
     catch { stored = {}; }
