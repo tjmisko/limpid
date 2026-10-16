@@ -658,4 +658,46 @@ mod tests {
         fs::remove_file(path).unwrap();
         fs::remove_dir(directory).unwrap();
     }
+
+    #[test]
+    fn agent_handoff_saves_fields_and_comments_for_review() {
+        let directory = std::env::temp_dir().join(format!(
+            "limpid-host-replies-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let page = directory.join("agent.html");
+        let meta = directory.join("agent.meta.json");
+        let replies = directory.join("agent.replies.json");
+        fs::write(&page, "<html></html>").unwrap();
+        fs::write(
+            &meta,
+            r#"{"agent":"codex","session_id":"session-1","turn_spec":"0"}"#,
+        )
+        .unwrap();
+        let mut request = Handoff {
+            path: page.clone(),
+            slot: Some("session-1".into()),
+            origin: limpid_core::transport::Origin::Hook,
+            theme: Scheme::Dark,
+            pane: Some("7".into()),
+            source: None,
+            source_hash: None,
+        };
+
+        assert!(!save_reply(&mut request, "q1", "Use SQLite", "10-20").unwrap());
+        assert!(!save_comment(&mut request, "30-40", "t0", "quoted", "Check size", 3, 4).unwrap());
+        let stored = limpid_core::replies::AgentReplies::load(&replies).unwrap();
+        assert_eq!(stored.replies["q1"], "Use SQLite");
+        assert_eq!(stored.comments["t0:30-40"].text, "Check size");
+        let review = compose_review(&request, "Design decision").unwrap();
+        assert!(review.contains("Use SQLite"));
+        assert!(review.contains("Check size"));
+
+        fs::remove_file(replies).unwrap();
+        fs::remove_file(meta).unwrap();
+        fs::remove_file(page).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
 }
