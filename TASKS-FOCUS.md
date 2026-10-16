@@ -77,3 +77,17 @@ from the keyboard, and the editor and callouts are legible in the page.
   to replace.
 - Deletion is buffered, not a separate host message: `x` marks the key and the
   next `:w` / `:wq` sends it with the rest of the dirty buffer.
+
+## Follow-ups
+
+- Comments and editors sit directly under their block. A comment on a list item
+  goes into the item, so it never renders as a new list element. Callouts and
+  the focus band stretch to the article's reading edges, whatever the indent.
+- Comments carry no `COMMENT` label; comment text is tinted blue so user text
+  reads apart from the agent's.
+- The focus highlight is a translucent full-width band with no left bar.
+- Editor `:q` refuses to close a changed buffer and points to `:wq` or `:q!`.
+- `PageDown` / `PageUp` and `Ctrl-d` / `Ctrl-u` move the cursor to the element
+  at the new viewport center and center it. A tall element, the element already
+  focused, or a center more than a viewport away falls back to a plain
+  half-page scroll.
