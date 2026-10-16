@@ -89,12 +89,13 @@ of a 2,000-line `.md` is under 150 ms.
 - [x] **P5.1** Shared assets written once to `~/.cache/limpid/assets/`. `--out`
   inlines everything except lazy bundles.
 - [x] **P5.2** Math as MathML, or lazy KaTeX
-- [ ] **P5.3** Mermaid: vendor `mermaid.min.js` (`vendor/README.md` records
+- [x] **P5.3** Mermaid: vendor `mermaid.min.js` (`vendor/README.md` records
   version, license and rebuild steps), load it after first paint, send the SVG
   to the host, cache it in `~/.cache/limpid/mermaid/`, and inline cached
-  diagrams on later renders.
-- [ ] **P5.4** `--watch` with scroll kept by `data-src` anchor. Watch opened
-  `.md` files by default.
+  diagrams on later renders. Verified live: WebKit renders, the host caches the
+  SVG, and the next render inlines it without loading the script.
+- [x] **P5.4** `--watch` with scroll kept by `data-src` anchor. Watch opened
+  `.md` files by default. Verified live: editing an opened `.md` reloads it.
 - [x] **P5.5** `t` toggles the rail, `{` / `}` jump between headings.
 
 **Done when:** a document with math, a diagram and footnotes shows readable
@@ -120,13 +121,13 @@ through and pick options in without the mouse.
 
 - [x] **P7.1** Vendor CodeMirror 6 with vim mode as one bundle (recorded in
   `vendor/README.md`); load it lazily on the first `Enter`, `i` or `c`.
-- [ ] **P7.2** Reply editor on fields, and `c` comments on any block. Save with
-  `:w` or `Ctrl-Enter`, cancel with `:q`.
-- [ ] **P7.3** Storage in `limpid-core`: `<page>.replies.json` for agent pages;
+- [x] **P7.2** Reply editor on fields, and `c` comments on any block. Save and
+  close with `:wq` (also `:w`, `:x`) or `Ctrl-Enter`; cancel with `:q`.
+- [x] **P7.3** Storage in `limpid-core`: `<page>.replies.json` for agent pages;
   in-file `<!-- limpid reply qN -->` and `<!-- limpid comment -->` blocks for
   opened files, written atomically, with `-->` escaped, refused if the file
   changed on disk. Render saved replies as annotations.
-- [ ] **P7.4** `S` composes the compact reply for review; `Ctrl-Enter` runs
+- [x] **P7.4** `S` composes the compact reply for review; `Ctrl-Enter` runs
   `reply.command` with the `LIMPID_*` variables from the page meta and handoff.
   Clipboard by default.
 - [x] **P7.5** `limpid-core send`: types the reply into `$LIMPID_PANE` with

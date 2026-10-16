@@ -3,6 +3,8 @@ import { vim, Vim, getCM } from '@replit/codemirror-vim';
 
 let active;
 Vim.defineEx('write', 'w', () => active?.save());
+Vim.defineEx('wq', 'wq', () => active?.save());
+Vim.defineEx('xit', 'x', () => active?.save());
 Vim.defineEx('quit', 'q', () => active?.cancel());
 
 window.limpidCreateEditor = (parent, initial, save, cancel) => {
