@@ -54,21 +54,25 @@ limited to ten turns.
 
 ## Answer from the keyboard
 
-Use `Tab` and `Shift-Tab` to move between question fields, `1`–`9` to choose an
-option, and `Enter` or `i` to edit a reply. `c` comments on the block near the
-top of the view. The editor uses CodeMirror with vim keys: `Esc` then `:w`
-saves, `:q` cancels, and `Ctrl-Enter` saves directly. `S` opens the composed
-message for review; `Ctrl-Enter` there runs the configured reply command.
+A block cursor selects one block at a time: a paragraph, code block, diagram,
+table, blockquote, list item or question. `j` / `k` and the arrow keys move it;
+PageUp, PageDown, `Ctrl-u` and `Ctrl-d` scroll; `{` / `}` or `Ctrl-Up` /
+`Ctrl-Down` jump sections; `gg` / `G` go to the ends; `zt`, `zz` and `zb` put
+the focused block at the top, center or bottom. On a focused question, `1`–`9`
+choose an option and `Enter` or `i` edits a reply. `c` comments on the focused
+block, or reopens a focused comment for editing, and `x` deletes it. The editor
+uses CodeMirror with vim keys: `Esc` then `:w` saves, `:q` cancels, and
+`Ctrl-Enter` saves directly. `S` opens the composed message for review;
+`Ctrl-Enter` there runs the configured reply command.
 
 Edits stay on the page until you save. `:` opens a page command line: `:w`
 saves, `:q` quits and refuses while unsaved changes remain, `:wq` saves, sends
 the answers, and quits, `:q!` quits and discards, and `:qa` closes every limpid
 window. `S` previews the pending buffer.
 
-Navigation keys include `j`, `k`, `gg`, `G`, PageUp, PageDown, `Ctrl-Up`,
-`Ctrl-Down`, `/`, `n`, `N`, `{`, `}`, `t`, `F1`, `r`, `+`, `-`, and `0`.
-`n` and `N` center the current match like Vim's `nzz`. Hover a code block for
-a copy button, and `F1` toggles the contents rail.
+Other keys include `/`, `n`, `N`, `t`, `F1`, `r`, `+`, `-`, and `0`. `n` and
+`N` center the current match like Vim's `nzz`. Hover a code block for a copy
+button, and `F1` toggles the contents rail.
 
 Agent pages save replies beside their cached HTML. Replies to a markdown file
 are stored as HTML comments in that file. limpid refuses to write an annotation
