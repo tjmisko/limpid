@@ -310,10 +310,13 @@ impl FileRevision {
             return Err("source changed since it was rendered".into());
         }
         let source = std::str::from_utf8(&self.source)?;
-        let existing = annotation_spans(source).into_iter().find(|span| {
-            matches!(&span.kind, AnnotationKind::Reply { field: saved, .. } if saved == field)
-        });
-        if let Some(AnnotationSpan { start, end, .. }) = existing {
+        let mut existing = annotation_spans(source)
+            .into_iter()
+            .filter(|span| {
+                matches!(&span.kind, AnnotationKind::Reply { field: saved, .. } if saved == field)
+            })
+            .collect::<Vec<_>>();
+        if let Some(AnnotationSpan { start, end, .. }) = existing.pop() {
             let suffix = if source[start..end].ends_with('\n') {
                 "\n"
             } else {
@@ -324,7 +327,12 @@ impl FileRevision {
                 escape_comment(text)
             );
             let mut updated = Vec::with_capacity(self.source.len() + replacement.len());
-            updated.extend_from_slice(&self.source[..start]);
+            let mut cursor = 0;
+            for earlier in existing {
+                updated.extend_from_slice(&self.source[cursor..earlier.start]);
+                cursor = earlier.end;
+            }
+            updated.extend_from_slice(&self.source[cursor..start]);
             updated.extend_from_slice(replacement.as_bytes());
             updated.extend_from_slice(&self.source[end..]);
             atomic_write(&self.path, &updated)?;
@@ -452,6 +460,25 @@ mod tests {
             "Postgres --> SQLite"
         );
         assert!(first.upsert_reply(0, "q1", "stale").is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn editing_a_legacy_file_with_duplicate_replies_keeps_one_answer() {
+        let path =
+            std::env::temp_dir().join(format!("limpid-duplicate-reply-{}.md", std::process::id()));
+        fs::write(
+            &path,
+            "## Questions\n\n1. Pick?\n\n<!-- limpid reply q1\nFirst\n-->\n\n<!-- limpid reply q1\nSecond\n-->\n",
+        )
+        .unwrap();
+        FileRevision::open(&path)
+            .unwrap()
+            .upsert_reply(0, "q1", "Final")
+            .unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert_eq!(saved.matches("<!-- limpid reply q1").count(), 1);
+        assert_eq!(from_file_annotations(&saved).replies["q1"], "Final");
         fs::remove_file(path).unwrap();
     }
 
