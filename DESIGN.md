@@ -183,8 +183,8 @@ way.
   installed.
 - **Themes are CSS.** Highlight names become classes (`hl-keyword`,
   `hl-function-macro`), and a theme is a stylesheet with light and dark
-  variants, so switching scheme needs no re-render. The default theme matches
-  the page palette.
+  variants, so switching scheme needs no re-render. The default theme is
+  Catppuccin Mocha (dark) and Latte (light), matching the page palette.
 
 ## Questions
 
@@ -311,8 +311,36 @@ the scroll position (by `data-src` anchor) when the page has the same source.
 Hooks use the agent's session id as the slot, so each agent gets one window
 that updates.
 
-Requests with `origin: hook` never take focus. Hyprland rules match the window
-class `limpid`.
+### Window identity and rules
+
+What has keyboard focus is compositor policy, not app policy. Wayland gives a
+window only two identity strings (`app_id` and `title`), and it deliberately
+has no "map me without focus" request. GTK can ask a compositor to *activate* a
+window (`present`), but cannot ask it to suppress activation on map. So
+"origin: hook never takes focus" can only be a compositor rule, and that rule
+must match something the compositor can see.
+
+- **`app_id` identifies the process.** GTK fills it from
+  `GtkApplication::application_id`. The reverse-DNS shape
+  (`io.quasioptimal.limpid`) is not a Wayland requirement: it comes from
+  D-Bus, because that same value is the app's well-known bus name and D-Bus
+  well-known names must be dotted. limpid runs `NON_UNIQUE` and never uses the
+  bus, but GTK still validates the string as a D-Bus name. Under XWayland the
+  compositor instead sees `WM_CLASS`, which GTK derives from the program name
+  (`limpid-host`).
+- **`title` is the only per-window string.** One host process serves every
+  window (one shared WebKit engine), so normal and hook windows have the same
+  `app_id`; the hook/normal distinction has to live in the title. limpid keeps
+  a stable `limpid-hook` prefix on hook titles, so the rule matches even when
+  the page title arrives before the first map.
+- **The rule lives in the user's compositor config**, because compositor
+  policy cannot live in this repo. `integrations/hyprland/limpid.conf` is the
+  canonical copy of it; the app id and title prefix are the only strings that
+  must stay in sync.
+
+limpid targets Wayland. `limpid-host` asks GDK for the Wayland backend when
+`WAYLAND_DISPLAY` is set, so it cannot silently land on XWayland where the
+class (and therefore the rule) is different.
 
 ## Watch
 

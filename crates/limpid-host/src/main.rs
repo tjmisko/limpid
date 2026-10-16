@@ -47,6 +47,14 @@ fn run() -> Result<(), Box<dyn Error>> {
             std::env::set_var("JSC_useJIT", "0");
         }
     }
+    // limpid is Wayland-only. Prefer the native backend when a Wayland display
+    // exists so the window class is the app id the compositor rule matches,
+    // instead of the XWayland WM_CLASS (which is the program name).
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("GDK_BACKEND").is_none() {
+        unsafe {
+            std::env::set_var("GDK_BACKEND", "wayland");
+        }
+    }
     let (sender, receiver) = mpsc::channel::<Handoff>();
     let socket = if separate {
         let request = serde_json::from_reader(std::io::stdin())?;
