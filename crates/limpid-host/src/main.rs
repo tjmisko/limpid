@@ -1,5 +1,5 @@
 use gtk4::{gio, glib, prelude::*};
-use limpid_core::transport::{Handoff, Scheme, serve, socket_path};
+use limpid_core::transport::{FeedbackSignal, Handoff, Scheme, send_feedback, serve, socket_path};
 use std::{
     cell::RefCell,
     error::Error,
@@ -342,9 +342,8 @@ fn open_request(
                 return;
             }
         };
-        if let Err(error) = deliver(&deliver_request.borrow(), &message) {
+        if let Err(error) = deliver_or_wake(&deliver_request.borrow(), &message) {
             show_page_error(&deliver_view, &format!("Could not send reply: {error}"));
-            return;
         }
         deliver_view.evaluate_javascript(
             "window.webkit?.messageHandlers?.close?.postMessage({})",
@@ -949,6 +948,37 @@ fn rerender_file(request: &mut Handoff, source: &Path) -> Result<(), Box<dyn Err
     Ok(())
 }
 
+fn wake_message(page: &Path, message: &str) -> String {
+    format!("{message}\n\nlimpid-core feedback {}", page.display())
+}
+
+fn deliver_or_wake(request: &Handoff, message: &str) -> Result<(), Box<dyn Error>> {
+    let settings = limpid_core::settings::Settings::load_default()?;
+    deliver_or_wake_with(request, message, &settings.reply.command)
+}
+
+fn deliver_or_wake_with(
+    request: &Handoff,
+    message: &str,
+    command: &str,
+) -> Result<(), Box<dyn Error>> {
+    let meta = page_meta(request)?;
+    if let Some(socket) = meta
+        .get("feedback_sock")
+        .and_then(serde_json::Value::as_str)
+        .filter(|socket| !socket.is_empty())
+    {
+        let signal = FeedbackSignal {
+            page: request.path.clone(),
+            message: wake_message(&request.path, message),
+        };
+        if let Ok(true) = send_feedback(Path::new(socket), &signal) {
+            return Ok(());
+        }
+    }
+    deliver_with_command(request, message, command)
+}
+
 fn deliver(request: &Handoff, message: &str) -> Result<(), Box<dyn Error>> {
     let settings = limpid_core::settings::Settings::load_default()?;
     deliver_with_command(request, message, &settings.reply.command)
@@ -1081,6 +1111,88 @@ mod tests {
         fs::remove_file(meta).unwrap();
         fs::remove_file(page).unwrap();
         fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn wake_message_appends_the_pull_command() {
+        assert_eq!(
+            wake_message(Path::new("/tmp/page.html"), "q1: yes"),
+            "q1: yes\n\nlimpid-core feedback /tmp/page.html"
+        );
+    }
+
+    #[test]
+    fn deliver_or_wake_prefers_the_socket_then_falls_back() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            sync::{Arc, Mutex},
+        };
+        let directory = std::env::temp_dir().join(format!(
+            "limpid-host-wake-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let page = directory.join("agent.html");
+        fs::write(&page, "<html></html>").unwrap();
+        let meta = directory.join("agent.meta.json");
+        let delivered = directory.join("delivered.txt");
+        let command = format!("cat > '{}'", delivered.display());
+        let request = Handoff {
+            path: page.clone(),
+            theme: Scheme::Dark,
+            pane: None,
+            source: None,
+            source_hash: None,
+        };
+
+        let socket = directory.join("wake.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured_server = captured.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            *captured_server.lock().unwrap() = line;
+            stream.write_all(b"{\"ok\":true}\n").unwrap();
+        });
+        fs::write(
+            &meta,
+            serde_json::to_vec(&serde_json::json!({
+                "agent": "pi", "session_id": "s", "turn_spec": "0",
+                "source": null, "feedback_sock": socket,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        deliver_or_wake_with(&request, "q1: yes", &command).unwrap();
+        server.join().unwrap();
+        let frame: serde_json::Value =
+            serde_json::from_str(captured.lock().unwrap().trim()).unwrap();
+        assert_eq!(frame["page"], page.to_str().unwrap());
+        assert!(
+            frame["message"]
+                .as_str()
+                .unwrap()
+                .ends_with(&format!("limpid-core feedback {}", page.display()))
+        );
+        assert!(!delivered.exists());
+
+        fs::write(
+            &meta,
+            serde_json::to_vec(&serde_json::json!({
+                "agent": "pi", "session_id": "s", "turn_spec": "0",
+                "source": null, "feedback_sock": directory.join("missing.sock"),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        deliver_or_wake_with(&request, "q1: yes", &command).unwrap();
+        assert_eq!(fs::read_to_string(&delivered).unwrap(), "q1: yes");
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
