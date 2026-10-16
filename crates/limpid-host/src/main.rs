@@ -70,6 +70,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     if std::env::var("LIMPID_JIT").as_deref() != Ok("1") {
         // This must be set before JavaScriptCore starts.
+        // SAFETY: no other threads exist yet, so the environment is not read
+        // concurrently.
         unsafe {
             std::env::set_var("JSC_useJIT", "0");
         }
