@@ -77,6 +77,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     if std::env::var_os("WEBKIT_DMABUF_RENDERER_FORCE_SHM").is_none() {
         // The DMA-BUF renderer flashes its uninitialized buffer (magenta) before
         // the first paint.
+        // SAFETY: no other threads exist yet, so the environment is not read
+        // concurrently.
         unsafe {
             std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
         }
