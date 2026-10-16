@@ -91,7 +91,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             glib::ControlFlow::Continue
         });
     });
-    app.run();
+    app.run_with_args(&["limpid-host"]);
     if let Some(socket) = socket {
         let _ = fs::remove_file(socket);
     }
