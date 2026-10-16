@@ -226,8 +226,7 @@ impl FileRevision {
         }
         let comment = match annotation {
             FileAnnotation::Reply { field, text } => {
-                if !field.starts_with('q') || !field[1..].bytes().all(|byte| byte.is_ascii_digit())
-                {
+                if !valid_question_id(field) {
                     return Err("invalid question id".into());
                 }
                 format!(
@@ -250,6 +249,13 @@ impl FileRevision {
 
 pub fn source_hash(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
+}
+
+pub fn valid_question_id(field: &str) -> bool {
+    field
+        .strip_prefix('q')
+        .and_then(|digits| digits.parse::<usize>().ok().map(|number| (digits, number)))
+        .is_some_and(|(digits, number)| number > 0 && number.to_string() == digits)
 }
 
 fn escape_comment(text: &str) -> String {
@@ -309,6 +315,15 @@ mod tests {
         fs::write(&path, "## Questions\n\n1. Pick?\n").unwrap();
         let revision =
             FileRevision::open_checked(&path, &source_hash(&fs::read(&path).unwrap())).unwrap();
+        for field in ["q", "q0", "q01", "q-1", "q184467440737095516160"] {
+            assert!(
+                revision
+                    .insert_after(0, FileAnnotation::Reply { field, text: "bad" })
+                    .unwrap_err()
+                    .to_string()
+                    .contains("invalid question id")
+            );
+        }
         revision
             .insert_after(
                 revision.source.len(),

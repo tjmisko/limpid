@@ -465,7 +465,7 @@ fn save_reply(
     text: &str,
     source_range: &str,
 ) -> Result<bool, Box<dyn Error>> {
-    if !field.starts_with('q') || !field[1..].bytes().all(|byte| byte.is_ascii_digit()) {
+    if !limpid_core::replies::valid_question_id(field) {
         return Err("invalid question id".into());
     }
     if let (Some(source), Some(hash)) = (&request.source, &request.source_hash) {

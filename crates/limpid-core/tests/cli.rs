@@ -210,12 +210,9 @@ fn pi_autoopen_only_writes_a_page_for_enabled_questions() {
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(body.as_bytes())
-            .unwrap();
+        if let Err(error) = child.stdin.take().unwrap().write_all(body.as_bytes()) {
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        }
         child.wait_with_output().unwrap()
     };
     let response = "## Questions\n\n1. Which?\n   - SQLite";
