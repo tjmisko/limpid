@@ -34,6 +34,9 @@
   }
   const theme = new URLSearchParams(location.search).get('theme');
   if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+  // Markdown keyed by turn id, so a yank can slice the original source by
+  // each block's data-src range.
+  const sources = JSON.parse(document.getElementById('limpid-sources')?.textContent || '{}');
   const links = [...document.querySelectorAll('.toc a')];
   const byId = new Map();
   for (const link of links) {
@@ -118,11 +121,19 @@
     requestAnimationFrame(() => { spyQueued = false; updateScrollSpy(); });
   };
   window.addEventListener('scroll', queueScrollSpy, {passive: true});
-  window.addEventListener('resize', () => { queueScrollSpy(); if (focused) applyFocusBand(focused); });
+  window.addEventListener('resize', () => { queueScrollSpy(); if (focused) applyFocusBand(focused); updateVisual(); });
   updateScrollSpy();
-  const STOP_SELECTOR = 'article p[data-src],article blockquote[data-src],article figure.code[data-src],article figure.diagram[data-src],article div.table-wrap[data-src],article li[data-src],article .limpid-annotation';
+  const STOP_SELECTOR = 'article h1[data-src],article h2[data-src],article h3[data-src],article h4[data-src],article h5[data-src],article h6[data-src],article p[data-src],article blockquote[data-src],article figure.code[data-src],article figure.diagram[data-src],article div.table-wrap[data-src],article li[data-src],article .limpid-annotation';
+  const SPECIAL_SELECTOR = 'figure.code,figure.diagram,.table-wrap';
   const BLEED_INSET = 10;
   let focused = null;
+  let visual = false;
+  let visualAnchor = null;
+  let visualCount = '';
+  let selectionEl = null;
+  let pendingY = false;
+  let yankCount = '';
+  let yankObject = '';
   // Only the outermost stop counts, except that every list item is its own
   // stop. Question options are part of their field, not stops.
   function focusStops() {
@@ -140,6 +151,7 @@
       element.classList.add('limpid-focused');
       focused = element;
       applyFocusBand(element);
+      if (visual) updateVisual();
     }
     if (reveal) revealStop(element);
   }
@@ -156,6 +168,198 @@
     const margin = 12;
     if (rect.top < margin) window.scrollBy({top: rect.top - margin, behavior: 'instant'});
     else if (rect.bottom > innerHeight - margin) window.scrollBy({top: rect.bottom - (innerHeight - margin), behavior: 'instant'});
+  }
+  function isSpecial(element) {
+    return element.matches(SPECIAL_SELECTOR);
+  }
+  function stopRange(element) {
+    const value = element?.dataset?.src;
+    if (!value) return null;
+    const [start, end] = value.split('-').map(Number);
+    return Number.isFinite(start) && Number.isFinite(end) ? [start, end] : null;
+  }
+  function visualRange() {
+    if (!visual || !visualAnchor) return [];
+    const stops = focusStops();
+    let first = stops.indexOf(visualAnchor);
+    let last = stops.indexOf(focused);
+    if (first < 0 || last < 0) return [];
+    if (first > last) [first, last] = [last, first];
+    return stops.slice(first, last + 1);
+  }
+  function clearVisual() {
+    selectionEl?.remove();
+    selectionEl = null;
+    for (const element of document.querySelectorAll('.limpid-selected-special')) {
+      element.classList.remove('limpid-selected-special');
+    }
+  }
+  // One continuous band behind the selection. Opaque blocks paint above it and
+  // take an outline instead.
+  function updateVisual() {
+    if (!visual) { clearVisual(); return; }
+    const blocks = visualRange();
+    if (!blocks.length) { clearVisual(); return; }
+    const article = blocks[0].closest('article');
+    const column = article.getBoundingClientRect();
+    const first = blocks[0].getBoundingClientRect();
+    const last = blocks[blocks.length - 1].getBoundingClientRect();
+    if (!selectionEl) {
+      selectionEl = document.createElement('div');
+      selectionEl.className = 'limpid-selection';
+      article.append(selectionEl);
+    }
+    selectionEl.style.left = `${BLEED_INSET}px`;
+    selectionEl.style.width = `${article.clientWidth - BLEED_INSET * 2}px`;
+    selectionEl.style.top = `${first.top - column.top}px`;
+    selectionEl.style.height = `${last.bottom - first.top}px`;
+    const special = new Set(blocks.filter(isSpecial));
+    for (const element of document.querySelectorAll('.limpid-selected-special')) {
+      if (!special.has(element)) element.classList.remove('limpid-selected-special');
+    }
+    for (const element of special) element.classList.add('limpid-selected-special');
+  }
+  function startVisual() {
+    if (!focused) return;
+    visual = true;
+    visualAnchor = focused;
+    visualCount = '';
+    document.body.classList.add('limpid-visual');
+    updateVisual();
+  }
+  function stopVisual() {
+    visual = false;
+    visualAnchor = null;
+    visualCount = '';
+    document.body.classList.remove('limpid-visual');
+    clearVisual();
+  }
+  function flashStatus(message) {
+    window.limpidShowError?.(message);
+    clearTimeout(flashStatus.timer);
+    flashStatus.timer = setTimeout(() => {
+      const box = document.querySelector('.limpid-error');
+      if (box) box.textContent = '';
+    }, 1600);
+  }
+  function copyMarkdown(markdown, label) {
+    if (!markdown.trim()) return;
+    copyText(markdown).then(ok => flashStatus(ok ? `Yanked ${label}` : 'Yank failed'));
+  }
+  function yankBlocks(blocks) {
+    if (!blocks.length) return;
+    const groups = new Map();
+    for (const element of blocks) {
+      const range = stopRange(element);
+      if (!range) continue;
+      const turn = element.closest('.turn')?.id || '';
+      const group = groups.get(turn);
+      if (group) {
+        group[0] = Math.min(group[0], range[0]);
+        group[1] = Math.max(group[1], range[1]);
+      } else {
+        groups.set(turn, [range[0], range[1]]);
+      }
+    }
+    if (!groups.size) return;
+    const parts = [];
+    for (const [turn, [start, end]] of groups) {
+      const source = sources[turn] ?? sources[''] ?? '';
+      parts.push(source.slice(start, end));
+    }
+    copyMarkdown(`${parts.join('\n\n').trim()}\n`, `${blocks.length} block${blocks.length === 1 ? '' : 's'}`);
+  }
+  function yankMotion(count, direction) {
+    const stops = focusStops();
+    const index = stops.indexOf(focused);
+    if (index < 0) return;
+    const target = Math.min(stops.length - 1, Math.max(0, index + direction * count));
+    yankBlocks(stops.slice(Math.min(index, target), Math.max(index, target) + 1));
+  }
+  function yankSection(inner) {
+    const focusTop = focused?.getBoundingClientRect().top ?? 0;
+    let index = headings.findLastIndex(head => head.getBoundingClientRect().top <= focusTop);
+    if (index < 0) index = 0;
+    const head = headings[index];
+    if (!head) return;
+    const level = Number(head.tagName[1]);
+    let boundary = null;
+    for (let next = index + 1; next < headings.length; next += 1) {
+      if (Number(headings[next].tagName[1]) <= level) { boundary = headings[next]; break; }
+    }
+    const turn = head.closest('.turn')?.id || '';
+    const source = sources[turn] ?? sources[''] ?? '';
+    const range = stopRange(head);
+    if (!range) return;
+    const start = inner ? range[1] : range[0];
+    const end = boundary ? (stopRange(boundary)?.[0] ?? source.length) : source.length;
+    copyMarkdown(`${source.slice(start, end).trim()}\n`, 'section');
+  }
+  function yankWholePage() {
+    let markdown;
+    if (sources[''] !== undefined) {
+      markdown = sources[''];
+    } else {
+      markdown = Object.keys(sources)
+        .filter(key => /^turn-\d+$/.test(key))
+        .sort((a, b) => Number(a.slice(5)) - Number(b.slice(5)))
+        .map(key => sources[key])
+        .join('\n\n');
+    }
+    copyMarkdown(`${markdown.trim()}\n`, 'page');
+  }
+  function startYank() {
+    clearTimeout(startYank.timer);
+    pendingY = true;
+    yankCount = '';
+    yankObject = '';
+    startYank.timer = setTimeout(clearYank, 2000);
+  }
+  function clearYank() {
+    clearTimeout(startYank.timer);
+    pendingY = false;
+    yankCount = '';
+    yankObject = '';
+  }
+  function handleYankKey(event) {
+    event.preventDefault();
+    const key = event.key;
+    if (/^[0-9]$/.test(key) && (yankCount || key !== '0')) {
+      yankCount += key;
+      return;
+    }
+    const count = yankCount ? Number(yankCount) : 1;
+    if (yankObject) {
+      const inner = yankObject === 'i';
+      clearYank();
+      if (key === 's') yankSection(inner);
+      return;
+    }
+    if (key === 'i' || key === 'a') { yankObject = key; return; }
+    clearYank();
+    if (key === 'y') { yankBlocks(focused ? [focused] : []); return; }
+    if (key === 'j' || key === 'ArrowDown') { yankMotion(count, 1); return; }
+    if (key === 'k' || key === 'ArrowUp') { yankMotion(count, -1); return; }
+    if (key === 'G') {
+      const stops = focusStops();
+      const index = stops.indexOf(focused);
+      if (index >= 0) yankBlocks(stops.slice(index));
+    }
+  }
+  function handleVisualKey(event) {
+    const key = event.key;
+    if (/^[0-9]$/.test(key) && (visualCount || key !== '0')) {
+      visualCount += key;
+      return true;
+    }
+    const count = visualCount ? Number(visualCount) : 1;
+    if (key === 'j' || key === 'ArrowDown' || key === 'k' || key === 'ArrowUp') {
+      visualCount = '';
+      moveFocus((key === 'j' || key === 'ArrowDown' ? 1 : -1) * count);
+      return true;
+    }
+    visualCount = '';
+    return false;
   }
   function moveFocus(delta) {
     const stops = focusStops();
@@ -367,6 +571,9 @@
   }
   const KEYMAP = [
     ['j / k, ↓ / ↑', 'Next / previous block'],
+    ['v', 'Visual selection'],
+    ['y', 'Yank: yy block, yis section, y j / k blocks'],
+    ['Y', 'Yank the whole page'],
     ['PageDown / PageUp, Ctrl-d / Ctrl-u', 'Move half a page and center the block'],
     ['{ / }, Ctrl-Up / Ctrl-Down', 'Previous / next section'],
     ['gg / G', 'First / last block'],
@@ -627,6 +834,7 @@
   function clearPending() {
     pendingG = false;
     pendingZ = false;
+    clearYank();
   }
   document.addEventListener('keydown', event => {
     if (keymapDialog?.open) {
@@ -639,6 +847,20 @@
       return;
     }
     if (editable()) return;
+    if (visual && (event.key === 'v' || event.key === 'Escape')) {
+      event.preventDefault();
+      stopVisual();
+      return;
+    }
+    if (visual && event.key === 'y') {
+      event.preventDefault();
+      const blocks = visualRange();
+      stopVisual();
+      yankBlocks(blocks);
+      return;
+    }
+    if (pendingY) { handleYankKey(event); return; }
+    if (visual && handleVisualKey(event)) { event.preventDefault(); return; }
     if (event.key === '?') { event.preventDefault(); toggleKeymap(); return; }
     if (event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault();
@@ -716,6 +938,9 @@
       if (focused?.classList.contains('limpid-annotation')) deleteComment(focused);
       return;
     }
+    if (event.key === 'v') { event.preventDefault(); startVisual(); return; }
+    if (event.key === 'y') { event.preventDefault(); startYank(); return; }
+    if (event.key === 'Y') { event.preventDefault(); yankWholePage(); return; }
     if (event.key === 'S') {
       event.preventDefault();
       post('review', currentPayload());

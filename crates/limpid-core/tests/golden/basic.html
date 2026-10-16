@@ -45,7 +45,7 @@ a:hover{text-decoration:underline;text-underline-offset:3px}
 .toc a .num{font-family:var(--mono);font-size:10px;color:var(--faint);margin-right:7px}
 .toc .depth-3 a{padding-left:28px;font-size:12px}
 .content{min-width:0}
-.page{max-width:860px;margin:0 auto;padding:22px clamp(20px,5vw,64px) 120px}
+.page{position:relative;max-width:860px;margin:0 auto;padding:22px clamp(20px,5vw,64px) 120px}
 .meta{font-family:var(--mono);font-size:11px;line-height:1.4;color:var(--faint);margin:0 0 18px}
 .toc-compact{display:block;margin:-6px 0 18px;font-size:13px}
 .toc-compact summary{cursor:pointer;color:var(--faint);font-family:var(--mono);font-size:11px;list-style:none;padding:2px 0}
@@ -180,6 +180,16 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
 .limpid-error{position:fixed;left:20px;right:20px;bottom:20px;z-index:30;max-width:760px;margin:auto;padding:12px 16px;border:1px solid var(--rule);border-radius:8px;background:var(--surface);box-shadow:0 8px 28px #0004;color:var(--text);white-space:pre-wrap}
 .limpid-focused{position:relative}
 .limpid-focused::before{content:"";position:absolute;top:0;bottom:0;left:var(--band-left,0);right:var(--band-right,0);z-index:1;background:var(--focus);border-radius:6px;pointer-events:none}
+/* Code, diagrams and tables stay legible: an outline marks focus instead of a
+   background tint. */
+.limpid-focused:is(figure.code,figure.diagram,.table-wrap)::before{display:none}
+.limpid-focused:is(figure.code,figure.diagram,.table-wrap){outline:2px solid var(--teal);outline-offset:2px}
+/* Visual selection: one continuous band behind the blocks. Opaque blocks cut
+   through it and take the same outline. */
+.limpid-selection{position:absolute;z-index:0;background:var(--focus);border-radius:6px;pointer-events:none}
+body.limpid-visual .limpid-focused::before{display:none}
+.limpid-selected-special{position:relative;z-index:1;background:var(--bg);outline:2px solid var(--teal);outline-offset:2px}
+.limpid-error:empty{display:none}
 </style></head><body><div class="shell has-rail"><aside class="rail"><nav aria-label="Contents"><h2>Contents</h2><ul class="toc"><li class="depth-1"><a href="#hello"><span class="num">01</span>Hello</a></li><li class="depth-2"><a href="#questions"><span class="num">02</span>Questions</a></li></ul></nav></aside><main class="content"><article class="page"><details class="toc-compact"><summary>Contents · 2</summary><ul class="toc"><li class="depth-1"><a href="#hello"><span class="num">01</span>Hello</a></li><li class="depth-2"><a href="#questions"><span class="num">02</span>Questions</a></li></ul></details><h1 id="hello" data-src="28-36" data-line-start="5" data-line-end="5"><a class="anchor" href="#hello" aria-hidden="true">#</a>Hello</h1><p data-src="37-65" data-line-start="7" data-line-end="7">A <strong>bold</strong> line with <math display="inline"><msup><mi>x</mi><mn>2</mn></msup></math>.</p>
 <h2 id="questions" data-src="66-79" data-line-start="9" data-line-end="9"><a class="anchor" href="#questions" aria-hidden="true">#</a>Questions</h2><ol data-src="80-129" data-line-start="11" data-line-end="14"><li id="q1" class="question-field" data-field="q1" tabindex="-1" data-src="80-129" data-line-start="11" data-line-end="14">Choose a database?<ul data-src="105-129" data-line-start="12" data-line-end="14"><li class="question-option" data-option="1" data-src="105-114" data-line-start="12" data-line-end="12">SQLite</li>
 <li class="question-option" data-option="2" data-src="117-129" data-line-start="13" data-line-end="14">Postgres</li>
@@ -192,7 +202,7 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
 </div><figure class="code" data-src="160-184" data-line-start="19" data-line-end="21"><figcaption>rust</figcaption><pre><code>fn main() {}
 </code></pre></figure>
 
-</article></main></div><script>(() => {
+</article></main></div><script type="application/json" id="limpid-sources">{"":"---\ntitle: Golden page\n---\n\n# Hello\n\nA **bold** line with $x^2$.\n\n## Questions\n\n1. Choose a database?\n   - SQLite\n   - Postgres\n\n| A | B |\n|---|---|\n| x | y |\n\n```rust\nfn main() {}\n```\n\n\u003cscript>alert(1)\u003c/script>\n"}</script><script>(() => {
   const editorUrl = document.currentScript?.dataset.editor;
   const mermaidUrl = document.currentScript?.dataset.mermaid;
   const diagrams = [...document.querySelectorAll('pre.mermaid')];
@@ -228,6 +238,9 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
   }
   const theme = new URLSearchParams(location.search).get('theme');
   if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+  // Markdown keyed by turn id, so a yank can slice the original source by
+  // each block's data-src range.
+  const sources = JSON.parse(document.getElementById('limpid-sources')?.textContent || '{}');
   const links = [...document.querySelectorAll('.toc a')];
   const byId = new Map();
   for (const link of links) {
@@ -312,11 +325,19 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
     requestAnimationFrame(() => { spyQueued = false; updateScrollSpy(); });
   };
   window.addEventListener('scroll', queueScrollSpy, {passive: true});
-  window.addEventListener('resize', () => { queueScrollSpy(); if (focused) applyFocusBand(focused); });
+  window.addEventListener('resize', () => { queueScrollSpy(); if (focused) applyFocusBand(focused); updateVisual(); });
   updateScrollSpy();
-  const STOP_SELECTOR = 'article p[data-src],article blockquote[data-src],article figure.code[data-src],article figure.diagram[data-src],article div.table-wrap[data-src],article li[data-src],article .limpid-annotation';
+  const STOP_SELECTOR = 'article h1[data-src],article h2[data-src],article h3[data-src],article h4[data-src],article h5[data-src],article h6[data-src],article p[data-src],article blockquote[data-src],article figure.code[data-src],article figure.diagram[data-src],article div.table-wrap[data-src],article li[data-src],article .limpid-annotation';
+  const SPECIAL_SELECTOR = 'figure.code,figure.diagram,.table-wrap';
   const BLEED_INSET = 10;
   let focused = null;
+  let visual = false;
+  let visualAnchor = null;
+  let visualCount = '';
+  let selectionEl = null;
+  let pendingY = false;
+  let yankCount = '';
+  let yankObject = '';
   // Only the outermost stop counts, except that every list item is its own
   // stop. Question options are part of their field, not stops.
   function focusStops() {
@@ -334,6 +355,7 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
       element.classList.add('limpid-focused');
       focused = element;
       applyFocusBand(element);
+      if (visual) updateVisual();
     }
     if (reveal) revealStop(element);
   }
@@ -350,6 +372,198 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
     const margin = 12;
     if (rect.top < margin) window.scrollBy({top: rect.top - margin, behavior: 'instant'});
     else if (rect.bottom > innerHeight - margin) window.scrollBy({top: rect.bottom - (innerHeight - margin), behavior: 'instant'});
+  }
+  function isSpecial(element) {
+    return element.matches(SPECIAL_SELECTOR);
+  }
+  function stopRange(element) {
+    const value = element?.dataset?.src;
+    if (!value) return null;
+    const [start, end] = value.split('-').map(Number);
+    return Number.isFinite(start) && Number.isFinite(end) ? [start, end] : null;
+  }
+  function visualRange() {
+    if (!visual || !visualAnchor) return [];
+    const stops = focusStops();
+    let first = stops.indexOf(visualAnchor);
+    let last = stops.indexOf(focused);
+    if (first < 0 || last < 0) return [];
+    if (first > last) [first, last] = [last, first];
+    return stops.slice(first, last + 1);
+  }
+  function clearVisual() {
+    selectionEl?.remove();
+    selectionEl = null;
+    for (const element of document.querySelectorAll('.limpid-selected-special')) {
+      element.classList.remove('limpid-selected-special');
+    }
+  }
+  // One continuous band behind the selection. Opaque blocks paint above it and
+  // take an outline instead.
+  function updateVisual() {
+    if (!visual) { clearVisual(); return; }
+    const blocks = visualRange();
+    if (!blocks.length) { clearVisual(); return; }
+    const article = blocks[0].closest('article');
+    const column = article.getBoundingClientRect();
+    const first = blocks[0].getBoundingClientRect();
+    const last = blocks[blocks.length - 1].getBoundingClientRect();
+    if (!selectionEl) {
+      selectionEl = document.createElement('div');
+      selectionEl.className = 'limpid-selection';
+      article.append(selectionEl);
+    }
+    selectionEl.style.left = `${BLEED_INSET}px`;
+    selectionEl.style.width = `${article.clientWidth - BLEED_INSET * 2}px`;
+    selectionEl.style.top = `${first.top - column.top}px`;
+    selectionEl.style.height = `${last.bottom - first.top}px`;
+    const special = new Set(blocks.filter(isSpecial));
+    for (const element of document.querySelectorAll('.limpid-selected-special')) {
+      if (!special.has(element)) element.classList.remove('limpid-selected-special');
+    }
+    for (const element of special) element.classList.add('limpid-selected-special');
+  }
+  function startVisual() {
+    if (!focused) return;
+    visual = true;
+    visualAnchor = focused;
+    visualCount = '';
+    document.body.classList.add('limpid-visual');
+    updateVisual();
+  }
+  function stopVisual() {
+    visual = false;
+    visualAnchor = null;
+    visualCount = '';
+    document.body.classList.remove('limpid-visual');
+    clearVisual();
+  }
+  function flashStatus(message) {
+    window.limpidShowError?.(message);
+    clearTimeout(flashStatus.timer);
+    flashStatus.timer = setTimeout(() => {
+      const box = document.querySelector('.limpid-error');
+      if (box) box.textContent = '';
+    }, 1600);
+  }
+  function copyMarkdown(markdown, label) {
+    if (!markdown.trim()) return;
+    copyText(markdown).then(ok => flashStatus(ok ? `Yanked ${label}` : 'Yank failed'));
+  }
+  function yankBlocks(blocks) {
+    if (!blocks.length) return;
+    const groups = new Map();
+    for (const element of blocks) {
+      const range = stopRange(element);
+      if (!range) continue;
+      const turn = element.closest('.turn')?.id || '';
+      const group = groups.get(turn);
+      if (group) {
+        group[0] = Math.min(group[0], range[0]);
+        group[1] = Math.max(group[1], range[1]);
+      } else {
+        groups.set(turn, [range[0], range[1]]);
+      }
+    }
+    if (!groups.size) return;
+    const parts = [];
+    for (const [turn, [start, end]] of groups) {
+      const source = sources[turn] ?? sources[''] ?? '';
+      parts.push(source.slice(start, end));
+    }
+    copyMarkdown(`${parts.join('\n\n').trim()}\n`, `${blocks.length} block${blocks.length === 1 ? '' : 's'}`);
+  }
+  function yankMotion(count, direction) {
+    const stops = focusStops();
+    const index = stops.indexOf(focused);
+    if (index < 0) return;
+    const target = Math.min(stops.length - 1, Math.max(0, index + direction * count));
+    yankBlocks(stops.slice(Math.min(index, target), Math.max(index, target) + 1));
+  }
+  function yankSection(inner) {
+    const focusTop = focused?.getBoundingClientRect().top ?? 0;
+    let index = headings.findLastIndex(head => head.getBoundingClientRect().top <= focusTop);
+    if (index < 0) index = 0;
+    const head = headings[index];
+    if (!head) return;
+    const level = Number(head.tagName[1]);
+    let boundary = null;
+    for (let next = index + 1; next < headings.length; next += 1) {
+      if (Number(headings[next].tagName[1]) <= level) { boundary = headings[next]; break; }
+    }
+    const turn = head.closest('.turn')?.id || '';
+    const source = sources[turn] ?? sources[''] ?? '';
+    const range = stopRange(head);
+    if (!range) return;
+    const start = inner ? range[1] : range[0];
+    const end = boundary ? (stopRange(boundary)?.[0] ?? source.length) : source.length;
+    copyMarkdown(`${source.slice(start, end).trim()}\n`, 'section');
+  }
+  function yankWholePage() {
+    let markdown;
+    if (sources[''] !== undefined) {
+      markdown = sources[''];
+    } else {
+      markdown = Object.keys(sources)
+        .filter(key => /^turn-\d+$/.test(key))
+        .sort((a, b) => Number(a.slice(5)) - Number(b.slice(5)))
+        .map(key => sources[key])
+        .join('\n\n');
+    }
+    copyMarkdown(`${markdown.trim()}\n`, 'page');
+  }
+  function startYank() {
+    clearTimeout(startYank.timer);
+    pendingY = true;
+    yankCount = '';
+    yankObject = '';
+    startYank.timer = setTimeout(clearYank, 2000);
+  }
+  function clearYank() {
+    clearTimeout(startYank.timer);
+    pendingY = false;
+    yankCount = '';
+    yankObject = '';
+  }
+  function handleYankKey(event) {
+    event.preventDefault();
+    const key = event.key;
+    if (/^[0-9]$/.test(key) && (yankCount || key !== '0')) {
+      yankCount += key;
+      return;
+    }
+    const count = yankCount ? Number(yankCount) : 1;
+    if (yankObject) {
+      const inner = yankObject === 'i';
+      clearYank();
+      if (key === 's') yankSection(inner);
+      return;
+    }
+    if (key === 'i' || key === 'a') { yankObject = key; return; }
+    clearYank();
+    if (key === 'y') { yankBlocks(focused ? [focused] : []); return; }
+    if (key === 'j' || key === 'ArrowDown') { yankMotion(count, 1); return; }
+    if (key === 'k' || key === 'ArrowUp') { yankMotion(count, -1); return; }
+    if (key === 'G') {
+      const stops = focusStops();
+      const index = stops.indexOf(focused);
+      if (index >= 0) yankBlocks(stops.slice(index));
+    }
+  }
+  function handleVisualKey(event) {
+    const key = event.key;
+    if (/^[0-9]$/.test(key) && (visualCount || key !== '0')) {
+      visualCount += key;
+      return true;
+    }
+    const count = visualCount ? Number(visualCount) : 1;
+    if (key === 'j' || key === 'ArrowDown' || key === 'k' || key === 'ArrowUp') {
+      visualCount = '';
+      moveFocus((key === 'j' || key === 'ArrowDown' ? 1 : -1) * count);
+      return true;
+    }
+    visualCount = '';
+    return false;
   }
   function moveFocus(delta) {
     const stops = focusStops();
@@ -561,6 +775,9 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
   }
   const KEYMAP = [
     ['j / k, ↓ / ↑', 'Next / previous block'],
+    ['v', 'Visual selection'],
+    ['y', 'Yank: yy block, yis section, y j / k blocks'],
+    ['Y', 'Yank the whole page'],
     ['PageDown / PageUp, Ctrl-d / Ctrl-u', 'Move half a page and center the block'],
     ['{ / }, Ctrl-Up / Ctrl-Down', 'Previous / next section'],
     ['gg / G', 'First / last block'],
@@ -821,6 +1038,7 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
   function clearPending() {
     pendingG = false;
     pendingZ = false;
+    clearYank();
   }
   document.addEventListener('keydown', event => {
     if (keymapDialog?.open) {
@@ -833,6 +1051,20 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
       return;
     }
     if (editable()) return;
+    if (visual && (event.key === 'v' || event.key === 'Escape')) {
+      event.preventDefault();
+      stopVisual();
+      return;
+    }
+    if (visual && event.key === 'y') {
+      event.preventDefault();
+      const blocks = visualRange();
+      stopVisual();
+      yankBlocks(blocks);
+      return;
+    }
+    if (pendingY) { handleYankKey(event); return; }
+    if (visual && handleVisualKey(event)) { event.preventDefault(); return; }
     if (event.key === '?') { event.preventDefault(); toggleKeymap(); return; }
     if (event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault();
@@ -910,6 +1142,9 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
       if (focused?.classList.contains('limpid-annotation')) deleteComment(focused);
       return;
     }
+    if (event.key === 'v') { event.preventDefault(); startVisual(); return; }
+    if (event.key === 'y') { event.preventDefault(); startYank(); return; }
+    if (event.key === 'Y') { event.preventDefault(); yankWholePage(); return; }
     if (event.key === 'S') {
       event.preventDefault();
       post('review', currentPayload());

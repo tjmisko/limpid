@@ -61,8 +61,10 @@ pub fn build(
         let mut question_number = 0usize;
         let mut toc = Vec::<TocItem>::new();
         let mut body = String::new();
+        let mut sources = HashMap::new();
         for index in indices.iter().rev() {
             let turn = kept[kept.len() - 1 - index];
+            sources.insert(format!("turn-{index}"), turn.response.clone());
             let rendered = render::render_with_state(
                 &turn.response,
                 RenderMode::Agent,
@@ -99,6 +101,7 @@ pub fn build(
             title: title.clone(),
             body,
             toc,
+            sources,
         }
     };
     let meta = [model.unwrap_or(""), &context]
@@ -135,6 +138,23 @@ mod tests {
         assert!(page.html.contains("id=\"plan\""));
         assert!(page.html.contains("id=\"plan-2\""));
         assert!(page.html.contains("model · turns 0–1"));
+    }
+
+    #[test]
+    fn multi_turn_pages_embed_per_turn_sources() {
+        let turn = |response: &str| Turn {
+            prompt: "p".into(),
+            response: response.into(),
+        };
+        let page = build(
+            &[turn("## one\n\nalpha"), turn("## two\n\nbeta")],
+            "0..2",
+            None,
+            &[],
+        )
+        .unwrap();
+        assert!(page.html.contains("\"turn-0\":\"## two\\n\\nbeta\""));
+        assert!(page.html.contains("\"turn-1\":\"## one\\n\\nalpha\""));
     }
 
     #[test]

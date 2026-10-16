@@ -14,6 +14,9 @@ pub struct Rendered {
     pub title: String,
     pub body: String,
     pub toc: Vec<TocItem>,
+    // Markdown keyed by turn id (`""` for whole-page sources), so a yank can
+    // slice the original source by `data-src`.
+    pub sources: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -489,6 +492,7 @@ pub(crate) fn render_with_state(
         title,
         body: add_source_lines(&body, source),
         toc,
+        sources: HashMap::from([(String::new(), source.to_owned())]),
     }
 }
 
@@ -525,11 +529,15 @@ pub fn page_with_meta(rendered: &Rendered, meta: &str) -> String {
     } else {
         format!("<p class=\"meta\">{}</p>", escape_html(meta))
     };
+    let sources = serde_json::to_string(&rendered.sources)
+        .unwrap_or_else(|_| "{}".into())
+        .replace('<', "\\u003c");
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{}</style></head><body><div class=\"{shell}\">{rail}<main class=\"content\"><article class=\"page\">{meta}{compact}{}</article></main></div><script>{}</script></body></html>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{}</style></head><body><div class=\"{shell}\">{rail}<main class=\"content\"><article class=\"page\">{meta}{compact}{}</article></main></div><script type=\"application/json\" id=\"limpid-sources\">{}</script><script>{}</script></body></html>",
         escape_html(&rendered.title),
         include_str!("page.css"),
         rendered.body,
+        sources,
         include_str!("page.js")
     )
 }
@@ -626,6 +634,18 @@ mod tests {
         assert!(cached.contains("rel=\"stylesheet\" href=\"assets/"));
         assert_eq!(std::fs::read_dir(cache.join("assets")).unwrap().count(), 3);
         std::fs::remove_dir_all(cache).unwrap();
+    }
+
+    #[test]
+    fn pages_embed_markdown_sources_for_yanking() {
+        let result = render_markdown("# Title\n\nBody with <tag>.");
+        assert_eq!(result.sources[""], "# Title\n\nBody with <tag>.");
+        let page = page(&result);
+        let open = "id=\"limpid-sources\">";
+        let start = page.find(open).expect("sources script") + open.len();
+        let end = page[start..].find("</script>").unwrap();
+        let parsed: HashMap<String, String> = serde_json::from_str(&page[start..start + end]).unwrap();
+        assert_eq!(parsed[""], "# Title\n\nBody with <tag>.");
     }
 
     #[test]
