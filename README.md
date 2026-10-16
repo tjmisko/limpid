@@ -60,6 +60,11 @@ top of the view. The editor uses CodeMirror with vim keys: `Esc` then `:w`
 saves, `:q` cancels, and `Ctrl-Enter` saves directly. `S` opens the composed
 message for review; `Ctrl-Enter` there runs the configured reply command.
 
+Edits stay on the page until you save. `:` opens a page command line: `:w`
+saves, `:q` quits and refuses while unsaved changes remain, `:wq` saves, sends
+the answers, and quits, `:q!` quits and discards, and `:qa` closes every limpid
+window. `S` previews the pending buffer.
+
 Navigation keys include `j`, `k`, `gg`, `G`, PageUp, PageDown, `Ctrl-Up`,
 `Ctrl-Down`, `/`, `n`, `N`, `{`, `}`, `t`, `F1`, `r`, `+`, `-`, and `0`.
 `n` and `N` center the current match like Vim's `nzz`. Hover a code block for
@@ -68,6 +73,18 @@ a copy button, and `F1` toggles the contents rail.
 Agent pages save replies beside their cached HTML. Replies to a markdown file
 are stored as HTML comments in that file. limpid refuses to write an annotation
 if the file changed since it was rendered.
+
+## Send answers back
+
+Saved answers live beside the page. `limpid-core feedback <page>` prints them
+in the compact reply form, `--json` dumps the sidecar, and `limpid-core
+feedback --session <id>` finds the newest page for a session (with `--spec` to
+narrow it). An agent can pull at any time; it never has to wait.
+
+The pi extension binds a per-session socket and `/read` leaves a note with the
+page path and the pull command, without starting a turn. `:wq` writes the
+answers and wakes that session. Without a socket the host falls back to the
+configured `reply.command`.
 
 ## Configure
 
