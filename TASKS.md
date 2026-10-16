@@ -73,10 +73,10 @@ adversarial tests pass.
 
 ## Phase 3: `limpid` front end on the existing host
 
-- [ ] **P3.1** `limpid` binary: open `.md`, `.html` and `-`; write to the
-  cache; `--out`; hand off over the existing socket protocol. When no host is
-  running, start it first so GTK starts up while the page renders (the Python
-  host for now).
+- [x] **P3.1** `limpid` binary: open `.md`, `.html` and `-`; write to the
+  cache; `--out`; hand off over the socket protocol. When no host is running,
+  start it first so GTK starts up while the page renders. The Rust host
+  replaced the planned interim Python host.
 - [ ] **P3.2** Extend the handoff message with `slot`, `origin` and `pane`
   (captured from `$WEZTERM_PANE`). The Python host supports slot reuse and
   no-focus for `--hook`.

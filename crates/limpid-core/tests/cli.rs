@@ -49,6 +49,57 @@ fn pi_command_writes_page_and_metadata() {
 }
 
 #[test]
+fn claude_read_uses_latest_completed_turn_and_ignores_read_invocation() {
+    let temp = std::env::temp_dir().join(format!("limpid-claude-read-{}", std::process::id()));
+    fs::create_dir_all(&temp).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_limpid-core"))
+        .args(["claude", "0"])
+        .env("XDG_CACHE_HOME", &temp)
+        .env("XDG_CONFIG_HOME", &temp)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = serde_json::json!({
+        "model": "opus",
+        "session_id": "claude-1",
+        "messages": [
+            {"role": "user", "text": "first"},
+            {"role": "assistant", "text": "first answer"},
+            {"role": "user", "text": "second"},
+            {"role": "assistant", "text": "working"},
+            {"role": "user", "text": "", "toolResults": [{"text": "tool output"}]},
+            {"role": "assistant", "text": "final answer"},
+            {"role": "user", "text": "<command-name>/read</command-name><command-args>0</command-args>"}
+        ]
+    });
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&input).unwrap())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let page = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim());
+    let html = fs::read_to_string(&page).unwrap();
+    assert!(html.contains("final answer"));
+    assert!(!html.contains("first answer"));
+    assert!(!html.contains("<command-name>/read"));
+    let mut meta_path = page;
+    meta_path.set_extension("meta.json");
+    let meta: serde_json::Value = serde_json::from_slice(&fs::read(meta_path).unwrap()).unwrap();
+    assert_eq!(meta["agent"], "claude");
+    assert_eq!(meta["session_id"], "claude-1");
+    assert_eq!(meta["turn_spec"], "0");
+    fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
 fn codex_command_selects_fixture_turn_and_records_source() {
     let temp = std::env::temp_dir().join(format!("limpid-codex-cli-{}", std::process::id()));
     let sessions = temp.join("sessions/2026/10/15");
@@ -190,6 +241,61 @@ fn pi_autoopen_only_writes_a_page_for_enabled_questions() {
     let meta: serde_json::Value = serde_json::from_slice(&fs::read(meta).unwrap()).unwrap();
     assert_eq!(meta["session_id"], "pi-autoopen");
     assert_eq!(meta["turn_spec"], "0");
+    fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+fn codex_autoopen_writes_only_enabled_question_turns() {
+    let temp = std::env::temp_dir().join(format!("limpid-codex-autoopen-{}", std::process::id()));
+    let sessions = temp.join("sessions/2026/10/15");
+    let config = temp.join("config/limpid");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::create_dir_all(&config).unwrap();
+    let source = sessions.join("rollout-2026-10-15T10-00-00-x.jsonl");
+    let fixture = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test/fixtures/codex/simple.jsonl"
+    ))
+    .unwrap()
+    .replace(
+        "second answer",
+        "## Questions\\n\\n1. Which database?\\n   - SQLite",
+    );
+    fs::write(&source, fixture).unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_limpid-core"))
+            .args(["autoopen", "codex"])
+            .env("CODEX_HOME", &temp)
+            .env("CODEX_THREAD_ID", "x")
+            .env("XDG_CACHE_HOME", temp.join("cache"))
+            .env("XDG_CONFIG_HOME", temp.join("config"))
+            .output()
+            .unwrap()
+    };
+    let disabled = run();
+    assert!(disabled.status.success());
+    assert!(disabled.stdout.is_empty());
+
+    fs::write(config.join("config.toml"), "[autoopen]\ncodex = true\n").unwrap();
+    let opened = run();
+    assert!(
+        opened.status.success(),
+        "{}",
+        String::from_utf8_lossy(&opened.stderr)
+    );
+    let page = PathBuf::from(String::from_utf8(opened.stdout).unwrap().trim());
+    assert!(
+        fs::read_to_string(&page)
+            .unwrap()
+            .contains("class=\"question-field\"")
+    );
+    let mut meta_path = page;
+    meta_path.set_extension("meta.json");
+    let meta: serde_json::Value = serde_json::from_slice(&fs::read(meta_path).unwrap()).unwrap();
+    assert_eq!(meta["agent"], "codex");
+    assert_eq!(meta["session_id"], "x");
+    assert_eq!(meta["source"], source.to_string_lossy().as_ref());
+
     fs::remove_dir_all(temp).unwrap();
 }
 

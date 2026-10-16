@@ -600,6 +600,14 @@ fn compose_review(request: &Handoff, title: &str) -> Result<String, Box<dyn Erro
 
 fn deliver(request: &Handoff, message: &str) -> Result<(), Box<dyn Error>> {
     let settings = limpid_core::settings::Settings::load_default()?;
+    deliver_with_command(request, message, &settings.reply.command)
+}
+
+fn deliver_with_command(
+    request: &Handoff,
+    message: &str,
+    command: &str,
+) -> Result<(), Box<dyn Error>> {
     let meta = page_meta(request)?;
     let source = request.source.clone().or_else(|| {
         meta.get("source")
@@ -607,7 +615,7 @@ fn deliver(request: &Handoff, message: &str) -> Result<(), Box<dyn Error>> {
             .map(std::path::PathBuf::from)
     });
     limpid_core::replies::deliver_reply(
-        &settings.reply.command,
+        command,
         message,
         meta.get("agent")
             .and_then(serde_json::Value::as_str)
@@ -670,10 +678,19 @@ mod tests {
         let page = directory.join("agent.html");
         let meta = directory.join("agent.meta.json");
         let replies = directory.join("agent.replies.json");
+        let delivered = directory.join("delivered.txt");
+        let context = directory.join("context.txt");
+        let source = directory.join("transcript.jsonl");
         fs::write(&page, "<html></html>").unwrap();
         fs::write(
             &meta,
-            r#"{"agent":"codex","session_id":"session-1","turn_spec":"0"}"#,
+            serde_json::to_vec(&serde_json::json!({
+                "agent": "codex",
+                "session_id": "session-1",
+                "turn_spec": "0",
+                "source": source,
+            }))
+            .unwrap(),
         )
         .unwrap();
         let mut request = Handoff {
@@ -694,7 +711,23 @@ mod tests {
         let review = compose_review(&request, "Design decision").unwrap();
         assert!(review.contains("Use SQLite"));
         assert!(review.contains("Check size"));
+        let command = format!(
+            "cat > '{}'; printf '%s\\n' \"$LIMPID_AGENT\" \"$LIMPID_SESSION\" \"$LIMPID_SOURCE\" \"$LIMPID_PANE\" > '{}'",
+            delivered.display(),
+            context.display()
+        );
+        deliver_with_command(&request, &review, &command).unwrap();
+        assert_eq!(fs::read_to_string(&delivered).unwrap(), review);
+        assert_eq!(
+            fs::read_to_string(&context)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            vec!["codex", "session-1", source.to_str().unwrap(), "7"]
+        );
 
+        fs::remove_file(context).unwrap();
+        fs::remove_file(delivered).unwrap();
         fs::remove_file(replies).unwrap();
         fs::remove_file(meta).unwrap();
         fs::remove_file(page).unwrap();
