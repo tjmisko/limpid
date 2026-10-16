@@ -1,21 +1,28 @@
 :root{
-  /* Catppuccin Mocha */
-  --bg:#1e1e2e; --rail:#181825; --surface:#313244; --raised:#45475a;
-  --rule:#45475a; --rule-soft:#313244;
-  --ink:#cdd6f4; --muted:#a6adc8; --faint:#7f849c;
-  --teal:#94e2d5; --blue:#89b4fa; --amber:#fab387; --purple:#cba6f7;
-  --code:#181825;
+  --bg:#0c1015; --rail:#0a0e12; --surface:#12181f; --raised:#18212a;
+  --rule:#27313d; --rule-soft:#1b242d;
+  --ink:#e8eeed; --muted:#95a4b1; --faint:#627484;
+  --teal:#7cdec7; --blue:#90bdf5; --amber:#f0bc72; --purple:#b6a3ee;
+  --code:#0e1419;
+  /* Code token colours only: Catppuccin Mocha. */
+  --hl-keyword:#cba6f7; --hl-operator:#89dceb; --hl-function:#89b4fa;
+  --hl-type:#f9e2af; --hl-constant:#fab387; --hl-string:#a6e3a1;
+  --hl-comment:#7f849c; --hl-parameter:#eba0ac; --hl-property:#b4befe;
+  --hl-number:#fab387;
   --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
   --sans:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
   --rail-w:220px;
   color-scheme:dark;
 }
 :root[data-theme="light"]{
-  /* Catppuccin Latte */
-  --bg:#eff1f5;--rail:#e6e9ef;--surface:#ccd0da;--raised:#bcc0cc;
-  --rule:#bcc0cc;--rule-soft:#ccd0da;--ink:#4c4f69;--muted:#6c6f85;
-  --faint:#8c8fa1;--teal:#179299;--blue:#1e66f5;--amber:#fe640b;
-  --purple:#8839ef;--code:#e6e9ef;color-scheme:light;
+  --bg:#fbfaf7;--rail:#f3f2ed;--surface:#f0eee8;--raised:#e8e6df;
+  --rule:#d4d1c8;--rule-soft:#e3e0d8;--ink:#20252a;--muted:#53616c;
+  --faint:#71818d;--teal:#126d5d;--blue:#245b9b;--amber:#966024;
+  --purple:#6955a5;--code:#f3f2ee;color-scheme:light;
+  --hl-keyword:#6955a5;--hl-operator:#6955a5;--hl-function:#245b9b;
+  --hl-type:#966024;--hl-constant:#966024;--hl-string:#126d5d;
+  --hl-comment:#53616c;--hl-parameter:#966024;--hl-property:#966024;
+  --hl-number:#6955a5;
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
@@ -54,12 +61,12 @@ h2{font-size:clamp(21px,2.6vw,27px);font-weight:720;margin:36px 0 14px;padding-t
 h3{font-size:18px;font-weight:680;margin:30px 0 10px}
 h4{font-size:15.5px;font-weight:680;margin:24px 0 10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
 p{margin:0 0 16px}
-strong{font-weight:680;color:var(--ink)}
-em{color:var(--muted)}
+strong{font-weight:680;color:#fff}
+em{color:#d6dee4}
 ul,ol{margin:0 0 18px;padding-left:26px}
 li{margin:6px 0}
 li > ul,li > ol{margin:6px 0}
-blockquote{margin:20px 0;padding:4px 18px;border-left:3px solid var(--teal);background:rgba(148,226,213,.06);color:var(--muted);border-radius:0 8px 8px 0}
+blockquote{margin:20px 0;padding:4px 18px;border-left:3px solid var(--teal);background:rgba(124,222,199,.05);color:var(--muted);border-radius:0 8px 8px 0}
 blockquote p:last-child{margin-bottom:0}
 code{font-family:var(--mono);font-size:.87em}
 p code,li code,td code,h1 code,h2 code,h3 code,h4 code{background:var(--raised);border:1px solid var(--rule);border-radius:5px;padding:1px 5px;color:var(--blue)}
@@ -81,13 +88,17 @@ figure.code pre code{color:var(--ink)}
 figure.diagram{margin:22px 0;padding:14px;border:1px solid var(--rule);border-radius:10px;overflow-x:auto;background:var(--surface)}
 figure.diagram pre.mermaid{padding:0;background:transparent;color:var(--muted)}
 figure.diagram svg{display:block;max-width:100%;height:auto;margin:auto}
-pre code [class^="hl-keyword"],pre code [class^="hl-operator"]{color:var(--purple)}
-pre code [class^="hl-function"]{color:var(--blue)}
-pre code [class^="hl-type"],pre code [class^="hl-constructor"],pre code [class^="hl-constant"]{color:var(--amber)}
-pre code [class^="hl-string"],pre code [class^="hl-character"]{color:var(--teal)}
-pre code [class^="hl-comment"]{color:var(--muted);font-style:italic}
-pre code [class^="hl-variable-parameter"],pre code [class^="hl-attribute"],pre code [class^="hl-property"]{color:var(--amber)}
-pre code [class^="hl-number"],pre code [class^="hl-boolean"]{color:var(--purple)}
+pre code [class^="hl-keyword"]{color:var(--hl-keyword)}
+pre code [class^="hl-operator"]{color:var(--hl-operator)}
+pre code [class^="hl-function"]{color:var(--hl-function)}
+pre code [class^="hl-type"],pre code [class^="hl-constructor"]{color:var(--hl-type)}
+pre code [class^="hl-constant"]{color:var(--hl-constant)}
+pre code [class^="hl-string"],pre code [class^="hl-character"]{color:var(--hl-string)}
+pre code [class^="hl-comment"]{color:var(--hl-comment);font-style:italic}
+pre code [class^="hl-variable-parameter"]{color:var(--hl-parameter)}
+pre code [class^="hl-attribute"]{color:var(--hl-type)}
+pre code [class^="hl-property"]{color:var(--hl-property)}
+pre code [class^="hl-number"],pre code [class^="hl-boolean"]{color:var(--hl-number)}
 hr{border:0;border-top:1px solid var(--rule);margin:36px 0}
 .table-wrap{margin:22px 0;overflow-x:auto;border:1px solid var(--rule);border-radius:10px}
 table{border-collapse:collapse;width:100%;font-size:14px}

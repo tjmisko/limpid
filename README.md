@@ -85,7 +85,7 @@ All keys are optional in `~/.config/limpid/config.toml`:
 ```toml
 [highlight]
 grammars = ["rust", "python", "typescript", "bash", "json", "toml"]
-theme = "default"            # Catppuccin Mocha (dark) / Latte (light), built in
+theme = "default"            # page palette; code tokens use Catppuccin Mocha
 
 [questions]
 headings = ["Questions", "Open questions", "Questions for you"]

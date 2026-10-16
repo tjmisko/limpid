@@ -183,8 +183,8 @@ way.
   installed.
 - **Themes are CSS.** Highlight names become classes (`hl-keyword`,
   `hl-function-macro`), and a theme is a stylesheet with light and dark
-  variants, so switching scheme needs no re-render. The default theme is
-  Catppuccin Mocha (dark) and Latte (light), matching the page palette.
+  variants, so switching scheme needs no re-render. The page keeps its own
+  palette; only the code token colours use Catppuccin Mocha.
 
 ## Questions
 
