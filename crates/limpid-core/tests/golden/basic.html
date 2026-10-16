@@ -192,6 +192,10 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
    background tint. */
 .limpid-focused:is(figure.code,figure.diagram,.table-wrap)::before{display:none}
 .limpid-focused:is(figure.code,figure.diagram,.table-wrap){outline:2px solid var(--focus-edge);outline-offset:2px}
+/* A focused heading reads through its text colour; the band joins it to the
+   rest of a visual selection. */
+.limpid-focused:is(h1,h2,h3,h4,h5,h6)::before{display:none}
+.limpid-focused:is(h1,h2,h3,h4,h5,h6){color:var(--teal)}
 body.limpid-mouse .limpid-focused::before{background:var(--focus-faint)}
 body.limpid-mouse .limpid-focused:is(figure.code,figure.diagram,.table-wrap){outline-color:var(--focus-edge-faint)}
 /* Visual selection: one continuous band behind the blocks. Opaque blocks cut
@@ -409,6 +413,9 @@ body.limpid-visual .limpid-focused::before{display:none}
   function isSpecial(element) {
     return element.matches(SPECIAL_SELECTOR);
   }
+  function isHeading(element) {
+    return element.matches('h1,h2,h3,h4,h5,h6');
+  }
   function stopRange(element) {
     const value = element?.dataset?.src;
     if (!value) return null;
@@ -437,6 +444,7 @@ body.limpid-visual .limpid-focused::before{display:none}
     if (!visual) { clearVisual(); return; }
     const blocks = visualRange();
     if (!blocks.length) { clearVisual(); return; }
+    if (blocks.length === 1 && isHeading(blocks[0])) { clearVisual(); return; }
     const article = blocks[0].closest('article');
     const column = article.getBoundingClientRect();
     const first = blocks[0].getBoundingClientRect();

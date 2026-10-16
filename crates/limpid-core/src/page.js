@@ -195,6 +195,9 @@
   function isSpecial(element) {
     return element.matches(SPECIAL_SELECTOR);
   }
+  function isHeading(element) {
+    return element.matches('h1,h2,h3,h4,h5,h6');
+  }
   function stopRange(element) {
     const value = element?.dataset?.src;
     if (!value) return null;
@@ -223,6 +226,7 @@
     if (!visual) { clearVisual(); return; }
     const blocks = visualRange();
     if (!blocks.length) { clearVisual(); return; }
+    if (blocks.length === 1 && isHeading(blocks[0])) { clearVisual(); return; }
     const article = blocks[0].closest('article');
     const column = article.getBoundingClientRect();
     const first = blocks[0].getBoundingClientRect();
