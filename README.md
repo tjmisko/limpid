@@ -84,11 +84,13 @@ if the file changed since it was rendered.
 Saved answers live beside the page. `limpid-core feedback <page>` prints them
 in the compact reply form, `--json` dumps the sidecar, and `limpid-core
 feedback --session <id>` finds the newest page for a session (with `--spec` to
-narrow it). An agent can pull at any time; it never has to wait.
+narrow it). The compact form is self-contained: an agent answers from it and
+only pulls the page when something is unclear, so it never has to load the
+whole document.
 
-The pi extension binds a per-session socket and `/read` leaves a note with the
-page path and the pull command, without starting a turn. `:wq` writes the
-answers and wakes that session. Without a socket the host falls back to the
+The pi extension binds a per-session socket. `/read` leaves a note with the
+page path and a fallback pull command, without starting a turn. `:wq` writes
+the answers and wakes that session. Without a socket the host falls back to the
 configured `reply.command`.
 
 ## Configure

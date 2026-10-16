@@ -40,25 +40,54 @@ pub fn compose_message(title: &str, agent: &str, context: &str, replies: &AgentR
     }
     let mut comments = replies.comments.iter().collect::<Vec<_>>();
     comments.sort_by_key(|(key, _)| comment_position(key));
-    for (_, comment) in comments {
+    for (key, comment) in comments {
         if comment.text.trim().is_empty() {
             continue;
         }
-        let quote = comment.quote.split_whitespace().collect::<Vec<_>>().join(" ");
-        let mut quoted = quote.chars().take(100).collect::<String>();
-        if quote.chars().count() > 100 {
-            quoted.push('…');
-        }
+        let quoted = truncate_words(&comment.quote, 100).replace('"', "\\\"");
         let text = comment.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let location = match comment_turn(key) {
+            Some(turn) => format!("{turn}, L{}-{}", comment.start_line, comment.end_line),
+            None => format!("L{}-{}", comment.start_line, comment.end_line),
+        };
         lines.push(format!(
-            "\"{}\" (L{}-{}): user commented: \"{}\"",
-            quoted.replace('"', "\\\""),
-            comment.start_line,
-            comment.end_line,
+            "\"{quoted}\" ({location}): user commented: \"{}\"",
             text.replace('"', "\\\"")
         ));
     }
     lines.join("\n")
+}
+
+fn comment_turn(key: &str) -> Option<String> {
+    let (turn, _) = key.split_once(':')?;
+    let number = turn.strip_prefix("turn-")?;
+    Some(format!("turn {number}"))
+}
+
+fn truncate_words(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    let mut result = String::new();
+    for word in text.split_whitespace() {
+        let next = if result.is_empty() {
+            word.chars().count()
+        } else {
+            result.chars().count() + 1 + word.chars().count()
+        };
+        if next > limit {
+            break;
+        }
+        if !result.is_empty() {
+            result.push(' ');
+        }
+        result.push_str(word);
+    }
+    if result.is_empty() {
+        return text.chars().take(limit).collect::<String>() + "…";
+    }
+    result.push('…');
+    result
 }
 
 fn comment_position(key: &str) -> (usize, usize) {
@@ -789,12 +818,19 @@ mod tests {
         assert_eq!(
             comments,
             [
-                "\"older early\" (L1-1): user commented: \"older early\"",
-                "\"older late\" (L1-1): user commented: \"older late\"",
-                "\"newer early\" (L1-1): user commented: \"newer early\"",
-                "\"newer late\" (L1-1): user commented: \"newer late\"",
+                "\"older early\" (turn 1, L1-1): user commented: \"older early\"",
+                "\"older late\" (turn 1, L1-1): user commented: \"older late\"",
+                "\"newer early\" (turn 0, L1-1): user commented: \"newer early\"",
+                "\"newer late\" (turn 0, L1-1): user commented: \"newer late\"",
             ]
         );
+    }
+
+    #[test]
+    fn truncates_quotes_on_word_boundaries() {
+        assert_eq!(truncate_words("one two three", 100), "one two three");
+        assert_eq!(truncate_words("aaaa bbbb cccc dddd", 10), "aaaa bbbb…");
+        assert_eq!(truncate_words("supercalifragilistic", 5), "super…");
     }
 
     #[test]

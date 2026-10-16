@@ -44,7 +44,7 @@ export const register: Register = on => {
       catch { return { text: 'limpid was not found' } }
     }
     if (opened.exitCode !== 0) return { text: opened.stderr.trim().split(/\r?\n/)[0] || `limpid exited with ${opened.exitCode}` }
-    const note = `The user opened limpid page ${path}. Pull saved answers and comments with limpid-core feedback ${path} when they are relevant.`
+    const note = `The user opened limpid page ${path}. Answers and comments arrive complete; only run \`limpid-core feedback ${path}\` if something is unclear.`
     return { context: [note] }
   })
 }

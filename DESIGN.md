@@ -287,13 +287,13 @@ Either way, the next render shows saved replies as annotations.
 re: <page title> (claude, turn 0)
 q1: SQLite. We can move later.
 q2: no
-"Use the existing pool…" (L42-48): user commented: "this leaks on error"
+"Use the existing pool…" (turn 1, L42-48): user commented: "this leaks on error"
 ```
 
-Fields use their `qN` id. A comment quote runs to 100 characters of the block
-and carries its line range, so the agent can find the text, then the full
-comment. A comment on a question is an answer to that question. Unanswered
-fields are left out.
+Fields use their `qN` id. A comment quote runs to 100 characters of the block,
+cut on a word boundary, and names the turn and line range, so the agent can
+find the text without the full document, then the full comment. A comment on a
+question is an answer to that question. Unanswered fields are left out.
 
 ### Delivery
 
@@ -353,7 +353,9 @@ It prints the compact form `compose_message` already produces (fields, then
 quoted comments), or `{"replies":…,"comments":…}` with `--json`. An agent page
 reads its sidecar; a markdown path reads its in-file annotations. Feedback is
 keyed to the questions and comment ranges of the page, the same keys the
-sidecar uses. Empty feedback prints one line and exits zero.
+sidecar uses. Empty feedback prints one line and exits zero. The composed form
+is self-contained: the agent answers from it and only pulls the page when the
+feedback is unclear, so it does not drag the whole document into context.
 
 ### `/read` does not start the agent
 
@@ -364,8 +366,9 @@ with no turn:
 - Claude Code: return `{context:[…]}` from `command.run`.
 - Codex: the note is just the line `limpid` prints.
 
-The note carries the page path and the pull command. It reaches the model on
-the next turn the user starts; nothing wakes the agent on its own.
+The note carries the page path and says the feedback is complete; the pull
+command is a fallback for when it is unclear. It reaches the model on the next
+turn the user starts; nothing wakes the agent on its own.
 
 ### Command mode
 
@@ -407,8 +410,9 @@ directory) and removes it in `session_shutdown`.
 global state to find it.
 - On `:wq` the host composes the feedback, connects, writes `{page, message}`
 as one newline-terminated frame, and waits for `{ok}`. The listener replies,
-then calls `sendUserMessage` (or `{deliverAs:"followUp"}` while streaming). The message is the composed feedback followed by the pull command,
-so the agent has the answers in context and a way to re-read them.
+then calls `sendUserMessage` (or `{deliverAs:"followUp"}` while streaming).
+The message is the composed feedback followed by a note that it is complete,
+with the pull command as a fallback when something is unclear.
 - No socket, a refused connection, or no `{ok}` — the agent is gone, or it is
 Codex or a plain file — falls back to `reply.command`, the same delivery path
 used today.
@@ -426,8 +430,9 @@ pushes saved-but-unsent feedback on its own.
 
 - **Pull on request.** Saved feedback stays in the sidecar. The `/read` note
 names the pull command, and the agent may run `limpid-core feedback <page>` on
-any later turn. If it does not, the feedback is skipped. The agent decides, so
-no turn is spent unless it chooses one.
+any later turn, but only when the feedback it was given is unclear; the
+composed message stands on its own. If it does not pull, the feedback is
+skipped. The agent decides, so no turn is spent unless it chooses one.
 - **Explicit send.** `:wq` pushes one message and one turn, so the agent reads
 the feedback and responds. This is the only thing that starts a turn, and the
 only token spend the user did not type. `:w` and `:q` never send.

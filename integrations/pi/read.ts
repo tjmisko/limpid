@@ -9,7 +9,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 type Result = { code: number | null; stdout: string; stderr: string; missing?: boolean };
 const BIN = join(homedir(), ".local", "bin");
-const QUESTION_INSTRUCTION = "Put questions that need the user's answer under a `## Questions` heading as a numbered list; give suggested answers as nested `- ` items.";
+const QUESTION_INSTRUCTION = "Put questions that need the user's answer under a `## Questions` heading as a numbered list; give suggested answers as nested `- ` items. Answers the user gives through limpid arrive complete; only pull the limpid page if they are unclear.";
 
 let feedbackServer: Server | undefined;
 let feedbackSock: string | undefined;
@@ -114,7 +114,7 @@ async function openTurns(pi: ExtensionAPI, spec: string, ctx: ExtensionContext):
 		process.stderr.write(`limpid: ${opened.stderr.trim().split("\n")[0] || "could not open the page"}\n`);
 		return;
 	}
-	const note = `The user opened limpid page ${path}. Pull saved answers and comments with limpid-core feedback ${path} when they are relevant.`;
+	const note = `The user opened limpid page ${path}. Answers and comments arrive complete; only run \`limpid-core feedback ${path}\` if something is unclear.`;
 	void pi.sendMessage(
 		{customType: "limpid-open", content: note, display: true},
 		{triggerTurn: false},

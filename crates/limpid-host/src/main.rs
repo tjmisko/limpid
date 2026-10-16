@@ -1012,7 +1012,10 @@ fn rerender_file(request: &mut Handoff, source: &Path) -> Result<(), Box<dyn Err
 }
 
 fn wake_message(page: &Path, message: &str) -> String {
-    format!("{message}\n\nlimpid-core feedback {}", page.display())
+    format!(
+        "{message}\n\nThis feedback is complete; only run `limpid-core feedback {}` if something is unclear.",
+        page.display()
+    )
 }
 
 fn deliver_or_wake(request: &Handoff, message: &str) -> Result<(), Box<dyn Error>> {
@@ -1180,7 +1183,7 @@ mod tests {
     fn wake_message_appends_the_pull_command() {
         assert_eq!(
             wake_message(Path::new("/tmp/page.html"), "q1: yes"),
-            "q1: yes\n\nlimpid-core feedback /tmp/page.html"
+            "q1: yes\n\nThis feedback is complete; only run `limpid-core feedback /tmp/page.html` if something is unclear."
         );
     }
 
@@ -1236,12 +1239,9 @@ mod tests {
         let frame: serde_json::Value =
             serde_json::from_str(captured.lock().unwrap().trim()).unwrap();
         assert_eq!(frame["page"], page.to_str().unwrap());
-        assert!(
-            frame["message"]
-                .as_str()
-                .unwrap()
-                .ends_with(&format!("limpid-core feedback {}", page.display()))
-        );
+        let message = frame["message"].as_str().unwrap();
+        assert!(message.contains(&format!("limpid-core feedback {}", page.display())));
+        assert!(message.contains("This feedback is complete"));
         assert!(!delivered.exists());
 
         fs::write(
