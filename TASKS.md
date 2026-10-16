@@ -153,7 +153,7 @@ through the sidecar; push is only `:wq`, and only the socket makes it
 automatic. Do P9.1-P9.3 first (invisible, testable), then P9.5, then the
 user-visible pair P9.4 + P9.6, then P9.7-P9.9.
 
-- [ ] **P9.1 Stable page identity.** `agent_page::build` also returns a
+- [x] **P9.1 Stable page identity.** `agent_page::build` also returns a
   `content_hash` over the selected turns' `prompt` + `response` bytes, in
   index order. `write_agent_page` names the page `<agent>-<id>.html` with `id`
   the first 16 hex of `blake3(agent + "\0" + session_id + "\0" + spec + "\0" +
@@ -161,12 +161,12 @@ user-visible pair P9.4 + P9.6, then P9.7-P9.9.
   `feedback_sock`. Tests: deterministic path, unchanged transcript re-renders to the
   same path, a new turn gets a new path, two sessions with identical content
   get different paths.
-- [ ] **P9.2 Pruning exemption.** `prune_agent_pages` loads each candidate's
+- [x] **P9.2 Pruning exemption.** `prune_agent_pages` loads each candidate's
   `.replies.json` and skips any page whose replies or comments are non-empty.
   The newest-50 cap still applies to the rest. Sidecars for pruned pages keep
   being removed; exempt pages keep theirs. Tests cover a replied page older
   than 50 others.
-- [ ] **P9.3 `limpid-core feedback`.** New subcommand: `feedback [--json]
+- [x] **P9.3 `limpid-core feedback`.** New subcommand: `feedback [--json]
   [--session ID [--spec S]] [PAGE]`. Read the sidecar for an agent page, or
   `from_file_annotations` when the argument is a markdown file. Text
   output reuses `compose_message`; `--json` dumps `AgentReplies`. `--session`
@@ -174,7 +174,7 @@ user-visible pair P9.4 + P9.6, then P9.7-P9.9.
   the newest by mtime. Empty feedback prints one line and exits 0; an unknown
   page or session exits 1. Tests: argument parsing, session resolution, empty,
   and the file-page path.
-- [ ] **P9.4 Page buffer and command mode.** In `page.js`, stop posting `reply`
+- [x] **P9.4 Page buffer and command mode.** In `page.js`, stop posting `reply`
   and `comment` on every edit; keep a dirty set of changed `qN` answers and new
   comments. Unbind `q`. `:` opens a command line (the search-box pattern
   already exists): `q`, `w`, `wq`, `q!`, `qa`. `:q` with a dirty set leaves
@@ -188,12 +188,12 @@ user-visible pair P9.4 + P9.6, then P9.7-P9.9.
   (replies upsert, new comments insert), refusing on a stale source hash and
   re-rendering once. Tests: host batching for agent and file pages, stale
   file, and the command-mode state (a window test where feasible).
-- [ ] **P9.5 Wake socket client.** `transport` gains
+- [x] **P9.5 Wake socket client.** `transport` gains
   `FeedbackSignal {page, message}` and `send_feedback(socket, signal) ->
   Result<bool>`: connect with read/write timeouts, write one JSON line, read
   `{ok}`. Tests: round-trip against a local `UnixListener`, a timeout, and a
   refused connection.
-- [ ] **P9.6 pi extension.** In `session_start`, bind the per-session socket
+- [x] **P9.6 pi extension.** In `session_start`, bind the per-session socket
   (0700 directory, 0600 socket) under `$XDG_RUNTIME_DIR/limpid/`, falling back
   to `~/.cache/limpid/run`; remove it in `session_shutdown` (idempotent). Pass
   its path as `feedback_sock` in the JSON sent to `limpid-core pi`. The
@@ -203,16 +203,16 @@ user-visible pair P9.4 + P9.6, then P9.7-P9.9.
   records the page path and pull command with
   `{triggerTurn:false}`. Manual check: `:wq` starts a pi turn; `:w` + `:q`
   does not.
-- [ ] **P9.7 Delivery chain for `:wq`.** The host saves first, then delivers:
+- [x] **P9.7 Delivery chain for `:wq`.** The host saves first, then delivers:
   `feedback_sock` through `send_feedback`, else `reply.command` via the
   existing `deliver`. The sent message is `compose_message` plus a
   `limpid-core feedback <page>` line. A failed wake leaves the sidecar written
   and reports the error; the window still closes after a successful save.
   Tests: message composition and fallback selection with a fake meta.
-- [ ] **P9.8 Claude Code note.** `register.ts` passes the session id in its
+- [x] **P9.8 Claude Code note.** `register.ts` passes the session id in its
   JSON for stable identity and returns `{context:[note]}` from `command.run`,
   carrying the page path and pull command. No socket yet.
-- [ ] **P9.9 Docs and verification.** README covers command mode,
+- [x] **P9.9 Docs and verification.** README covers command mode,
   `limpid-core feedback` and the pi note. `cargo test --workspace` and `cargo
   clippy --workspace --all-targets -- -D warnings` pass. Confirm old page meta
   without the new fields still loads. Manual end-to-end with pi: answer,

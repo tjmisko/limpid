@@ -205,7 +205,7 @@ so the response reads normally in a terminal. Questions go under a
 - The heading may be any level and is matched without regard to case against
   `questions.headings`.
 - An agent that forgets the convention breaks nothing: `c` comments on any
-  block. Fields only decide where `Tab` stops.
+  block. Fields only decide which blocks the number keys answer.
 
 `limpid-core instructions` prints the line that goes into each agent's
 instructions (CLAUDE.md, AGENTS.md, the pi system prompt):
@@ -219,23 +219,34 @@ terminal.
 
 ## Keys
 
-The existing keys stay: `q`, `r`, `+ - 0`, `[ ]` back and forward, `j k`, `gg`,
-`G`, PageUp/PageDown as half pages, `Ctrl-Up`/`Ctrl-Down` section jumps,
-`/ n N` with smartcase, and `Esc`. `n` and `N` center the current match like
-Vim's `nzz`. Code blocks carry a hover copy button.
+A block cursor selects one block at a time. Paragraphs, code blocks,
+diagrams, tables, blockquotes, list items and question fields are stops;
+headings and rules are not. The cursor moves with `j` / `k` and the up and
+down arrows, and the viewport follows only when the block would otherwise be
+off screen. The cursor starts on the first stop in the restored viewport, so
+something is always focused. Editors and saved comments appear at the end of
+the heading's section.
+
+The rest of the keys stay: `r`, `+ - 0`, `[ ]` back and forward, `/ n N` with
+smartcase, and `Esc`. `n` and `N` center the current match like Vim's `nzz`.
+Code blocks carry a hover copy button.
 
 | Key | Action |
 |---|---|
-| `Tab` / `Shift-Tab` | Next / previous question field. Wraps around and scrolls the field into view |
-| `1`–`9` | On a focused field: pick that option |
-| `Enter` or `i` | Open the reply editor on the focused field (CodeMirror, vim mode, starts in insert) |
-| `c` | Comment on the block nearest the top of the view (any block, not only fields). Editors and comments appear at the end of the heading's section |
+| `j` / `k`, `Down` / `Up` | Move the cursor to the next / previous block |
+| `PageDown` / `PageUp`, `Ctrl-d` / `Ctrl-u` | Scroll half a page |
+| `{` / `}`, `Ctrl-Up` / `Ctrl-Down` | Next / previous section. The cursor moves to that section's first block |
+| `gg` / `G` | First / last block |
+| `zt` / `zz` / `zb` | Put the focused block at the top / center / bottom |
+| `1`–`9` | On a focused question: pick that option |
+| `Enter` or `i` | Open the reply editor on the focused question (CodeMirror, vim mode, starts in insert) |
+| `c` | Open the comment editor on the focused block, or reopen the focused comment for editing |
+| `x` | Delete the focused comment |
 | `Esc` then `:w`, or `Ctrl-Enter` | Save the reply and close the editor |
 | `:q` | Close the editor without saving |
 | `S` | Show the composed reply message for review |
 | `Ctrl-Enter` (in review) | Send the reply |
 | `t` or `F1` | Toggle the rail |
-| `{` / `}` | Previous / next heading |
 
 The page owns keys while an editor or the search field has focus. The host
 owns them otherwise. This rule exists today in `keys.py` and carries over.
