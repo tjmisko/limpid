@@ -23,8 +23,20 @@ window.limpidCreateEditor = (parent, initial, save, cancel) => {
     parent,
   });
   const session = {
-    save() { save(view.state.doc.toString()); view.destroy(); active = null; },
-    cancel() { cancel(); view.destroy(); active = null; },
+    save() {
+      if (!active) return;
+      active = null;
+      const text = view.state.doc.toString();
+      save(text);
+      // Let the Ex command finish before tearing the view down.
+      setTimeout(() => view.destroy(), 0);
+    },
+    cancel() {
+      if (!active) return;
+      active = null;
+      cancel();
+      setTimeout(() => view.destroy(), 0);
+    },
   };
   active = session;
   parent.addEventListener('keydown', event => {
