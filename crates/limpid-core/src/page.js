@@ -173,6 +173,43 @@
       : rect.top - (innerHeight - rect.height) / 2;
     window.scrollBy({top, behavior: 'instant'});
   }
+  // PageDown/PageUp and Ctrl-d/Ctrl-u move half a page, then put the cursor on
+  // the element at the new viewport center and center it. A tall element, one
+  // we already sit in, or a center that is too far away just scrolls half a
+  // page without re-centering.
+  function halfPageMove(direction) {
+    const vh = innerHeight;
+    const delta = direction * vh / 2;
+    const maxScroll = Math.max(0, document.documentElement.scrollHeight - vh);
+    const stops = focusStops();
+    if (!stops.length) {
+      window.scrollBy({top: delta, behavior: 'instant'});
+      return;
+    }
+    const start = window.scrollY;
+    const probe = Math.min(maxScroll, Math.max(0, start + delta));
+    const probeCenter = probe + vh / 2;
+    const boxes = stops.map(element => {
+      const rect = element.getBoundingClientRect();
+      return {element, top: rect.top + start, bottom: rect.bottom + start};
+    });
+    const containing = boxes.filter(box => box.top <= probeCenter && box.bottom >= probeCenter);
+    const target = containing.length
+      ? containing.reduce((best, box) => (box.bottom - box.top < best.bottom - best.top ? box : best))
+      : boxes.reduce((best, box) => (
+        Math.abs((box.top + box.bottom) / 2 - probeCenter) < Math.abs((best.top + best.bottom) / 2 - probeCenter) ? box : best
+      ));
+    const height = target.bottom - target.top;
+    const centered = Math.min(maxScroll, Math.max(0, (target.top + target.bottom) / 2 - vh / 2));
+    const jump = centered - start;
+    if (target.element === focused || height > vh || Math.abs(jump) > vh) {
+      window.scrollBy({top: delta, behavior: 'instant'});
+      if (target.element !== focused) setFocus(target.element);
+      return;
+    }
+    setFocus(target.element);
+    window.scrollTo({top: centered, behavior: 'instant'});
+  }
   function sectionJump(direction) {
     const stops = focusStops();
     if (!stops.length) return;
@@ -533,7 +570,7 @@
     }
     if (event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'd' || event.key === 'u')) {
       event.preventDefault();
-      window.scrollBy({top: (event.key === 'd' ? 1 : -1) * innerHeight / 2, behavior: 'instant'});
+      halfPageMove(event.key === 'd' ? 1 : -1);
       return;
     }
     if (event.ctrlKey || event.altKey || event.metaKey) return;
@@ -619,7 +656,7 @@
     }
     if (event.key === 'PageDown' || event.key === 'PageUp') {
       event.preventDefault();
-      window.scrollBy({top: (event.key === 'PageDown' ? 1 : -1) * innerHeight / 2, behavior: 'instant'});
+      halfPageMove(event.key === 'PageDown' ? 1 : -1);
       return;
     }
     if (event.key === 'G') {
