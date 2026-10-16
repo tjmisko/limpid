@@ -1,3 +1,4 @@
+use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -68,51 +69,101 @@ pub fn compose_message(title: &str, agent: &str, context: &str, replies: &AgentR
     lines.join("\n")
 }
 
+enum AnnotationKind {
+    Reply { field: String, text: String },
+    Comment { text: String },
+}
+
+struct AnnotationSpan {
+    start: usize,
+    end: usize,
+    kind: AnnotationKind,
+}
+
+fn parse_annotation(raw: &str) -> Option<AnnotationKind> {
+    let raw = raw.trim();
+    let (field, body) = if let Some(rest) = raw.strip_prefix("<!-- limpid reply ") {
+        let (field, body) = rest.split_once('\n')?;
+        if !valid_question_id(field) {
+            return None;
+        }
+        (Some(field.to_owned()), body)
+    } else {
+        (None, raw.strip_prefix("<!-- limpid comment\n")?)
+    };
+    let text = body
+        .trim_end()
+        .strip_suffix("-->")?
+        .trim_end()
+        .replace("--&gt;", "-->");
+    Some(match field {
+        Some(field) => AnnotationKind::Reply { field, text },
+        None => AnnotationKind::Comment { text },
+    })
+}
+
+fn annotation_spans(source: &str) -> Vec<AnnotationSpan> {
+    if !source.contains("<!-- limpid ") {
+        return Vec::new();
+    }
+    let mut spans = Vec::new();
+    let mut block_start = None;
+    for (event, range) in Parser::new(source).into_offset_iter() {
+        match event {
+            Event::Start(Tag::HtmlBlock) => block_start = Some(range.start),
+            Event::End(TagEnd::HtmlBlock) => {
+                if let Some(start) = block_start.take()
+                    && let Some(kind) = parse_annotation(&source[start..range.end])
+                {
+                    spans.push(AnnotationSpan {
+                        start,
+                        end: range.end,
+                        kind,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    spans
+}
+
 pub fn from_file_annotations(source: &str) -> AgentReplies {
-    let lines = source.lines().collect::<Vec<_>>();
     let mut saved = AgentReplies::default();
-    let mut index = 0;
-    while index < lines.len() {
-        let line = lines[index].trim();
-        let field = line
-            .strip_prefix("<!-- limpid reply ")
-            .filter(|id| valid_question_id(id));
-        let comment = line == "<!-- limpid comment";
-        if field.is_none() && !comment {
-            index += 1;
-            continue;
+    let mut cursor = 0;
+    let mut line_number = 1;
+    let mut preceding_content: Option<(usize, String)> = None;
+    for span in annotation_spans(source) {
+        for line in source[cursor..span.start].split_inclusive('\n') {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                preceding_content = Some((line_number, trimmed.to_owned()));
+            }
+            line_number += line.bytes().filter(|byte| *byte == b'\n').count();
         }
-        let start = index;
-        let mut body = Vec::new();
-        index += 1;
-        while index < lines.len() && lines[index].trim() != "-->" {
-            body.push(lines[index]);
-            index += 1;
+        let start_line = line_number;
+        line_number += source[span.start..span.end]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count();
+        cursor = span.end;
+        match span.kind {
+            AnnotationKind::Reply { field, text } => {
+                saved.replies.insert(field, text);
+            }
+            AnnotationKind::Comment { text } => {
+                let (line, quote) = preceding_content.clone().unwrap_or_default();
+                saved.comments.insert(
+                    format!("{start_line}-{line_number}"),
+                    Comment {
+                        text,
+                        quote,
+                        start_line: line,
+                        end_line: line,
+                    },
+                );
+            }
         }
-        if index == lines.len() {
-            break;
-        }
-        let text = body.join("\n").replace("--&gt;", "-->");
-        if let Some(field) = field {
-            saved.replies.insert(field.to_owned(), text);
-        } else {
-            let previous = (0..start)
-                .rev()
-                .find(|line| !lines[*line].trim().is_empty());
-            let (quote, line) = previous
-                .map(|line| (lines[line].trim().to_owned(), line + 1))
-                .unwrap_or_default();
-            saved.comments.insert(
-                format!("{start}-{index}"),
-                Comment {
-                    text,
-                    quote,
-                    start_line: line,
-                    end_line: line,
-                },
-            );
-        }
-        index += 1;
     }
     saved
 }
@@ -259,18 +310,19 @@ impl FileRevision {
             return Err("source changed since it was rendered".into());
         }
         let source = std::str::from_utf8(&self.source)?;
-        let marker = format!("<!-- limpid reply {field}\n");
-        let existing = source
-            .match_indices(&marker)
-            .filter(|(start, _)| *start == 0 || source.as_bytes()[start - 1] == b'\n')
-            .filter_map(|(start, _)| {
-                source[start + marker.len()..]
-                    .find("\n-->")
-                    .map(|end| (start, start + marker.len() + end + "\n-->".len()))
-            })
-            .last();
-        if let Some((start, end)) = existing {
-            let replacement = format!("{marker}{}\n-->", escape_comment(text));
+        let existing = annotation_spans(source).into_iter().find(|span| {
+            matches!(&span.kind, AnnotationKind::Reply { field: saved, .. } if saved == field)
+        });
+        if let Some(AnnotationSpan { start, end, .. }) = existing {
+            let suffix = if source[start..end].ends_with('\n') {
+                "\n"
+            } else {
+                ""
+            };
+            let replacement = format!(
+                "<!-- limpid reply {field}\n{}\n-->{suffix}",
+                escape_comment(text)
+            );
             let mut updated = Vec::with_capacity(self.source.len() + replacement.len());
             updated.extend_from_slice(&self.source[..start]);
             updated.extend_from_slice(replacement.as_bytes());
@@ -445,13 +497,41 @@ mod tests {
 
     #[test]
     fn reads_saved_annotations_for_review() {
-        let source = "Use the pool.\n\n<!-- limpid comment\nA --> B\n-->\n\n<!-- limpid reply q1\nSQLite --&gt; Postgres\n-->\n";
+        let source = "Use the pool.\n\n<!-- limpid comment\nA --&gt; B\n-->\n\n<!-- limpid reply q1\nSQLite --&gt; Postgres\n-->\n";
         let saved = from_file_annotations(source);
         assert_eq!(saved.replies["q1"], "SQLite --> Postgres");
         assert_eq!(
             saved.comments.values().next().unwrap().quote,
             "Use the pool."
         );
+    }
+
+    #[test]
+    fn repeated_file_annotations_keep_the_source_quote() {
+        let source = "Use the pool.\n\n<!-- limpid comment\nFirst note\n-->\n\n<!-- limpid reply q1\nSQLite\n-->\n\n<!-- limpid comment\nSecond note\n-->\n";
+        let saved = from_file_annotations(source);
+        assert_eq!(saved.comments.len(), 2);
+        for comment in saved.comments.values() {
+            assert_eq!(comment.quote, "Use the pool.");
+            assert_eq!(comment.start_line, 1);
+        }
+    }
+
+    #[test]
+    fn reply_markers_in_code_examples_are_not_saved_annotations() {
+        let path =
+            std::env::temp_dir().join(format!("limpid-reply-example-{}.md", std::process::id()));
+        let source = "```markdown\n<!-- limpid reply q1\nExample only\n-->\n```\n\n## Questions\n\n1. Pick?\n";
+        fs::write(&path, source).unwrap();
+        assert!(from_file_annotations(source).replies.is_empty());
+        let revision = FileRevision::open(&path).unwrap();
+        revision
+            .upsert_reply(source.len(), "q1", "Actual answer")
+            .unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("<!-- limpid reply q1\nExample only\n-->"));
+        assert_eq!(from_file_annotations(&saved).replies["q1"], "Actual answer");
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

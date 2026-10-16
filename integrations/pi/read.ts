@@ -37,7 +37,11 @@ async function command(name: string, args: string[], input = ""): Promise<Result
 
 async function openTurns(spec: string, ctx: ExtensionContext): Promise<void> {
 	const model = ctx.model?.name ?? ctx.model?.id;
-	const input = JSON.stringify({ model, branch: ctx.sessionManager.getBranch() });
+	const input = JSON.stringify({
+		model,
+		session_id: ctx.sessionManager.getSessionId(),
+		branch: ctx.sessionManager.getBranch(),
+	});
 	const page = await command("limpid-core", ["pi", spec], input);
 	if (page.code !== 0) {
 		process.stderr.write(`limpid: ${page.stderr.trim().split("\n")[0] || "could not render the turn"}\n`);
