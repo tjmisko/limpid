@@ -240,7 +240,7 @@ fn open_request(
         match save_reply(&mut reply_request.borrow_mut(), field, text, source_range) {
             Ok(true) => reload_with_anchor(&reply_view, &reply_anchor),
             Ok(false) => {}
-            Err(error) => eprintln!("limpid-host: could not save reply: {error}"),
+            Err(error) => show_page_error(&reply_view, &format!("Could not save reply: {error}")),
         }
     });
     let comment_request = active_request.clone();
@@ -283,7 +283,9 @@ fn open_request(
         ) {
             Ok(true) => reload_with_anchor(&comment_view, &comment_anchor),
             Ok(false) => {}
-            Err(error) => eprintln!("limpid-host: could not save comment: {error}"),
+            Err(error) => {
+                show_page_error(&comment_view, &format!("Could not save comment: {error}"))
+            }
         }
     });
     let review_request = active_request.clone();
@@ -305,10 +307,13 @@ fn open_request(
                     );
                 }
             }
-            Err(error) => eprintln!("limpid-host: could not compose reply: {error}"),
+            Err(error) => {
+                show_page_error(&review_view, &format!("Could not compose reply: {error}"))
+            }
         }
     });
     let send_request = active_request.clone();
+    let send_view = view.clone();
     manager.connect_script_message_received(Some("send"), move |_, value| {
         let Some(json) = value.to_json(0) else {
             return;
@@ -320,7 +325,7 @@ fn open_request(
             return;
         };
         if let Err(error) = deliver(&send_request.borrow(), text) {
-            eprintln!("limpid-host: could not send reply: {error}");
+            show_page_error(&send_view, &format!("Could not send reply: {error}"));
         }
     });
     manager.connect_script_message_received(Some("mermaid-svg"), move |_, value| {
@@ -459,6 +464,19 @@ fn reload_with_anchor(view: &webkit6::WebView, anchor: &Rc<RefCell<Option<String
     );
 }
 
+fn show_page_error(view: &webkit6::WebView, message: &str) {
+    let Ok(json) = serde_json::to_string(message) else {
+        return;
+    };
+    view.evaluate_javascript(
+        &format!("window.limpidShowError({json})"),
+        None,
+        None,
+        None::<&gio::Cancellable>,
+        |_| {},
+    );
+}
+
 fn save_reply(
     request: &mut Handoff,
     field: &str,
@@ -475,10 +493,7 @@ fn save_reply(
             .1
             .parse::<usize>()?;
         let revision = limpid_core::replies::FileRevision::open_checked(source, hash)?;
-        revision.insert_after(
-            end,
-            limpid_core::replies::FileAnnotation::Reply { field, text },
-        )?;
+        revision.upsert_reply(end, field, text)?;
         let updated = fs::read_to_string(source)?;
         let settings = limpid_core::settings::Settings::load_default()?;
         let rendered = limpid_core::render::render_with_questions(
@@ -732,5 +747,57 @@ mod tests {
         fs::remove_file(meta).unwrap();
         fs::remove_file(page).unwrap();
         fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn file_handoff_restores_edited_reply_and_rejects_stale_source() {
+        let directory = std::env::temp_dir().join(format!(
+            "limpid-host-file-reply-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("questions.md");
+        let page = directory.join("questions.html");
+        let markdown = "## Questions\n\n1. Pick?\n   - SQLite\n   - Postgres\n";
+        fs::write(&source, markdown).unwrap();
+        let mut request = Handoff {
+            path: page.clone(),
+            slot: None,
+            origin: limpid_core::transport::Origin::User,
+            theme: Scheme::Dark,
+            pane: None,
+            source: Some(source.clone()),
+            source_hash: Some(limpid_core::replies::source_hash(markdown.as_bytes())),
+        };
+        assert!(
+            save_reply(
+                &mut request,
+                "q1",
+                "SQLite",
+                &format!("0-{}", markdown.len())
+            )
+            .unwrap()
+        );
+        assert!(
+            fs::read_to_string(&page)
+                .unwrap()
+                .contains("class=\"question-reply\" aria-label=\"Reply\">SQLite</div>")
+        );
+        assert!(save_reply(&mut request, "q1", "Postgres", "0-0").unwrap());
+        let saved = fs::read_to_string(&source).unwrap();
+        assert_eq!(saved.matches("<!-- limpid reply q1").count(), 1);
+        assert_eq!(
+            limpid_core::replies::from_file_annotations(&saved).replies["q1"],
+            "Postgres"
+        );
+        assert!(
+            compose_review(&request, "Questions")
+                .unwrap()
+                .contains("q1: Postgres")
+        );
+        fs::write(&source, format!("{saved}\nExternal edit\n")).unwrap();
+        assert!(save_reply(&mut request, "q1", "stale", "0-0").is_err());
+        fs::remove_dir_all(directory).unwrap();
     }
 }

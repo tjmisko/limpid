@@ -142,3 +142,4 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
 .rail-hidden .rail{display:none}
 .question-field:focus{outline:2px solid var(--teal);outline-offset:3px}
 .question-option.selected{color:var(--teal);font-weight:600}
+.limpid-error{position:fixed;left:20px;right:20px;bottom:20px;z-index:30;max-width:760px;margin:auto;padding:12px 16px;border:1px solid var(--rule);border-radius:8px;background:var(--surface);box-shadow:0 8px 28px #0004;color:var(--text);white-space:pre-wrap}

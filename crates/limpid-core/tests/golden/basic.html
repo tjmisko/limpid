@@ -142,6 +142,7 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
 .rail-hidden .rail{display:none}
 .question-field:focus{outline:2px solid var(--teal);outline-offset:3px}
 .question-option.selected{color:var(--teal);font-weight:600}
+.limpid-error{position:fixed;left:20px;right:20px;bottom:20px;z-index:30;max-width:760px;margin:auto;padding:12px 16px;border:1px solid var(--rule);border-radius:8px;background:var(--surface);box-shadow:0 8px 28px #0004;color:var(--text);white-space:pre-wrap}
 </style></head><body><div class="shell has-rail"><aside class="rail"><nav aria-label="Contents"><h2>Contents</h2><ul class="toc"><li class="depth-1"><a href="#hello"><span class="num">01</span>Hello</a></li><li class="depth-2"><a href="#questions"><span class="num">02</span>Questions</a></li></ul></nav></aside><main class="content"><article class="page"><details class="toc-compact"><summary>Contents · 2</summary><ul class="toc"><li class="depth-1"><a href="#hello"><span class="num">01</span>Hello</a></li><li class="depth-2"><a href="#questions"><span class="num">02</span>Questions</a></li></ul></details><h1 id="hello" data-src="28-36" data-line-start="5" data-line-end="5"><a class="anchor" href="#hello" aria-hidden="true">#</a>Hello</h1><p data-src="37-65" data-line-start="7" data-line-end="7">A <strong>bold</strong> line with <math display="inline"><msup><mi>x</mi><mn>2</mn></msup></math>.</p>
 <h2 id="questions" data-src="66-79" data-line-start="9" data-line-end="9"><a class="anchor" href="#questions" aria-hidden="true">#</a>Questions</h2><ol data-src="80-129" data-line-start="11" data-line-end="14"><li id="q1" class="question-field" data-field="q1" tabindex="-1" data-src="80-129" data-line-start="11" data-line-end="14">Choose a database?<ul data-src="105-129" data-line-start="12" data-line-end="14"><li class="question-option" data-option="1" data-src="105-114" data-line-start="12" data-line-end="12">SQLite</li>
 <li class="question-option" data-option="2" data-src="117-129" data-line-start="13" data-line-end="14">Postgres</li>
@@ -229,6 +230,13 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
       }
     }
   };
+  for (const field of fields) {
+    const answer = field.querySelector('.question-reply')?.textContent?.trim();
+    if (!answer) continue;
+    for (const option of field.querySelectorAll('.question-option')) {
+      option.classList.toggle('selected', option.textContent.trim() === answer);
+    }
+  }
   window.limpidRestoreComments = comments => {
     for (const [key, comment] of Object.entries(comments)) {
       const [turn, range] = key.includes(':') ? key.split(':', 2) : ['', key];
@@ -302,6 +310,16 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
     dialog.querySelector('textarea').value = message;
     dialog.showModal();
     dialog.querySelector('textarea').focus();
+  };
+  window.limpidShowError = message => {
+    let error = document.querySelector('.limpid-error');
+    if (!error) {
+      error = document.createElement('div');
+      error.className = 'limpid-error';
+      error.setAttribute('role', 'status');
+      document.body.append(error);
+    }
+    error.textContent = message;
   };
   function find(backwards = false) {
     if (!search) return;

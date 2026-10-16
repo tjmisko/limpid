@@ -105,7 +105,7 @@ fn saved_annotation(raw: &str) -> Option<String> {
     let value = raw.trim();
     let (label, body) = if let Some(rest) = value.strip_prefix("<!-- limpid reply ") {
         let (field, body) = rest.split_once('\n')?;
-        if !field.starts_with('q') || !field[1..].bytes().all(|byte| byte.is_ascii_digit()) {
+        if !crate::replies::valid_question_id(field) {
             return None;
         }
         (format!("Reply {field}"), body)
@@ -206,6 +206,11 @@ pub(crate) fn render_with_state(
     used: &mut HashMap<String, usize>,
     question_number: &mut usize,
 ) -> Rendered {
+    let saved_replies = if mode == RenderMode::File {
+        crate::replies::from_file_annotations(source).replies
+    } else {
+        Default::default()
+    };
     let mut highlighter = crate::highlight::PageHighlighter::new();
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_TASKLISTS
@@ -356,7 +361,14 @@ pub(crate) fn render_with_state(
             Event::End(TagEnd::Item) => {
                 if active_field_depth == Some(list_depth) {
                     output.push(Event::Html(
-                        "<div class=\"question-reply\" aria-label=\"Reply\"></div>".into(),
+                        format!(
+                            "<div class=\"question-reply\" aria-label=\"Reply\">{}</div>",
+                            saved_replies
+                                .get(&format!("q{question_number}"))
+                                .map(|reply| escape_html(reply))
+                                .unwrap_or_default()
+                        )
+                        .into(),
                     ));
                     active_field_depth = None;
                 }
@@ -696,7 +708,7 @@ mod tests {
 
     #[test]
     fn shows_saved_file_annotations_and_keeps_their_text_escaped() {
-        let markdown = "1. Pick?\n\n<!-- limpid reply q1\nA --&gt; B <script>bad</script>\n-->\n";
+        let markdown = "## Questions\n\n1. Pick?\n\n<!-- limpid reply q1\nA --&gt; B <script>bad</script>\n-->\n";
         let result = render(markdown, RenderMode::File);
         assert!(
             result.body.contains("class=\"limpid-annotation\""),
@@ -709,6 +721,7 @@ mod tests {
                 .contains("A --&gt; B &lt;script&gt;bad&lt;/script&gt;")
         );
         assert!(!result.body.contains("<script>bad</script>"));
+        assert!(result.body.contains("class=\"question-reply\" aria-label=\"Reply\">A --&gt; B &lt;script&gt;bad&lt;/script&gt;</div>"));
     }
 
     #[test]

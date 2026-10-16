@@ -73,6 +73,13 @@
       }
     }
   };
+  for (const field of fields) {
+    const answer = field.querySelector('.question-reply')?.textContent?.trim();
+    if (!answer) continue;
+    for (const option of field.querySelectorAll('.question-option')) {
+      option.classList.toggle('selected', option.textContent.trim() === answer);
+    }
+  }
   window.limpidRestoreComments = comments => {
     for (const [key, comment] of Object.entries(comments)) {
       const [turn, range] = key.includes(':') ? key.split(':', 2) : ['', key];
@@ -146,6 +153,16 @@
     dialog.querySelector('textarea').value = message;
     dialog.showModal();
     dialog.querySelector('textarea').focus();
+  };
+  window.limpidShowError = message => {
+    let error = document.querySelector('.limpid-error');
+    if (!error) {
+      error = document.createElement('div');
+      error.className = 'limpid-error';
+      error.setAttribute('role', 'status');
+      document.body.append(error);
+    }
+    error.textContent = message;
   };
   function find(backwards = false) {
     if (!search) return;

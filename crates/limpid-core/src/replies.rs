@@ -76,7 +76,7 @@ pub fn from_file_annotations(source: &str) -> AgentReplies {
         let line = lines[index].trim();
         let field = line
             .strip_prefix("<!-- limpid reply ")
-            .filter(|id| id.starts_with('q') && id[1..].bytes().all(|byte| byte.is_ascii_digit()));
+            .filter(|id| valid_question_id(id));
         let comment = line == "<!-- limpid comment";
         if field.is_none() && !comment {
             index += 1;
@@ -245,6 +245,42 @@ impl FileRevision {
         atomic_write(&self.path, &updated)?;
         Ok(())
     }
+
+    pub fn upsert_reply(
+        &self,
+        byte_end: usize,
+        field: &str,
+        text: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !valid_question_id(field) {
+            return Err("invalid question id".into());
+        }
+        if fs::read(&self.path)? != self.source {
+            return Err("source changed since it was rendered".into());
+        }
+        let source = std::str::from_utf8(&self.source)?;
+        let marker = format!("<!-- limpid reply {field}\n");
+        let existing = source
+            .match_indices(&marker)
+            .filter(|(start, _)| *start == 0 || source.as_bytes()[start - 1] == b'\n')
+            .filter_map(|(start, _)| {
+                source[start + marker.len()..]
+                    .find("\n-->")
+                    .map(|end| (start, start + marker.len() + end + "\n-->".len()))
+            })
+            .last();
+        if let Some((start, end)) = existing {
+            let replacement = format!("{marker}{}\n-->", escape_comment(text));
+            let mut updated = Vec::with_capacity(self.source.len() + replacement.len());
+            updated.extend_from_slice(&self.source[..start]);
+            updated.extend_from_slice(replacement.as_bytes());
+            updated.extend_from_slice(&self.source[end..]);
+            atomic_write(&self.path, &updated)?;
+            Ok(())
+        } else {
+            self.insert_after(byte_end, FileAnnotation::Reply { field, text })
+        }
+    }
 }
 
 pub fn source_hash(bytes: &[u8]) -> String {
@@ -343,6 +379,27 @@ mod tests {
                 .contains("changed")
         );
         assert!(FileRevision::open_checked(&path, &source_hash(b"different")).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn editing_a_file_reply_replaces_its_annotation() {
+        let path =
+            std::env::temp_dir().join(format!("limpid-edit-reply-{}.md", std::process::id()));
+        fs::write(&path, "## Questions\n\n1. Pick?\n").unwrap();
+        let first = FileRevision::open(&path).unwrap();
+        first
+            .upsert_reply(first.source.len(), "q1", "SQLite")
+            .unwrap();
+        let next = FileRevision::open(&path).unwrap();
+        next.upsert_reply(0, "q1", "Postgres --> SQLite").unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert_eq!(saved.matches("<!-- limpid reply q1").count(), 1);
+        assert_eq!(
+            from_file_annotations(&saved).replies["q1"],
+            "Postgres --> SQLite"
+        );
+        assert!(first.upsert_reply(0, "q1", "stale").is_err());
         fs::remove_file(path).unwrap();
     }
 
