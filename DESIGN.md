@@ -287,11 +287,13 @@ Either way, the next render shows saved replies as annotations.
 re: <page title> (claude, turn 0)
 q1: SQLite. We can move later.
 q2: no
-c "Use the existing pool…" (L42-48): this leaks on error
+"Use the existing pool…" (L42-48): user commented: "this leaks on error"
 ```
 
-Fields use their `qN` id. Comments quote the first few words of the block and
-its line range. Unanswered fields are left out.
+Fields use their `qN` id. A comment quote runs to 100 characters of the block
+and carries its line range, so the agent can find the text, then the full
+comment. A comment on a question is an answer to that question. Unanswered
+fields are left out.
 
 ### Delivery
 

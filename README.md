@@ -60,7 +60,8 @@ PageUp, PageDown, `Ctrl-u` and `Ctrl-d` scroll; `{` / `}` or `Ctrl-Up` /
 `Ctrl-Down` jump sections; `gg` / `G` go to the ends; `zt`, `zz` and `zb` put
 the focused block at the top, center or bottom. On a focused question, `1`–`9`
 choose an option and `Enter` or `i` edits a reply. `c` comments on the focused
-block, or reopens a focused comment for editing, and `x` deletes it. The editor
+block, or reopens a focused comment for editing, and `x` deletes it; `c` on a
+question is an answer to it. The editor
 uses CodeMirror with vim keys: `Esc` then `:w` saves, `:q` cancels, and
 `Ctrl-Enter` saves directly. `S` opens the composed message for review;
 `Ctrl-Enter` there runs the configured reply command.

@@ -44,21 +44,18 @@ pub fn compose_message(title: &str, agent: &str, context: &str, replies: &AgentR
         if comment.text.trim().is_empty() {
             continue;
         }
-        let quote = comment
-            .quote
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(48)
-            .collect::<String>()
-            .replace('"', "\\\"");
+        let quote = comment.quote.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut quoted = quote.chars().take(100).collect::<String>();
+        if quote.chars().count() > 100 {
+            quoted.push('…');
+        }
+        let text = comment.text.split_whitespace().collect::<Vec<_>>().join(" ");
         lines.push(format!(
-            "c \"{}\" (L{}-{}): {}",
-            quote,
+            "\"{}\" (L{}-{}): user commented: \"{}\"",
+            quoted.replace('"', "\\\""),
             comment.start_line,
             comment.end_line,
-            comment.text.trim()
+            text.replace('"', "\\\"")
         ));
     }
     lines.join("\n")
@@ -761,7 +758,7 @@ mod tests {
         );
         assert_eq!(
             compose_message("Plan", "claude", "turn 0", &replies),
-            "re: Plan (claude, turn 0)\nq1: SQLite\nq2: no\nq10: later\nc \"Use the existing pool\" (L42-48): this leaks"
+            "re: Plan (claude, turn 0)\nq1: SQLite\nq2: no\nq10: later\n\"Use the existing pool\" (L42-48): user commented: \"this leaks\""
         );
     }
 
@@ -787,15 +784,15 @@ mod tests {
         let message = compose_message("Plan", "codex", "turns 0–1", &replies);
         let comments = message
             .lines()
-            .filter(|line| line.starts_with("c \""))
+            .filter(|line| line.starts_with('"'))
             .collect::<Vec<_>>();
         assert_eq!(
             comments,
             [
-                "c \"older early\" (L1-1): older early",
-                "c \"older late\" (L1-1): older late",
-                "c \"newer early\" (L1-1): newer early",
-                "c \"newer late\" (L1-1): newer late",
+                "\"older early\" (L1-1): user commented: \"older early\"",
+                "\"older late\" (L1-1): user commented: \"older late\"",
+                "\"newer early\" (L1-1): user commented: \"newer early\"",
+                "\"newer late\" (L1-1): user commented: \"newer late\"",
             ]
         );
     }

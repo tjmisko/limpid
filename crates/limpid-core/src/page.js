@@ -451,6 +451,7 @@
   // File pages render comments inline; move each under its block and give it a
   // key for edit and delete.
   for (const note of [...document.querySelectorAll('article .limpid-comment')]) {
+    const block = precedingStop(note);
     const range = note.dataset.src || '';
     if (range) {
       const key = `file:${range}`;
@@ -462,11 +463,11 @@
         turn: '',
         lineStart: Number(note.dataset.lineStart || 0),
         lineEnd: Number(note.dataset.lineEnd || 0),
-        quote: body.trim().slice(0, 80),
+        quote: (block?.textContent || '').trim().slice(0, 200),
         text: body,
       });
     }
-    placeCommentAt(note, precedingStop(note));
+    placeCommentAt(note, block);
   }
   function commentRecord(target, quote) {
     return {
@@ -507,6 +508,8 @@
   }
   async function edit(target, kind) {
     if (editing || !target || !await loadEditor()) return;
+    // A comment on a question is an answer to that question.
+    if (kind === 'comment' && target.matches?.('.question-field')) kind = 'reply';
     editing = true;
     let quote = '';
     let current = '';
@@ -518,9 +521,9 @@
       commentKey = target.dataset.commentKey || null;
       const record = commentKey ? currentComments.get(commentKey) : null;
       current = record?.text || target.querySelector('p')?.textContent || '';
-      quote = record?.quote || target.textContent.trim().slice(0, 80);
+      quote = record?.quote || target.textContent.trim().slice(0, 200);
     } else {
-      quote = target.textContent.trim().slice(0, 80);
+      quote = target.textContent.trim().slice(0, 200);
     }
     const mount = document.createElement('div');
     mount.className = 'limpid-editor';
