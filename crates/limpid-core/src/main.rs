@@ -40,6 +40,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             println!("{}", destination.display());
         }
         Some("send") if args.len() == 1 => send()?,
+        Some("feedback") => feedback(&args[1..])?,
         Some("codex") if args.len() <= 2 => {
             codex(args.get(1).and_then(|arg| arg.to_str()).unwrap_or(""))?
         }
@@ -53,7 +54,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         Some("grammars") => grammars(&args[1..])?,
         _ => {
             return Err(
-                "usage: limpid-core render FILE.md | claude [spec] | codex [spec] | pi [spec] | grammars list|sync | instructions | send".into(),
+                "usage: limpid-core render FILE.md | claude [spec] | codex [spec] | pi [spec] | feedback [--json] [--session ID [--spec S]] [PAGE] | grammars list|sync | instructions | send".into(),
             );
         }
     }
@@ -302,6 +303,162 @@ fn send() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[derive(Debug, PartialEq)]
+struct FeedbackArgs {
+    json: bool,
+    session: Option<String>,
+    spec: Option<String>,
+    page: Option<PathBuf>,
+}
+
+fn parse_feedback_args(args: &[std::ffi::OsString]) -> Result<FeedbackArgs, String> {
+    let mut parsed = FeedbackArgs {
+        json: false,
+        session: None,
+        spec: None,
+        page: None,
+    };
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.to_str() {
+            Some("--json") => parsed.json = true,
+            Some("--session") => {
+                let value = rest.next().ok_or("--session requires an id")?;
+                parsed.session = Some(value.to_string_lossy().into_owned());
+            }
+            Some("--spec") => {
+                let value = rest.next().ok_or("--spec requires a value")?;
+                parsed.spec = Some(value.to_string_lossy().into_owned());
+            }
+            Some(value) if value.starts_with("--") => {
+                return Err(format!("unknown option: {value}"));
+            }
+            _ => {
+                if parsed.page.is_some() {
+                    return Err("only one page is allowed".into());
+                }
+                parsed.page = Some(PathBuf::from(arg));
+            }
+        }
+    }
+    if parsed.session.is_none() && parsed.page.is_none() {
+        return Err("feedback requires a page or --session".into());
+    }
+    if parsed.session.is_some() && parsed.page.is_some() {
+        return Err("a page cannot be combined with --session".into());
+    }
+    Ok(parsed)
+}
+
+fn feedback(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
+    let parsed = parse_feedback_args(args)?;
+    let page = if let Some(session) = &parsed.session {
+        resolve_session_page(session, parsed.spec.as_deref())?
+    } else {
+        parsed.page.ok_or("feedback requires a page or --session")?
+    };
+    let (title, agent, context, replies) =
+        if page.extension().and_then(|extension| extension.to_str()) == Some("md") {
+            let source = std::fs::read_to_string(&page)?;
+            let title = page
+                .file_stem()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            (
+                title,
+                "file".to_owned(),
+                "file".to_owned(),
+                limpid_core::replies::from_file_annotations(&source),
+            )
+        } else {
+            let mut meta_path = page.clone();
+            meta_path.set_extension("meta.json");
+            let meta: PageMeta = serde_json::from_slice(&std::fs::read(&meta_path)?)?;
+            let mut sidecar = page.clone();
+            sidecar.set_extension("replies.json");
+            let spec = if meta.turn_spec.is_empty() {
+                "0".to_owned()
+            } else {
+                meta.turn_spec.clone()
+            };
+            let title = if meta.title.is_empty() {
+                page.file_stem()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            } else {
+                meta.title.clone()
+            };
+            let context = if meta.agent == "file" {
+                "file".to_owned()
+            } else {
+                format!("turn {spec}")
+            };
+            (
+                title,
+                meta.agent.clone(),
+                context,
+                limpid_core::replies::AgentReplies::load(&sidecar)?,
+            )
+        };
+    if parsed.json {
+        println!("{}", serde_json::to_string(&replies)?);
+    } else if replies.replies.is_empty() && replies.comments.is_empty() {
+        println!("No feedback for {}.", page.display());
+    } else {
+        println!(
+            "{}",
+            limpid_core::replies::compose_message(&title, &agent, &context, &replies)
+        );
+    }
+    Ok(())
+}
+
+fn page_for_meta(meta: &Path) -> PathBuf {
+    let name = meta
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stem = name.strip_suffix(".meta.json").unwrap_or(&name);
+    meta.with_file_name(format!("{stem}.html"))
+}
+
+fn resolve_session_page(session: &str, spec: Option<&str>) -> Result<PathBuf, Box<dyn Error>> {
+    let cache = cache_dir()?;
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(&cache)?.flatten() {
+        let meta_path = entry.path();
+        let Some(name) = meta_path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".meta.json") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&meta_path) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_slice::<PageMeta>(&bytes) else {
+            continue;
+        };
+        if meta.session_id.as_deref() != Some(session) {
+            continue;
+        }
+        if let Some(spec) = spec
+            && meta.turn_spec != spec
+        {
+            continue;
+        }
+        let modified = std::fs::metadata(&meta_path)
+            .and_then(|meta| meta.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if newest.as_ref().is_none_or(|(time, _)| modified > *time) {
+            newest = Some((modified, page_for_meta(&meta_path)));
+        }
+    }
+    newest
+        .map(|(_, page)| page)
+        .ok_or_else(|| format!("no page found for session {session}").into())
+}
+
 fn cache_dir() -> Result<PathBuf, Box<dyn Error>> {
     if let Some(base) = std::env::var_os("XDG_CACHE_HOME") {
         return Ok(PathBuf::from(base).join("limpid"));
@@ -367,6 +524,39 @@ mod tests {
         assert!(!cache.join("pi-02.html").exists());
         assert!(cache.join("pi-06.html").exists());
         std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    #[test]
+    fn feedback_arguments_are_parsed_and_validated() {
+        use std::ffi::OsString;
+        let args = |list: &[&str]| list.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(
+            parse_feedback_args(&args(&["a.html"])).unwrap(),
+            FeedbackArgs {
+                json: false,
+                session: None,
+                spec: None,
+                page: Some(PathBuf::from("a.html")),
+            }
+        );
+        assert_eq!(
+            parse_feedback_args(&args(&["--json", "--session", "s", "--spec", "0"])).unwrap(),
+            FeedbackArgs {
+                json: true,
+                session: Some("s".into()),
+                spec: Some("0".into()),
+                page: None,
+            }
+        );
+        for bad in [
+            vec![],
+            vec!["--session", "s", "b.html"],
+            vec!["a.html", "b.html"],
+            vec!["--session"],
+            vec!["--nope"],
+        ] {
+            assert!(parse_feedback_args(&args(&bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

@@ -179,6 +179,116 @@ fn pi_page_path_is_stable_and_session_specific() {
 }
 
 #[test]
+fn feedback_reads_agent_sidecars_and_file_annotations() {
+    let temp = std::env::temp_dir().join(format!("limpid-feedback-cli-{}", std::process::id()));
+    fs::create_dir_all(&temp).unwrap();
+    let page = temp.join("pi-abc.html");
+    fs::write(&page, "<html></html>").unwrap();
+    let mut meta = page.clone();
+    meta.set_extension("meta.json");
+    fs::write(
+        &meta,
+        serde_json::to_vec(&serde_json::json!({
+            "agent": "pi",
+            "session_id": "s1",
+            "turn_spec": "2",
+            "source": null,
+            "title": "Plan",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut sidecar = page.clone();
+    sidecar.set_extension("replies.json");
+    fs::write(
+        &sidecar,
+        br#"{"replies":{"q1":"SQLite"},"comments":{}}"#,
+    )
+    .unwrap();
+
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_limpid-core"))
+            .arg("feedback")
+            .args(args)
+            .env("XDG_CACHE_HOME", &temp)
+            .output()
+            .unwrap()
+    };
+    let output = run(&[page.to_str().unwrap()]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        "re: Plan (pi, turn 2)\nq1: SQLite"
+    );
+    let output = run(&["--json", page.to_str().unwrap()]);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["replies"]["q1"], "SQLite");
+
+    let markdown = temp.join("notes.md");
+    fs::write(
+        &markdown,
+        "Use the pool.\n\n<!-- limpid comment\nThis leaks.\n-->\n\n<!-- limpid reply q1\nPostgres\n-->\n",
+    )
+    .unwrap();
+    let output = run(&[markdown.to_str().unwrap()]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("q1: Postgres"));
+    assert!(text.contains("This leaks."));
+    fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+fn feedback_resolves_sessions_and_reports_empty_and_unknown() {
+    let temp = std::env::temp_dir().join(format!("limpid-feedback-session-{}", std::process::id()));
+    let cache = temp.join("limpid");
+    fs::create_dir_all(&cache).unwrap();
+    for (name, spec) in [("pi-old", "0"), ("pi-new", "1")] {
+        let meta = cache.join(format!("{name}.meta.json"));
+        fs::write(
+            &meta,
+            serde_json::to_vec(&serde_json::json!({
+                "agent": "pi",
+                "session_id": "s1",
+                "turn_spec": spec,
+                "source": null,
+                "title": name,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut sidecar = cache.join(format!("{name}.html"));
+        sidecar.set_extension("replies.json");
+        fs::write(&sidecar, br#"{"replies":{},"comments":{}}"#).unwrap();
+    }
+    let old = cache.join("pi-old.meta.json");
+    let old_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+    std::fs::File::open(&old)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(old_time))
+        .unwrap();
+
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_limpid-core"))
+            .arg("feedback")
+            .args(args)
+            .env("XDG_CACHE_HOME", &temp)
+            .output()
+            .unwrap()
+    };
+    let output = run(&["--session", "s1"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("No feedback"));
+    let output = run(&["--session", "s1", "--spec", "0"]);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("pi-old"));
+    let output = run(&["--session", "missing"]);
+    assert!(!output.status.success());
+    let output = run(&[cache.join("missing.html").to_str().unwrap()]);
+    assert!(!output.status.success());
+    fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
 fn invalid_utf8_file_is_rejected_before_rendering() {
     let temp = std::env::temp_dir().join(format!("limpid-utf8-cli-{}", std::process::id()));
     fs::create_dir_all(&temp).unwrap();
