@@ -248,7 +248,10 @@ fn prune_agent_pages(cache: &Path) -> Result<(), Box<dyn Error>> {
                 .ok(),
         )
     });
-    for page in pages.into_iter().skip(50) {
+    let (protected, unprotected): (Vec<_>, Vec<_>) =
+        pages.into_iter().partition(|page| page_has_feedback(page));
+    let keep = 50usize.saturating_sub(protected.len());
+    for page in unprotected.into_iter().skip(keep) {
         std::fs::remove_file(&page)?;
         for extension in ["meta.json", "replies.json"] {
             let mut associated = page.clone();
@@ -259,6 +262,15 @@ fn prune_agent_pages(cache: &Path) -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+fn page_has_feedback(page: &Path) -> bool {
+    let mut path = page.to_path_buf();
+    path.set_extension("replies.json");
+    match limpid_core::replies::AgentReplies::load(&path) {
+        Ok(replies) => !replies.replies.is_empty() || !replies.comments.is_empty(),
+        Err(_) => false,
+    }
 }
 
 fn send() -> Result<(), Box<dyn Error>> {
@@ -312,6 +324,49 @@ mod tests {
         assert_ne!(name, page_filename("pi", Some("s1"), "1", "abc"));
         assert_ne!(name, page_filename("pi", Some("s1"), "0", "def"));
         assert_ne!(name, page_filename("claude", Some("s1"), "0", "abc"));
+    }
+
+    #[test]
+    fn pruning_keeps_pages_with_feedback() {
+        use std::fs::{File, FileTimes};
+        let cache = std::env::temp_dir().join(format!("limpid-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        std::fs::create_dir_all(&cache).unwrap();
+        let base = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        for index in 0..55u64 {
+            let page = cache.join(format!("pi-{index:02}.html"));
+            File::create(&page).unwrap();
+            File::open(&page)
+                .unwrap()
+                .set_times(
+                    FileTimes::new()
+                        .set_modified(base + std::time::Duration::from_secs(index)),
+                )
+                .unwrap();
+        }
+        let protected = cache.join("pi-00.replies.json");
+        std::fs::write(
+            &protected,
+            br#"{"replies":{"q1":"keep"},"comments":{}}"#,
+        )
+        .unwrap();
+        let corrupt = cache.join("pi-02.replies.json");
+        std::fs::write(&corrupt, b"not json").unwrap();
+
+        prune_agent_pages(&cache).unwrap();
+
+        let pages = std::fs::read_dir(&cache)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("html"))
+            .count();
+        assert_eq!(pages, 50);
+        assert!(cache.join("pi-00.html").exists());
+        assert!(protected.exists());
+        assert!(!cache.join("pi-01.html").exists());
+        assert!(!cache.join("pi-02.html").exists());
+        assert!(cache.join("pi-06.html").exists());
+        std::fs::remove_dir_all(&cache).unwrap();
     }
 
     #[test]
