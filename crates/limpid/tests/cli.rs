@@ -162,7 +162,7 @@ fn codex_hook_opens_question_turn_in_its_session_slot() {
     let source = sessions.join("rollout-2026-10-15T10-00-00-x.jsonl");
     let fixture = fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../test/fixtures/codex/simple.jsonl"
+        "/../limpid-core/tests/fixtures/codex/simple.jsonl"
     ))
     .unwrap()
     .replace("second answer", "## Questions\\n\\n1. Which?\\n   - SQLite");

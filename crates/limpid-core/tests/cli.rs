@@ -108,7 +108,7 @@ fn codex_command_selects_fixture_turn_and_records_source() {
     fs::copy(
         concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../test/fixtures/codex/simple.jsonl"
+            "/tests/fixtures/codex/simple.jsonl"
         ),
         &source,
     )
@@ -251,7 +251,7 @@ fn codex_autoopen_writes_only_enabled_question_turns() {
     let source = sessions.join("rollout-2026-10-15T10-00-00-x.jsonl");
     let fixture = fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../test/fixtures/codex/simple.jsonl"
+        "/tests/fixtures/codex/simple.jsonl"
     ))
     .unwrap()
     .replace(

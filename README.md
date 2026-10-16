@@ -41,6 +41,12 @@ Math renders as MathML. Mermaid fences show their source immediately; the
 diagram script loads after first paint, and completed SVGs are cached for the
 next render.
 
+Hook windows (`--hook`) never take focus. limpid is Wayland-only and asks GDK
+for the Wayland backend, so the compositor sees the app id
+`io.quasioptimal.limpid`. The rule that keeps hook windows unfocused lives in
+your compositor config; [`integrations/hyprland/limpid.conf`](integrations/hyprland/limpid.conf)
+is the canonical copy.
+
 For a Codex session, run `limpid codex` or `limpid codex 0..2`. The core reader
 also accepts `limpid-core claude [spec]` and `limpid-core pi [spec]`, with their
 transcript data as JSON on stdin. Each prints a cached page path that can be
@@ -79,7 +85,7 @@ All keys are optional in `~/.config/limpid/config.toml`:
 ```toml
 [highlight]
 grammars = ["rust", "python", "typescript", "bash", "json", "toml"]
-theme = "default"
+theme = "default"            # Catppuccin Mocha (dark) / Latte (light), built in
 
 [questions]
 headings = ["Questions", "Open questions", "Questions for you"]
@@ -107,7 +113,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 The Rust workspace is in `crates/`; `catalog.toml` pins grammar sources, and
 `vendor/` contains the lazy CodeMirror bundle and its license notices. The
-older TypeScript implementation remains during the migration for parity tests.
+renderer, CLI and host are Rust. The only JavaScript left is the thin pi and
+Claude Code integration wrappers, which run inside those agents and shell out
+to the binaries.
 
 ## License
 

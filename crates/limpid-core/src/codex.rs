@@ -244,7 +244,7 @@ mod tests {
 
     fn fixture(name: &str) -> CodexTurns {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../test/fixtures/codex")
+            .join("tests/fixtures/codex")
             .join(format!("{name}.jsonl"));
         parse_rollout(&fs::read_to_string(path).unwrap())
     }

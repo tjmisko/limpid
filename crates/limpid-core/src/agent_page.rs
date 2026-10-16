@@ -128,4 +128,26 @@ mod tests {
         assert!(page.html.contains("id=\"plan-2\""));
         assert!(page.html.contains("model · turns 0–1"));
     }
+
+    #[test]
+    fn meta_line_title_and_escaping_follow_the_page_contract() {
+        let turn = |response: &str| Turn {
+            prompt: "p".into(),
+            response: response.into(),
+        };
+        let no_model = build(&[turn("# Hi")], "", None, &[]).unwrap();
+        assert!(no_model.html.contains("<p class=\"meta\">turn 0</p>"));
+        let escaped = build(&[turn("x")], "", Some("<b>m</b>"), &[]).unwrap();
+        assert!(escaped.html.contains("&lt;b&gt;m&lt;/b&gt;"));
+        assert!(!escaped.html.contains("<b>m</b>"));
+        assert_eq!(
+            build(&[turn("***")], "", None, &[]).unwrap().title,
+            "Response"
+        );
+        let long = format!("# {}", "x".repeat(200));
+        assert_eq!(
+            build(&[turn(&long)], "", None, &[]).unwrap().title.len(),
+            80
+        );
+    }
 }

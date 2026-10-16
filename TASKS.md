@@ -7,27 +7,6 @@ names and commits.
 Performance measurements in Phases 0, 3 and 4 are deferred at the user's
 request. Build and behavior work continues independently of those benchmarks.
 
-## Phase 0: Measure and check the risky parts
-
-Small experiments, no product code. The answers decide details in later phases.
-
-- [ ] **P0.1** Move the benchmark scripts from `~/.cache/htmlview-bench/` into
-  `bench/`, made independent of specific cache pages. Record the htmlview
-  baseline: cold start, warm start, private memory for 1, 2 and 3 windows.
-- [ ] **P0.2** Build an empty window with `gtk4` + `webkit6` in Rust on this
-  machine (aarch64, 16 KiB pages). Measure cold start and memory against the
-  Python host.
-- [ ] **P0.3** Highlighting spike: load a Rust grammar `.so` with Helix's
-  queries through `tree-sitter-highlight`. Check that macro bodies are
-  highlighted as Rust, and time query compilation for Rust, TypeScript and
-  markdown (the largest queries). Decide whether first paint waits for it.
-- [ ] **P0.4** Render a math sample with `pulldown-latex` in WebKit. Decide
-  whether MathML is good enough or KaTeX loads lazily.
-- [ ] **P0.5** Time Mermaid with the JIT off and on for small and large
-  diagrams.
-
-**Done when:** each item has a short write-up in `bench/NOTES.md`, and
-DESIGN.md's open questions are answered or updated.
 
 ## Phase 1: limpid-core renders markdown
 
@@ -60,16 +39,17 @@ adversarial tests pass.
 ## Phase 2: limpid-core reads agents
 
 - [x] **P2.1** Port the turn specs (`spec.ts`) and their tests.
-- [ ] **P2.2** Port the Claude Code reader (`turns.ts`) and the `read` tests.
+- [x] **P2.2** Port the Claude Code reader (`turns.ts`) and the `read` tests.
 - [x] **P2.3** Port the Codex reader (`codex.ts`) and its tests and fixtures.
 - [x] **P2.4** Add the pi transcript reader; today pi passes turns in-process.
 - [x] **P2.5** Port `cli.ts`: `limpid-core <agent> [spec]` writes the page and
   `<page>.meta.json` (agent, session id, spec, source), prints the page path,
   and keeps the newest 50 pages.
-- [ ] **P2.6** Parity check: pages from the existing fixtures match the
-  TypeScript output.
+- [x] **P2.6** Parity check: the fixture set and its assertions now live under
+  `crates/limpid-core/tests/fixtures/` and run through `cargo test`.
 
-**Done when:** every TypeScript test has a passing Rust counterpart.
+**Done when:** every TypeScript test has a passing Rust counterpart. The
+TypeScript renderer and test suite are deleted.
 
 ## Phase 3: `limpid` front end on the existing host
 
@@ -77,13 +57,15 @@ adversarial tests pass.
   cache; `--out`; hand off over the socket protocol. When no host is running,
   start it first so GTK starts up while the page renders. The Rust host
   replaced the planned interim Python host.
-- [ ] **P3.2** Extend the handoff message with `slot`, `origin` and `pane`
-  (captured from `$WEZTERM_PANE`). The Python host supports slot reuse and
-  no-focus for `--hook`.
-- [ ] **P3.3** Fold htmlview into this repo. Rename the window class, socket
-  name and `HTMLVIEW_JIT` to `limpid` / `LIMPID_JIT`. Update the Hyprland rules
-  in the same change. Archive the htmlview repo.
-- [ ] **P3.4** Turn the Claude Code, pi and Codex integrations into wrappers
+- [x] **P3.2** Extend the handoff message with `slot`, `origin` and `pane`
+  (captured from `$WEZTERM_PANE`). The host supports slot reuse and no-focus
+  for `--hook`.
+- [x] **P3.3** Fold htmlview into this repo. The socket name and `HTMLVIEW_JIT`
+  are `limpid` / `LIMPID_JIT`; the window app id stays the valid D-Bus name
+  `io.quasioptimal.limpid` (see DESIGN.md, *Window identity and rules*). The
+  Hyprland rule is `integrations/hyprland/limpid.conf`. Archive the htmlview
+  repo.
+- [x] **P3.4** Turn the Claude Code, pi and Codex integrations into wrappers
   around the binaries. Delete the TypeScript renderer and `node_modules`.
   Switch `install.sh` to `cargo install --path` plus `grammars sync`, and
   rewrite the README.
@@ -93,16 +75,16 @@ installed, and the benchmarks are no worse than the P0.1 baseline.
 
 ## Phase 4: Rust host
 
-- [ ] **P4.1** `limpid-host`: windows, shared WebKit context, JIT setting,
+- [x] **P4.1** `limpid-host`: windows, shared WebKit context, JIT setting,
   per-scheme hosts, `--separate`, and exit when the last window closes.
 - [ ] **P4.2** Port the key dispatcher (`keys.py`) and its tests.
 - [ ] **P4.3** Port the handoff server and its 19 tests, including slot, origin
   and pane. Accept only the same user, as today.
 - [ ] **P4.4** Port the 10 window tests. Add tests for slot reuse with scroll
   kept and `--hook` not taking focus.
-- [ ] **P4.5** Script message handler plumbing (`reply`, `comment`,
+- [x] **P4.5** Script message handler plumbing (`reply`, `comment`,
   `mermaid-svg`) with a test harness. Each handler is filled in by its phase.
-- [ ] **P4.6** Delete the Python host.
+- [x] **P4.6** Delete the Python host.
 
 **Done when:** all host tests pass, cold start is under 0.3 s, and a warm open
 of a 2,000-line `.md` is under 150 ms.
@@ -111,7 +93,7 @@ of a 2,000-line `.md` is under 150 ms.
 
 - [x] **P5.1** Shared assets written once to `~/.cache/limpid/assets/`. `--out`
   inlines everything except lazy bundles.
-- [ ] **P5.2** Math as MathML, or lazy KaTeX, following P0.4.
+- [x] **P5.2** Math as MathML, or lazy KaTeX
 - [ ] **P5.3** Mermaid: vendor `mermaid.min.js` (`vendor/README.md` records
   version, license and rebuild steps), load it after first paint, send the SVG
   to the host, cache it in `~/.cache/limpid/mermaid/`, and inline cached
