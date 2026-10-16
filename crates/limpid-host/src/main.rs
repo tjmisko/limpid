@@ -369,14 +369,19 @@ fn open_request(
             eprintln!("limpid-host: could not cache Mermaid diagram: {error}");
         }
     });
+    let hook = request.origin == limpid_core::transport::Origin::Hook;
     view.load_uri(&uri);
     let window = gtk4::ApplicationWindow::builder()
         .application(app)
-        .title(
+        // Hook windows keep this stable prefix so the compositor rule can
+        // recognise them even when the page title loads before the first map.
+        .title(if hook {
+            "limpid-hook"
+        } else {
             path.file_stem()
                 .and_then(|name| name.to_str())
-                .unwrap_or("limpid"),
-        )
+                .unwrap_or("limpid")
+        })
         .default_width(1000)
         .default_height(800)
         .build();
@@ -390,6 +395,11 @@ fn open_request(
     let title_window = window.clone();
     view.connect_title_notify(move |view| {
         if let Some(title) = view.title() {
+            let title = if hook {
+                format!("limpid-hook: {title}")
+            } else {
+                title.to_string()
+            };
             title_window.set_title(Some(&title));
         }
     });
@@ -408,7 +418,7 @@ fn open_request(
         restore_anchor,
         file_stamp: Rc::new(RefCell::new(None)),
     });
-    if request.origin == limpid_core::transport::Origin::Hook {
+    if hook {
         window.set_visible(true);
     } else {
         window.present();
