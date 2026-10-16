@@ -255,6 +255,12 @@ pub enum FileAnnotation<'a> {
     Comment { text: &'a str },
 }
 
+#[derive(Debug, Clone)]
+pub enum FileEdit {
+    Reply { field: String, text: String },
+    Comment { byte_end: usize, text: String },
+}
+
 impl FileRevision {
     pub fn open(path: &Path) -> Result<Self, std::io::Error> {
         let path = fs::canonicalize(path)?;
@@ -273,6 +279,87 @@ impl FileRevision {
             return Err("source changed since it was rendered".into());
         }
         Ok(revision)
+    }
+
+    pub fn apply(&self, edits: &[FileEdit]) -> Result<(), Box<dyn std::error::Error>> {
+        if fs::read(&self.path)? != self.source {
+            return Err("source changed since it was rendered".into());
+        }
+        let source = std::str::from_utf8(&self.source)?;
+        let reply_spans = annotation_spans(source)
+            .into_iter()
+            .filter_map(|AnnotationSpan { start, end, kind }| match kind {
+                AnnotationKind::Reply { field, .. } => Some((field, (start, end))),
+                _ => None,
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        enum Op {
+            Insert { at: usize, text: String },
+            Replace { start: usize, end: usize, text: String },
+        }
+        let mut operations = Vec::new();
+        for edit in edits {
+            match edit {
+                FileEdit::Reply { field, text } => {
+                    if !valid_question_id(field) {
+                        return Err("invalid question id".into());
+                    }
+                    if let Some((start, end)) = reply_spans.get(field) {
+                        let suffix = if source[*start..*end].ends_with('\n') {
+                            "\n"
+                        } else {
+                            ""
+                        };
+                        operations.push(Op::Replace {
+                            start: *start,
+                            end: *end,
+                            text: format!(
+                                "<!-- limpid reply {field}\n{}\n-->{suffix}",
+                                escape_comment(text)
+                            ),
+                        });
+                    } else {
+                        operations.push(Op::Insert {
+                            at: self.source.len(),
+                            text: format!(
+                                "\n\n<!-- limpid reply {field}\n{}\n-->\n",
+                                escape_comment(text)
+                            ),
+                        });
+                    }
+                }
+                FileEdit::Comment { byte_end, text } => {
+                    if *byte_end > self.source.len() || !source.is_char_boundary(*byte_end) {
+                        return Err("annotation source range is invalid".into());
+                    }
+                    operations.push(Op::Insert {
+                        at: *byte_end,
+                        text: format!("\n\n<!-- limpid comment\n{}\n-->\n", escape_comment(text)),
+                    });
+                }
+            }
+        }
+        operations.sort_by_key(|operation| match operation {
+            Op::Insert { at, .. } => *at,
+            Op::Replace { start, .. } => *start,
+        });
+        let mut updated = Vec::with_capacity(self.source.len());
+        let mut cursor = 0;
+        for operation in operations {
+            let (start, end, text) = match operation {
+                Op::Insert { at, text } => (at, at, text),
+                Op::Replace { start, end, text } => (start, end, text),
+            };
+            if start < cursor || end < start || end > self.source.len() {
+                return Err("annotation source range is invalid".into());
+            }
+            updated.extend_from_slice(&self.source[cursor..start]);
+            updated.extend_from_slice(text.as_bytes());
+            cursor = end;
+        }
+        updated.extend_from_slice(&self.source[cursor..]);
+        atomic_write(&self.path, &updated)?;
+        Ok(())
     }
 
     pub fn insert_after(
@@ -452,6 +539,65 @@ mod tests {
                 .contains("changed")
         );
         assert!(FileRevision::open_checked(&path, &source_hash(b"different")).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn applies_a_batch_of_replies_and_comments_in_one_pass() {
+        let path = std::env::temp_dir().join(format!(
+            "limpid-batch-{}-{:?}.md",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let source = "## Questions\n\n1. Pick?\n   - SQLite\n   - Postgres\n\nTail.\n";
+        fs::write(&path, source).unwrap();
+        let revision = FileRevision::open(&path).unwrap();
+        let pick = source.find("SQLite").unwrap() + "SQLite".len();
+        let tail = source.find("Tail.").unwrap();
+        revision
+            .apply(&[
+                FileEdit::Reply {
+                    field: "q1".into(),
+                    text: "SQLite".into(),
+                },
+                FileEdit::Comment {
+                    byte_end: pick,
+                    text: "why sqlite".into(),
+                },
+                FileEdit::Comment {
+                    byte_end: tail,
+                    text: "and the tail".into(),
+                },
+            ])
+            .unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        let parsed = from_file_annotations(&saved);
+        assert_eq!(parsed.replies["q1"], "SQLite");
+        assert_eq!(parsed.comments.len(), 2);
+        assert!(parsed.comments.values().any(|c| c.text == "why sqlite"));
+        assert!(parsed.comments.values().any(|c| c.text == "and the tail"));
+        fs::write(
+            &path,
+            "## Questions\n\n1. Pick?\n\n<!-- limpid reply q1\nOld\n-->\n",
+        )
+        .unwrap();
+        let revision = FileRevision::open(&path).unwrap();
+        revision
+            .apply(&[
+                FileEdit::Reply {
+                    field: "q1".into(),
+                    text: "New".into(),
+                },
+                FileEdit::Comment {
+                    byte_end: 0,
+                    text: "early".into(),
+                },
+            ])
+            .unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert_eq!(saved.matches("<!-- limpid reply q1").count(), 1);
+        assert_eq!(from_file_annotations(&saved).replies["q1"], "New");
+        assert!(revision.apply(&[]).is_err());
         fs::remove_file(path).unwrap();
     }
 

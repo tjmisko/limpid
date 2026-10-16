@@ -41,17 +41,11 @@
     if (!byId.has(id)) byId.set(id, []);
     byId.get(id).push(link);
   }
-  if ('IntersectionObserver' in window) {
-    const observer = new IntersectionObserver(entries => {
-      for (const entry of entries) {
-        if (!entry.isIntersecting) continue;
-        links.forEach(link => link.classList.remove('active'));
-        (byId.get(entry.target.id) || []).forEach(link => link.classList.add('active'));
-      }
-    }, {rootMargin: '-15% 0px -75% 0px'});
-    document.querySelectorAll('article h1[id],article h2[id],article h3[id]').forEach(head => observer.observe(head));
-  }
   const fields = [...document.querySelectorAll('.question-field')];
+  const currentReplies = new Map();
+  const currentComments = new Map();
+  const dirtyReplies = new Set();
+  const dirtyComments = new Set();
   window.limpidCaptureAnchor = () => {
     const blocks = [...document.querySelectorAll('article [data-src]')];
     const block = blocks.filter(item => item.getBoundingClientRect().top <= 25).at(-1) || blocks[0];
@@ -68,6 +62,7 @@
       const field = document.getElementById(id);
       if (!field?.classList.contains('question-field')) continue;
       field.querySelector('.question-reply').textContent = text;
+      currentReplies.set(id, text);
       for (const option of field.querySelectorAll('.question-option')) {
         option.classList.toggle('selected', option.textContent.trim() === text.trim());
       }
@@ -76,6 +71,7 @@
   for (const field of fields) {
     const answer = field.querySelector('.question-reply')?.textContent?.trim();
     if (!answer) continue;
+    currentReplies.set(field.dataset.field, answer);
     for (const option of field.querySelectorAll('.question-option')) {
       option.classList.toggle('selected', option.textContent.trim() === answer);
     }
@@ -94,11 +90,37 @@
       text.textContent = comment.text;
       note.append(heading, text);
       placeAtSectionEnd(note, target);
+      currentComments.set(key, {src: range, turn, lineStart: comment.start_line || 0, lineEnd: comment.end_line || 0, quote: comment.quote || '', text: comment.text});
     }
   };
   const headings = [...document.querySelectorAll('article h1[id],article h2[id],article h3[id],article h4[id],article h5[id],article h6[id]')];
+  // Highlight the section at the current scroll position. The page top and
+  // bottom always select the first and last section.
+  function updateScrollSpy() {
+    if (!links.length || !headings.length) return;
+    const atTop = window.scrollY <= 1;
+    const atBottom = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 1;
+    const threshold = 90;
+    const head = atTop ? headings[0]
+      : atBottom ? headings.at(-1)
+      : headings.filter(item => item.getBoundingClientRect().top <= threshold).at(-1) || headings[0];
+    let index = headings.indexOf(head);
+    while (index > 0 && !byId.has(headings[index].id)) index -= 1;
+    const active = byId.get(headings[index].id) || [];
+    links.forEach(link => link.classList.toggle('active', active.includes(link)));
+  }
+  let spyQueued = false;
+  const queueScrollSpy = () => {
+    if (spyQueued) return;
+    spyQueued = true;
+    requestAnimationFrame(() => { spyQueued = false; updateScrollSpy(); });
+  };
+  window.addEventListener('scroll', queueScrollSpy, {passive: true});
+  window.addEventListener('resize', queueScrollSpy);
+  updateScrollSpy();
   let search = '';
   let searchBox;
+  let commandBox;
   let zoom = 1;
   let pendingG = false;
   let editing = false;
@@ -117,6 +139,79 @@
     const {article, before} = sectionEndFor(element);
     article.insertBefore(node, before);
   }
+  function post(name, payload) {
+    window.webkit?.messageHandlers?.[name]?.postMessage(payload ?? {});
+  }
+  function rememberReply(field, text) {
+    currentReplies.set(field, text);
+    dirtyReplies.add(field);
+  }
+  function rememberComment(record) {
+    const key = record.turn ? `${record.turn}:${record.src}` : record.src;
+    currentComments.set(key, record);
+    dirtyComments.add(key);
+  }
+  function currentPayload() {
+    return {replies: Object.fromEntries(currentReplies), comments: [...currentComments.values()]};
+  }
+  function dirtyPayload() {
+    return {
+      replies: Object.fromEntries([...dirtyReplies].map(field => [field, currentReplies.get(field)])),
+      comments: [...dirtyComments].map(key => currentComments.get(key)),
+    };
+  }
+  function openCommand() {
+    if (!commandBox) {
+      commandBox = document.createElement('input');
+      commandBox.className = 'limpid-command';
+      commandBox.type = 'text';
+      commandBox.setAttribute('aria-label', 'Command');
+      commandBox.placeholder = ':q  :w  :wq  :q!  :qa';
+      commandBox.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          closeCommand();
+          event.preventDefault();
+        } else if (event.key === 'Enter') {
+          const command = commandBox.value.trim();
+          closeCommand();
+          runCommand(command);
+          event.preventDefault();
+        }
+      });
+      document.body.append(commandBox);
+    }
+    commandBox.hidden = false;
+    commandBox.value = '';
+    commandBox.focus();
+  }
+  function closeCommand() {
+    if (!commandBox) return;
+    commandBox.hidden = true;
+    commandBox.blur();
+  }
+  function runCommand(command) {
+    if (command === 'q') {
+      if (dirtyReplies.size || dirtyComments.size) {
+        window.limpidShowError?.('unsaved changes — :wq to save and send, :q! to discard');
+      } else {
+        post('close', {});
+      }
+    } else if (command === 'w') {
+      post('save', dirtyPayload());
+    } else if (command === 'wq') {
+      post('deliver', dirtyPayload());
+    } else if (command === 'q!') {
+      post('close', {});
+    } else if (command === 'qa') {
+      post('close-all', {});
+    } else if (command) {
+      window.limpidShowError?.(`Not a command: :${command}`);
+    }
+  }
+  window.limpidSaved = () => {
+    dirtyReplies.clear();
+    dirtyComments.clear();
+  };
   for (const figure of document.querySelectorAll('figure.code,figure.diagram')) {
     const pre = figure.querySelector('pre');
     if (!pre) continue;
@@ -188,13 +283,13 @@
     window.limpidCreateEditor(mount, current, text => {
       if (kind === 'reply') {
         target.querySelector('.question-reply').textContent = text;
-        window.webkit?.messageHandlers?.reply?.postMessage({field: target.dataset.field, text, src: target.dataset.src});
+        rememberReply(target.dataset.field, text);
       } else {
         const note = document.createElement('aside');
         note.className = 'limpid-annotation';
         note.textContent = `Comment: ${text}`;
         placeAtSectionEnd(note, target);
-        window.webkit?.messageHandlers?.comment?.postMessage({src: target.dataset.src, turn: target.closest('.turn')?.id || '', lineStart: Number(target.dataset.lineStart || 0), lineEnd: Number(target.dataset.lineEnd || 0), quote, text});
+        rememberComment({src: target.dataset.src, turn: target.closest('.turn')?.id || '', lineStart: Number(target.dataset.lineStart || 0), lineEnd: Number(target.dataset.lineEnd || 0), quote, text});
       }
       finish();
     }, finish);
@@ -299,7 +394,7 @@
     if (event.ctrlKey || event.altKey || event.metaKey) return;
     if (event.key === 'g') {
       if (pendingG) {
-        window.scrollTo({top: 0});
+        window.scrollTo({top: 0, behavior: 'instant'});
         pendingG = false;
       } else {
         pendingG = true;
@@ -327,7 +422,7 @@
       option.classList.add('selected');
       const answer = option.textContent.trim();
       field.querySelector('.question-reply').textContent = answer;
-      window.webkit?.messageHandlers?.reply?.postMessage({field: field.dataset.field, text: answer, src: field.dataset.src});
+      rememberReply(field.dataset.field, answer);
       return;
     }
     if (field && (event.key === 'Enter' || event.key === 'i')) {
@@ -342,7 +437,7 @@
     }
     if (event.key === 'S') {
       event.preventDefault();
-      window.webkit?.messageHandlers?.review?.postMessage({});
+      post('review', currentPayload());
       return;
     }
     if (event.key === 't') {
@@ -362,12 +457,12 @@
     }
     const scroll = {j: 80, k: -80, PageDown: innerHeight / 2, PageUp: -innerHeight / 2}[event.key];
     if (scroll !== undefined) {
-      window.scrollBy({top: scroll, behavior: 'auto'});
+      window.scrollBy({top: scroll, behavior: 'instant'});
       event.preventDefault();
       return;
     }
-    if (event.key === 'G') { window.scrollTo({top: document.body.scrollHeight}); event.preventDefault(); return; }
-    if (event.key === 'q') { window.webkit?.messageHandlers?.close?.postMessage({}); event.preventDefault(); return; }
+    if (event.key === 'G') { window.scrollTo({top: document.body.scrollHeight, behavior: 'instant'}); event.preventDefault(); return; }
+    if (event.key === ':') { openCommand(); event.preventDefault(); return; }
     if (event.key === '/') { openSearch(); event.preventDefault(); return; }
     if (event.key === 'n' || event.key === 'N') { find(event.key === 'N'); event.preventDefault(); return; }
     if (event.key === 'r') { location.reload(); event.preventDefault(); return; }

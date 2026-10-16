@@ -170,7 +170,17 @@ fn open_request(
         request.theme.as_str()
     );
     let manager = webkit6::UserContentManager::new();
-    for name in ["reply", "comment", "mermaid-svg", "review", "send", "close"] {
+    for name in [
+        "reply",
+        "comment",
+        "mermaid-svg",
+        "review",
+        "send",
+        "close",
+        "save",
+        "deliver",
+        "close-all",
+    ] {
         manager.register_script_message_handler(name, None);
     }
     let active_request = Rc::new(RefCell::new(request.clone()));
@@ -302,14 +312,62 @@ fn open_request(
             }
         }
     });
+    let save_request = active_request.clone();
+    let save_view = view.clone();
+    let save_anchor = restore_anchor.clone();
+    manager.connect_script_message_received(Some("save"), move |_, value| {
+        let parsed = value_json(value);
+        match save_pending(&mut save_request.borrow_mut(), &parsed) {
+            Ok(true) => reload_with_anchor(&save_view, &save_anchor),
+            Ok(false) => ack_saved(&save_view),
+            Err(error) => show_page_error(&save_view, &format!("Could not save: {error}")),
+        }
+    });
+    let deliver_request = active_request.clone();
+    let deliver_view = view.clone();
+    manager.connect_script_message_received(Some("deliver"), move |_, value| {
+        let parsed = value_json(value);
+        if let Err(error) = save_pending(&mut deliver_request.borrow_mut(), &parsed) {
+            show_page_error(&deliver_view, &format!("Could not save: {error}"));
+            return;
+        }
+        let title = deliver_view
+            .title()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "Document".into());
+        let message = match compose_review(&deliver_request.borrow(), &title) {
+            Ok(message) => message,
+            Err(error) => {
+                show_page_error(&deliver_view, &format!("Could not compose reply: {error}"));
+                return;
+            }
+        };
+        if let Err(error) = deliver(&deliver_request.borrow(), &message) {
+            show_page_error(&deliver_view, &format!("Could not send reply: {error}"));
+            return;
+        }
+        deliver_view.evaluate_javascript(
+            "window.webkit?.messageHandlers?.close?.postMessage({})",
+            None,
+            None,
+            None::<&gio::Cancellable>,
+            |_| {},
+        );
+    });
     let review_request = active_request.clone();
     let review_view = view.clone();
-    manager.connect_script_message_received(Some("review"), move |_, _| {
+    manager.connect_script_message_received(Some("review"), move |_, value| {
         let title = review_view
             .title()
             .map(|value| value.to_string())
             .unwrap_or_else(|| "Document".into());
-        match compose_review(&review_request.borrow(), &title) {
+        let parsed = value_json(value);
+        let composed = if parsed.get("replies").is_some() || parsed.get("comments").is_some() {
+            compose_pending(&review_request.borrow(), &title, &parsed)
+        } else {
+            compose_review(&review_request.borrow(), &title)
+        };
+        match composed {
             Ok(message) => {
                 if let Ok(json) = serde_json::to_string(&message) {
                     review_view.evaluate_javascript(
@@ -463,6 +521,17 @@ fn open_request(
     let close_window = window.downgrade();
     manager.connect_script_message_received(Some("close"), move |_, _| {
         if let Some(window) = close_window.upgrade() {
+            window.close();
+        }
+    });
+    let all_windows = windows.clone();
+    manager.connect_script_message_received(Some("close-all"), move |_, _| {
+        let open = all_windows
+            .borrow()
+            .iter()
+            .map(|state| state.window.clone())
+            .collect::<Vec<_>>();
+        for window in open {
             window.close();
         }
     });
@@ -706,6 +775,180 @@ fn compose_review(request: &Handoff, title: &str) -> Result<String, Box<dyn Erro
     ))
 }
 
+fn value_json(value: &webkit6::javascriptcore::Value) -> serde_json::Value {
+    value
+        .to_json(0)
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn ack_saved(view: &webkit6::WebView) {
+    view.evaluate_javascript(
+        "if (typeof window.limpidSaved === 'function') window.limpidSaved()",
+        None,
+        None,
+        None::<&gio::Cancellable>,
+        |_| {},
+    );
+}
+
+fn replies_from_value(
+    value: &serde_json::Value,
+) -> Result<limpid_core::replies::AgentReplies, Box<dyn Error>> {
+    let mut replies = limpid_core::replies::AgentReplies::default();
+    if let Some(map) = value.get("replies").and_then(serde_json::Value::as_object) {
+        for (field, text) in map {
+            if !limpid_core::replies::valid_question_id(field) {
+                return Err("invalid question id".into());
+            }
+            if let Some(text) = text.as_str() {
+                replies.replies.insert(field.clone(), text.to_owned());
+            }
+        }
+    }
+    if let Some(list) = value.get("comments").and_then(serde_json::Value::as_array) {
+        for item in list {
+            let (Some(src), Some(text)) = (
+                item.get("src").and_then(serde_json::Value::as_str),
+                item.get("text").and_then(serde_json::Value::as_str),
+            ) else {
+                continue;
+            };
+            let turn = item
+                .get("turn")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let key = if turn.is_empty() {
+                src.to_owned()
+            } else {
+                format!("{turn}:{src}")
+            };
+            replies.comments.insert(
+                key,
+                limpid_core::replies::Comment {
+                    text: text.to_owned(),
+                    quote: item
+                        .get("quote")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
+                    start_line: item
+                        .get("lineStart")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0) as usize,
+                    end_line: item
+                        .get("lineEnd")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0) as usize,
+                },
+            );
+        }
+    }
+    Ok(replies)
+}
+
+fn compose_pending(
+    request: &Handoff,
+    title: &str,
+    value: &serde_json::Value,
+) -> Result<String, Box<dyn Error>> {
+    let meta = page_meta(request)?;
+    let agent = meta
+        .get("agent")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("file");
+    let spec = meta
+        .get("turn_spec")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("0");
+    let context = if agent == "file" {
+        "file".to_owned()
+    } else {
+        format!("turn {}", if spec.is_empty() { "0" } else { spec })
+    };
+    Ok(limpid_core::replies::compose_message(
+        title,
+        agent,
+        &context,
+        &replies_from_value(value)?,
+    ))
+}
+
+fn save_pending(
+    request: &mut Handoff,
+    value: &serde_json::Value,
+) -> Result<bool, Box<dyn Error>> {
+    let replies = replies_from_value(value)?;
+    let comments = value
+        .get("comments")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if let (Some(source), Some(hash)) = (request.source.clone(), request.source_hash.clone()) {
+        let mut edits = Vec::new();
+        for (field, text) in &replies.replies {
+            edits.push(limpid_core::replies::FileEdit::Reply {
+                field: field.clone(),
+                text: text.clone(),
+            });
+        }
+        for item in &comments {
+            let Some(src) = item.get("src").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Some(text) = item.get("text").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let byte_end = src
+                .split_once('-')
+                .ok_or("invalid source range")?
+                .1
+                .parse::<usize>()?;
+            edits.push(limpid_core::replies::FileEdit::Comment {
+                byte_end,
+                text: text.to_owned(),
+            });
+        }
+        let revision = limpid_core::replies::FileRevision::open_checked(&source, &hash)?;
+        revision.apply(&edits)?;
+        rerender_file(request, &source)?;
+        Ok(true)
+    } else {
+        let mut path = request.path.clone();
+        path.set_extension("replies.json");
+        let mut saved = limpid_core::replies::AgentReplies::load(&path)?;
+        for (field, text) in replies.replies {
+            saved.replies.insert(field, text);
+        }
+        for (key, comment) in replies.comments {
+            saved.comments.insert(key, comment);
+        }
+        saved.save(&path)?;
+        Ok(false)
+    }
+}
+
+fn rerender_file(request: &mut Handoff, source: &Path) -> Result<(), Box<dyn Error>> {
+    let updated = fs::read_to_string(source)?;
+    let settings = limpid_core::settings::Settings::load_default()?;
+    let rendered = limpid_core::render::render_with_questions(
+        &updated,
+        limpid_core::render::RenderMode::File,
+        &settings.questions.headings,
+    );
+    let html = limpid_core::render::page(&rendered);
+    let cache = request
+        .path
+        .parent()
+        .ok_or("page has no parent directory")?;
+    fs::write(
+        &request.path,
+        limpid_core::render::externalize_assets(&html, cache)?,
+    )?;
+    request.source_hash = Some(limpid_core::replies::source_hash(updated.as_bytes()));
+    Ok(())
+}
+
 fn deliver(request: &Handoff, message: &str) -> Result<(), Box<dyn Error>> {
     let settings = limpid_core::settings::Settings::load_default()?;
     deliver_with_command(request, message, &settings.reply.command)
@@ -838,6 +1081,89 @@ mod tests {
         fs::remove_file(meta).unwrap();
         fs::remove_file(page).unwrap();
         fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn save_pending_merges_agent_replies_and_comments() {
+        let directory = std::env::temp_dir().join(format!(
+            "limpid-host-save-agent-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let page = directory.join("agent.html");
+        fs::write(&page, "<html></html>").unwrap();
+        let mut sidecar = page.clone();
+        sidecar.set_extension("replies.json");
+        fs::write(
+            &sidecar,
+            br#"{"replies":{"q9":"old"},"comments":{}}"#,
+        )
+        .unwrap();
+        let mut request = Handoff {
+            path: page.clone(),
+            theme: Scheme::Dark,
+            pane: None,
+            source: None,
+            source_hash: None,
+        };
+        let value = serde_json::json!({
+            "replies": {"q1": "SQLite", "q9": "new"},
+            "comments": [{"src": "10-20", "turn": "turn-0", "lineStart": 1, "lineEnd": 2, "quote": "q", "text": "fix"}],
+        });
+        assert!(!save_pending(&mut request, &value).unwrap());
+        let saved = limpid_core::replies::AgentReplies::load(&sidecar).unwrap();
+        assert_eq!(saved.replies["q1"], "SQLite");
+        assert_eq!(saved.replies["q9"], "new");
+        assert_eq!(saved.comments["turn-0:10-20"].text, "fix");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn save_pending_batches_file_edits_and_refuses_stale() {
+        let directory = std::env::temp_dir().join(format!(
+            "limpid-host-save-file-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("questions.md");
+        let markdown = "## Questions\n\n1. Pick?\n   - SQLite\n   - Postgres\n\nTail.\n";
+        fs::write(&source, markdown).unwrap();
+        let page = directory.join("questions.html");
+        let mut request = Handoff {
+            path: page.clone(),
+            theme: Scheme::Dark,
+            pane: None,
+            source: Some(source.clone()),
+            source_hash: Some(limpid_core::replies::source_hash(markdown.as_bytes())),
+        };
+        let pick = markdown.find("SQLite").unwrap() + "SQLite".len();
+        let value = serde_json::json!({
+            "replies": {"q1": "SQLite"},
+            "comments": [
+                {"src": format!("0-{pick}"), "turn": "", "lineStart": 3, "lineEnd": 3, "quote": "SQLite", "text": "why sqlite"},
+                {"src": format!("0-{}", markdown.len()), "turn": "", "lineStart": 7, "lineEnd": 7, "quote": "Tail.", "text": "tail note"},
+            ],
+        });
+        assert!(save_pending(&mut request, &value).unwrap());
+        assert!(fs::read_to_string(&page).unwrap().contains("question-field"));
+        let saved = fs::read_to_string(&source).unwrap();
+        let parsed = limpid_core::replies::from_file_annotations(&saved);
+        assert_eq!(parsed.replies["q1"], "SQLite");
+        assert_eq!(parsed.comments.len(), 2);
+        assert!(parsed.comments.values().any(|c| c.text == "why sqlite"));
+        assert!(parsed.comments.values().any(|c| c.text == "tail note"));
+
+        fs::write(&source, format!("{saved}\nexternal\n")).unwrap();
+        assert!(
+            save_pending(
+                &mut request,
+                &serde_json::json!({"replies": {"q1": "later"}, "comments": []})
+            )
+            .is_err()
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

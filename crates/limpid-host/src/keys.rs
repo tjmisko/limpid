@@ -113,7 +113,6 @@ impl KeyDispatcher {
             return None;
         }
         match key {
-            "q" => Some(Quit),
             "r" => Some(Reload),
             "plus" | "equal" => Some(ZoomIn),
             "minus" => Some(ZoomOut),
@@ -351,7 +350,6 @@ mod tests {
     #[test]
     fn plain_bindings() {
         for (key, action) in [
-            ("q", Quit),
             ("r", Reload),
             ("plus", ZoomIn),
             ("equal", ZoomIn),
@@ -428,6 +426,7 @@ mod tests {
     #[test]
     fn unbound_keys_return_none() {
         assert_eq!(plain("x"), None);
+        assert_eq!(plain("q"), None);
         assert_eq!(
             KeyDispatcher::new().dispatch(None, false, false, 0, false, false),
             None
