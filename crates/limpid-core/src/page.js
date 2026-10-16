@@ -99,20 +99,40 @@
     initFocus(true);
   };
   const headings = [...document.querySelectorAll('article h1[id],article h2[id],article h3[id],article h4[id],article h5[id],article h6[id]')];
+  let inputMode = 'keyboard';
+  function applyActive(index) {
+    while (index > 0 && !byId.has(headings[index].id)) index -= 1;
+    const active = byId.get(headings[index].id) || [];
+    links.forEach(link => link.classList.toggle('active', active.includes(link)));
+  }
+  // The section a block belongs to is the last heading at or above it.
+  function blockSection(element) {
+    const top = element.getBoundingClientRect().top;
+    const index = headings.findLastIndex(head => head.getBoundingClientRect().top <= top + 1);
+    applyActive(index < 0 ? 0 : index);
+  }
+  function setInputMode(mode) {
+    if (inputMode === mode) return;
+    inputMode = mode;
+    document.body.classList.toggle('limpid-mouse', mode === 'mouse');
+    updateScrollSpy();
+  }
   // Highlight the section at the current scroll position. The page top and
-  // bottom always select the first and last section.
+  // bottom always select the first and last section. Keyboard focus is the
+  // source of truth; the mouse keeps the scroll position.
   function updateScrollSpy() {
     if (!links.length || !headings.length) return;
+    if (inputMode === 'keyboard' && focused) {
+      blockSection(focused);
+      return;
+    }
     const atTop = window.scrollY <= 1;
     const atBottom = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 1;
     const threshold = 90;
     const head = atTop ? headings[0]
       : atBottom ? headings.at(-1)
       : headings.filter(item => item.getBoundingClientRect().top <= threshold).at(-1) || headings[0];
-    let index = headings.indexOf(head);
-    while (index > 0 && !byId.has(headings[index].id)) index -= 1;
-    const active = byId.get(headings[index].id) || [];
-    links.forEach(link => link.classList.toggle('active', active.includes(link)));
+    applyActive(headings.indexOf(head));
   }
   let spyQueued = false;
   const queueScrollSpy = () => {
@@ -121,8 +141,10 @@
     requestAnimationFrame(() => { spyQueued = false; updateScrollSpy(); });
   };
   window.addEventListener('scroll', queueScrollSpy, {passive: true});
+  for (const type of ['mousemove', 'mousedown', 'wheel', 'touchstart']) {
+    window.addEventListener(type, () => setInputMode('mouse'), {passive: true});
+  }
   window.addEventListener('resize', () => { queueScrollSpy(); if (focused) applyFocusBand(focused); updateVisual(); });
-  updateScrollSpy();
   const STOP_SELECTOR = 'article h1[data-src],article h2[data-src],article h3[data-src],article h4[data-src],article h5[data-src],article h6[data-src],article p[data-src],article blockquote[data-src],article figure.code[data-src],article figure.diagram[data-src],article div.table-wrap[data-src],article li[data-src],article .limpid-annotation';
   const SPECIAL_SELECTOR = 'figure.code,figure.diagram,.table-wrap';
   const BLEED_INSET = 10;
@@ -152,6 +174,7 @@
       focused = element;
       applyFocusBand(element);
       if (visual) updateVisual();
+      updateScrollSpy();
     }
     if (reveal) revealStop(element);
   }
@@ -585,8 +608,8 @@
     ['S', 'Review the composed reply'],
     ['/', 'Search'],
     ['n / N', 'Next / previous match'],
-    [':w  :wq  :q  :q!  :qa', 'Save / save and send / quit / discard / close all'],
     ['t / F1', 'Toggle the rail'],
+    ['q  :w  :wq  :q!  :qa', 'Quit / save / save and send / discard / close all'],
     ['r', 'Reload'],
     ['+ / - / 0', 'Zoom in / out / reset'],
     ['[ / ]', 'History back / forward'],
@@ -847,6 +870,7 @@
       return;
     }
     if (editable()) return;
+    setInputMode('keyboard');
     if (visual && (event.key === 'v' || event.key === 'Escape')) {
       event.preventDefault();
       stopVisual();
@@ -966,6 +990,7 @@
       setFocus(focusStops().at(-1), true);
       return;
     }
+    if (event.key === 'q') { event.preventDefault(); runCommand('q'); return; }
     if (event.key === ':') { openCommand(); event.preventDefault(); return; }
     if (event.key === '/') { openSearch(); event.preventDefault(); return; }
     if (event.key === 'n' || event.key === 'N') { find(event.key === 'N'); event.preventDefault(); return; }
@@ -980,5 +1005,5 @@
     }
     if (event.key === 'Escape') { document.activeElement?.blur(); event.preventDefault(); }
   });
-  requestAnimationFrame(() => initFocus());
+  requestAnimationFrame(() => { initFocus(); updateScrollSpy(); });
 })();

@@ -1,6 +1,10 @@
 :root{
   --bg:#0c1015; --rail:#0a0e12; --surface:#12181f; --raised:#18212a;
   --focus:rgba(124,222,199,.12);
+  --focus-soft:rgba(124,222,199,.06);
+  --focus-faint:rgba(124,222,199,.02);
+  --focus-edge:rgba(124,222,199,.5);
+  --focus-edge-faint:rgba(124,222,199,.15);
   --rule:#27313d; --rule-soft:#1b242d;
   --ink:#e8eeed; --muted:#95a4b1; --faint:#627484;
   --teal:#7cdec7; --blue:#90bdf5; --amber:#f0bc72; --purple:#b6a3ee;
@@ -18,6 +22,10 @@
 :root[data-theme="light"]{
   --bg:#fbfaf7;--rail:#f3f2ed;--surface:#f0eee8;--raised:#e8e6df;
   --focus:rgba(18,109,93,.10);
+  --focus-soft:rgba(18,109,93,.05);
+  --focus-faint:rgba(18,109,93,.02);
+  --focus-edge:rgba(18,109,93,.5);
+  --focus-edge-faint:rgba(18,109,93,.15);
   --rule:#d4d1c8;--rule-soft:#e3e0d8;--ink:#20252a;--muted:#53616c;
   --faint:#71818d;--teal:#126d5d;--blue:#245b9b;--amber:#966024;
   --purple:#6955a5;--code:#f3f2ee;color-scheme:light;
@@ -179,11 +187,13 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
 .question-option.selected{color:var(--teal);font-weight:600}
 .limpid-error{position:fixed;left:20px;right:20px;bottom:20px;z-index:30;max-width:760px;margin:auto;padding:12px 16px;border:1px solid var(--rule);border-radius:8px;background:var(--surface);box-shadow:0 8px 28px #0004;color:var(--text);white-space:pre-wrap}
 .limpid-focused{position:relative}
-.limpid-focused::before{content:"";position:absolute;top:0;bottom:0;left:var(--band-left,0);right:var(--band-right,0);z-index:1;background:var(--focus);border-radius:6px;pointer-events:none}
+.limpid-focused::before{content:"";position:absolute;top:0;bottom:0;left:var(--band-left,0);right:var(--band-right,0);z-index:1;background:var(--focus-soft);border-radius:6px;pointer-events:none}
 /* Code, diagrams and tables stay legible: an outline marks focus instead of a
    background tint. */
 .limpid-focused:is(figure.code,figure.diagram,.table-wrap)::before{display:none}
-.limpid-focused:is(figure.code,figure.diagram,.table-wrap){outline:2px solid var(--teal);outline-offset:2px}
+.limpid-focused:is(figure.code,figure.diagram,.table-wrap){outline:2px solid var(--focus-edge);outline-offset:2px}
+body.limpid-mouse .limpid-focused::before{background:var(--focus-faint)}
+body.limpid-mouse .limpid-focused:is(figure.code,figure.diagram,.table-wrap){outline-color:var(--focus-edge-faint)}
 /* Visual selection: one continuous band behind the blocks. Opaque blocks cut
    through it and take the same outline. */
 .limpid-selection{position:absolute;z-index:0;background:var(--focus);border-radius:6px;pointer-events:none}

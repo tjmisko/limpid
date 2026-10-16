@@ -1,6 +1,10 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Golden page</title><style>:root{
   --bg:#0c1015; --rail:#0a0e12; --surface:#12181f; --raised:#18212a;
   --focus:rgba(124,222,199,.12);
+  --focus-soft:rgba(124,222,199,.06);
+  --focus-faint:rgba(124,222,199,.02);
+  --focus-edge:rgba(124,222,199,.5);
+  --focus-edge-faint:rgba(124,222,199,.15);
   --rule:#27313d; --rule-soft:#1b242d;
   --ink:#e8eeed; --muted:#95a4b1; --faint:#627484;
   --teal:#7cdec7; --blue:#90bdf5; --amber:#f0bc72; --purple:#b6a3ee;
@@ -18,6 +22,10 @@
 :root[data-theme="light"]{
   --bg:#fbfaf7;--rail:#f3f2ed;--surface:#f0eee8;--raised:#e8e6df;
   --focus:rgba(18,109,93,.10);
+  --focus-soft:rgba(18,109,93,.05);
+  --focus-faint:rgba(18,109,93,.02);
+  --focus-edge:rgba(18,109,93,.5);
+  --focus-edge-faint:rgba(18,109,93,.15);
   --rule:#d4d1c8;--rule-soft:#e3e0d8;--ink:#20252a;--muted:#53616c;
   --faint:#71818d;--teal:#126d5d;--blue:#245b9b;--amber:#966024;
   --purple:#6955a5;--code:#f3f2ee;color-scheme:light;
@@ -179,11 +187,13 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
 .question-option.selected{color:var(--teal);font-weight:600}
 .limpid-error{position:fixed;left:20px;right:20px;bottom:20px;z-index:30;max-width:760px;margin:auto;padding:12px 16px;border:1px solid var(--rule);border-radius:8px;background:var(--surface);box-shadow:0 8px 28px #0004;color:var(--text);white-space:pre-wrap}
 .limpid-focused{position:relative}
-.limpid-focused::before{content:"";position:absolute;top:0;bottom:0;left:var(--band-left,0);right:var(--band-right,0);z-index:1;background:var(--focus);border-radius:6px;pointer-events:none}
+.limpid-focused::before{content:"";position:absolute;top:0;bottom:0;left:var(--band-left,0);right:var(--band-right,0);z-index:1;background:var(--focus-soft);border-radius:6px;pointer-events:none}
 /* Code, diagrams and tables stay legible: an outline marks focus instead of a
    background tint. */
 .limpid-focused:is(figure.code,figure.diagram,.table-wrap)::before{display:none}
-.limpid-focused:is(figure.code,figure.diagram,.table-wrap){outline:2px solid var(--teal);outline-offset:2px}
+.limpid-focused:is(figure.code,figure.diagram,.table-wrap){outline:2px solid var(--focus-edge);outline-offset:2px}
+body.limpid-mouse .limpid-focused::before{background:var(--focus-faint)}
+body.limpid-mouse .limpid-focused:is(figure.code,figure.diagram,.table-wrap){outline-color:var(--focus-edge-faint)}
 /* Visual selection: one continuous band behind the blocks. Opaque blocks cut
    through it and take the same outline. */
 .limpid-selection{position:absolute;z-index:0;background:var(--focus);border-radius:6px;pointer-events:none}
@@ -303,20 +313,40 @@ body.limpid-visual .limpid-focused::before{display:none}
     initFocus(true);
   };
   const headings = [...document.querySelectorAll('article h1[id],article h2[id],article h3[id],article h4[id],article h5[id],article h6[id]')];
+  let inputMode = 'keyboard';
+  function applyActive(index) {
+    while (index > 0 && !byId.has(headings[index].id)) index -= 1;
+    const active = byId.get(headings[index].id) || [];
+    links.forEach(link => link.classList.toggle('active', active.includes(link)));
+  }
+  // The section a block belongs to is the last heading at or above it.
+  function blockSection(element) {
+    const top = element.getBoundingClientRect().top;
+    const index = headings.findLastIndex(head => head.getBoundingClientRect().top <= top + 1);
+    applyActive(index < 0 ? 0 : index);
+  }
+  function setInputMode(mode) {
+    if (inputMode === mode) return;
+    inputMode = mode;
+    document.body.classList.toggle('limpid-mouse', mode === 'mouse');
+    updateScrollSpy();
+  }
   // Highlight the section at the current scroll position. The page top and
-  // bottom always select the first and last section.
+  // bottom always select the first and last section. Keyboard focus is the
+  // source of truth; the mouse keeps the scroll position.
   function updateScrollSpy() {
     if (!links.length || !headings.length) return;
+    if (inputMode === 'keyboard' && focused) {
+      blockSection(focused);
+      return;
+    }
     const atTop = window.scrollY <= 1;
     const atBottom = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 1;
     const threshold = 90;
     const head = atTop ? headings[0]
       : atBottom ? headings.at(-1)
       : headings.filter(item => item.getBoundingClientRect().top <= threshold).at(-1) || headings[0];
-    let index = headings.indexOf(head);
-    while (index > 0 && !byId.has(headings[index].id)) index -= 1;
-    const active = byId.get(headings[index].id) || [];
-    links.forEach(link => link.classList.toggle('active', active.includes(link)));
+    applyActive(headings.indexOf(head));
   }
   let spyQueued = false;
   const queueScrollSpy = () => {
@@ -325,8 +355,10 @@ body.limpid-visual .limpid-focused::before{display:none}
     requestAnimationFrame(() => { spyQueued = false; updateScrollSpy(); });
   };
   window.addEventListener('scroll', queueScrollSpy, {passive: true});
+  for (const type of ['mousemove', 'mousedown', 'wheel', 'touchstart']) {
+    window.addEventListener(type, () => setInputMode('mouse'), {passive: true});
+  }
   window.addEventListener('resize', () => { queueScrollSpy(); if (focused) applyFocusBand(focused); updateVisual(); });
-  updateScrollSpy();
   const STOP_SELECTOR = 'article h1[data-src],article h2[data-src],article h3[data-src],article h4[data-src],article h5[data-src],article h6[data-src],article p[data-src],article blockquote[data-src],article figure.code[data-src],article figure.diagram[data-src],article div.table-wrap[data-src],article li[data-src],article .limpid-annotation';
   const SPECIAL_SELECTOR = 'figure.code,figure.diagram,.table-wrap';
   const BLEED_INSET = 10;
@@ -356,6 +388,7 @@ body.limpid-visual .limpid-focused::before{display:none}
       focused = element;
       applyFocusBand(element);
       if (visual) updateVisual();
+      updateScrollSpy();
     }
     if (reveal) revealStop(element);
   }
@@ -789,8 +822,8 @@ body.limpid-visual .limpid-focused::before{display:none}
     ['S', 'Review the composed reply'],
     ['/', 'Search'],
     ['n / N', 'Next / previous match'],
-    [':w  :wq  :q  :q!  :qa', 'Save / save and send / quit / discard / close all'],
     ['t / F1', 'Toggle the rail'],
+    ['q  :w  :wq  :q!  :qa', 'Quit / save / save and send / discard / close all'],
     ['r', 'Reload'],
     ['+ / - / 0', 'Zoom in / out / reset'],
     ['[ / ]', 'History back / forward'],
@@ -1051,6 +1084,7 @@ body.limpid-visual .limpid-focused::before{display:none}
       return;
     }
     if (editable()) return;
+    setInputMode('keyboard');
     if (visual && (event.key === 'v' || event.key === 'Escape')) {
       event.preventDefault();
       stopVisual();
@@ -1170,6 +1204,7 @@ body.limpid-visual .limpid-focused::before{display:none}
       setFocus(focusStops().at(-1), true);
       return;
     }
+    if (event.key === 'q') { event.preventDefault(); runCommand('q'); return; }
     if (event.key === ':') { openCommand(); event.preventDefault(); return; }
     if (event.key === '/') { openSearch(); event.preventDefault(); return; }
     if (event.key === 'n' || event.key === 'N') { find(event.key === 'N'); event.preventDefault(); return; }
@@ -1184,6 +1219,6 @@ body.limpid-visual .limpid-focused::before{display:none}
     }
     if (event.key === 'Escape') { document.activeElement?.blur(); event.preventDefault(); }
   });
-  requestAnimationFrame(() => initFocus());
+  requestAnimationFrame(() => { initFocus(); updateScrollSpy(); });
 })();
 </script></body></html>
