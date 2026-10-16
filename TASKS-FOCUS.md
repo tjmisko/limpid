@@ -93,3 +93,7 @@ from the keyboard, and the editor and callouts are legible in the page.
   half-page scroll.
 - `{` / `}` and `Ctrl-Up` / `Ctrl-Down` step one section at a time: focus the
   section's first stop and scroll so the section title sits at the top.
+- The focus band and callouts stop `BLEED_INSET` short of the article edges.
+- `:wq` with no saved feedback closes the window without waking the agent.
+- The command bar shows a `:` sigil before the input and strips a typed colon.
+- `?` opens a keymap overlay; `?` or `Esc` closes it.
