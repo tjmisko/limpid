@@ -49,6 +49,36 @@ pub fn send(socket: &Path, handoff: &Handoff) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FeedbackSignal {
+    pub page: PathBuf,
+    pub message: String,
+}
+
+pub const FEEDBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+pub fn send_feedback(
+    socket: &Path,
+    signal: &FeedbackSignal,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let stream = UnixStream::connect(socket)?;
+    stream.set_write_timeout(Some(FEEDBACK_TIMEOUT))?;
+    stream.set_read_timeout(Some(FEEDBACK_TIMEOUT))?;
+    let mut writer = &stream;
+    serde_json::to_writer(&mut writer, signal)?;
+    writer.write_all(b"\n")?;
+    let mut bytes = Vec::new();
+    BufReader::new(&stream)
+        .take(1 << 20)
+        .read_until(b'\n', &mut bytes)?;
+    if bytes.last() != Some(&b'\n') {
+        return Err("feedback listener closed without a reply".into());
+    }
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    Ok(value.get("ok").and_then(serde_json::Value::as_bool) == Some(true))
+}
+
 pub fn receive(stream: UnixStream) -> Option<Handoff> {
     if !same_user(&stream) {
         return None;
@@ -195,6 +225,69 @@ mod tests {
             });
             assert!(receive(server).is_none());
         }
+    }
+
+    #[test]
+    fn feedback_round_trips_and_reports_ok() {
+        let directory = std::env::temp_dir().join(format!(
+            "limpid-feedback-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let socket = directory.join("feedback.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            for reply in [
+                b"{\"ok\":true}\n".as_slice(),
+                b"{\"ok\":false}\n".as_slice(),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let signal: FeedbackSignal = serde_json::from_str(&line).unwrap();
+                assert_eq!(signal.page.file_name().unwrap(), "page.html");
+                stream.write_all(reply).unwrap();
+            }
+        });
+        let signal = FeedbackSignal {
+            page: PathBuf::from("/tmp/page.html"),
+            message: "q1: yes".into(),
+        };
+        assert!(send_feedback(&socket, &signal).unwrap());
+        assert!(!send_feedback(&socket, &signal).unwrap());
+        server.join().unwrap();
+        std::fs::remove_file(socket).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn feedback_refused_and_timeout_are_errors() {
+        let directory = std::env::temp_dir().join(format!(
+            "limpid-feedback-errors-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let signal = FeedbackSignal {
+            page: PathBuf::from("/tmp/page.html"),
+            message: "q1: yes".into(),
+        };
+        assert!(send_feedback(&directory.join("missing.sock"), &signal).is_err());
+
+        let socket = directory.join("silent.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            std::thread::sleep(FEEDBACK_TIMEOUT + std::time::Duration::from_millis(500));
+            drop(stream);
+        });
+        assert!(send_feedback(&socket, &signal).is_err());
+        server.join().unwrap();
+        std::fs::remove_file(socket).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]
