@@ -66,6 +66,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
     app.connect_activate(move |app| {
+        if let Some(settings) = gtk4::Settings::default() {
+            settings.set_gtk_interface_color_scheme(match scheme {
+                Scheme::Dark => gtk4::InterfaceColorScheme::Dark,
+                Scheme::Light => gtk4::InterfaceColorScheme::Light,
+            });
+        }
         let receiver = receiver.clone();
         let context = webkit6::WebContext::new();
         let windows = Rc::new(RefCell::new(Vec::<WindowState>::new()));
@@ -175,11 +181,18 @@ fn open_request(
     let restore_anchor = Rc::new(RefCell::new(None::<String>));
     let settings = webkit6::Settings::new();
     settings.set_enable_javascript(true);
-    let view = webkit6::WebView::builder()
-        .web_context(context)
+    settings.set_allow_file_access_from_file_urls(true);
+    settings.set_allow_universal_access_from_file_urls(true);
+    settings.set_enable_write_console_messages_to_stdout(true);
+    let builder = webkit6::WebView::builder()
         .user_content_manager(&manager)
-        .settings(&settings)
-        .build();
+        .settings(&settings);
+    let first_view = windows.borrow().first().map(|state| state.view.clone());
+    let view = if let Some(first_view) = &first_view {
+        builder.related_view(first_view).build()
+    } else {
+        builder.web_context(context).build()
+    };
     let restore_request = active_request.clone();
     let anchor_on_load = restore_anchor.clone();
     view.connect_load_changed(move |view, event| {
@@ -201,6 +214,9 @@ fn open_request(
         }
         let mut path = request.path.clone();
         path.set_extension("replies.json");
+        if !path.exists() {
+            return;
+        }
         let Ok(replies) = limpid_core::replies::AgentReplies::load(&path) else {
             return;
         };
@@ -212,7 +228,8 @@ fn open_request(
         };
         view.evaluate_javascript(
             &format!(
-                "window.limpidRestoreReplies({json}); window.limpidRestoreComments({comments})"
+                "if (typeof window.limpidRestoreReplies === 'function') window.limpidRestoreReplies({json}); \
+                 if (typeof window.limpidRestoreComments === 'function') window.limpidRestoreComments({comments})"
             ),
             None,
             None,
