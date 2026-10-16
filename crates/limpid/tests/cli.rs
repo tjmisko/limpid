@@ -144,3 +144,38 @@ fn export_writes_self_contained_page_without_a_display() {
     assert!(fs::read_to_string(&piped).unwrap().contains("Piped page"));
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn missing_markdown_fails_fast() {
+    let directory = std::env::temp_dir().join(format!("limpid-missing-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_limpid"))
+        .arg("--out")
+        .arg(directory.join("out.html"))
+        .arg(directory.join("nope.md"))
+        .env("XDG_CONFIG_HOME", &directory)
+        .env("XDG_CACHE_HOME", &directory)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.to_lowercase().contains("no such file"), "{stderr}");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn missing_target_and_help_report_usage() {
+    let missing = Command::new(env!("CARGO_BIN_EXE_limpid")).output().unwrap();
+    assert!(!missing.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("usage"),
+        "{}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
+    let help = Command::new(env!("CARGO_BIN_EXE_limpid"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: limpid"));
+}

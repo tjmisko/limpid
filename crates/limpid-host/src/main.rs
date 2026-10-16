@@ -15,6 +15,8 @@ use std::{
 };
 use webkit6::prelude::*;
 
+mod keys;
+
 struct WindowState {
     window: gtk4::ApplicationWindow,
     view: webkit6::WebView,
@@ -142,6 +144,7 @@ fn open_request(
     settings.set_allow_file_access_from_file_urls(true);
     settings.set_allow_universal_access_from_file_urls(true);
     settings.set_enable_write_console_messages_to_stdout(true);
+    settings.set_enable_developer_extras(true);
     let builder = webkit6::WebView::builder()
         .user_content_manager(&manager)
         .settings(&settings);
@@ -339,6 +342,70 @@ fn open_request(
         .default_height(800)
         .build();
     window.set_child(Some(&view));
+    // The page owns most keys; this handles the ones it leaves unhandled
+    // (reload, zoom, inspector, quit, history).
+    let keyboard = gtk4::EventControllerKey::new();
+    let key_window = window.clone();
+    let key_view = view.clone();
+    let dispatcher = keys::KeyDispatcher::new();
+    keyboard.connect_key_pressed(move |_, key, _, state| {
+        use gtk4::gdk::ModifierType;
+        let action = dispatcher.dispatch(
+            key.name().as_deref(),
+            state.contains(ModifierType::CONTROL_MASK),
+            state.contains(ModifierType::SHIFT_MASK),
+            (glib::monotonic_time() / 1000).max(0) as u64,
+            false,
+            false,
+        );
+        let handled = match action {
+            Some(keys::Action::Quit) => {
+                key_window.close();
+                true
+            }
+            Some(keys::Action::Reload) => {
+                key_view.reload();
+                true
+            }
+            Some(keys::Action::ReloadBypassCache) => {
+                key_view.reload_bypass_cache();
+                true
+            }
+            Some(keys::Action::ZoomIn) => {
+                key_view.set_zoom_level((key_view.zoom_level() + 0.1).min(2.0));
+                true
+            }
+            Some(keys::Action::ZoomOut) => {
+                key_view.set_zoom_level((key_view.zoom_level() - 0.1).max(0.5));
+                true
+            }
+            Some(keys::Action::ZoomReset) => {
+                key_view.set_zoom_level(1.0);
+                true
+            }
+            Some(keys::Action::Inspector) => {
+                if let Some(inspector) = key_view.inspector() {
+                    inspector.show();
+                }
+                true
+            }
+            Some(keys::Action::Back) => {
+                key_view.go_back();
+                true
+            }
+            Some(keys::Action::Forward) => {
+                key_view.go_forward();
+                true
+            }
+            _ => false,
+        };
+        if handled {
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    window.add_controller(keyboard);
     let close_window = window.downgrade();
     manager.connect_script_message_received(Some("close"), move |_, _| {
         if let Some(window) = close_window.upgrade() {

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>limpid demo</title>
+<style>
+  :root { --bg: #fafafa; --fg: #1a1a1a; --accent: #2a6fdb; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1e1e1e; --fg: #e6e6e6; --accent: #7aa7ff; } }
+  body { margin: 0; padding: 2rem; font: 16px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  button { font: inherit; padding: .4rem 1rem; border: 1px solid var(--accent); border-radius: 6px; background: transparent; color: var(--accent); cursor: pointer; }
+  code { font-family: ui-monospace, monospace; }
+  dt { font-weight: 600; margin-top: .75rem; }
+</style>
+</head>
+<body>
+<h1>limpid</h1>
+<p>Counter: <button id="count">0</button> &middot; <a href="https://webkitgtk.org/">external link</a> &middot; <input placeholder="type here; q is not swallowed"></p>
+<dl>
+  <dt>Color scheme</dt><dd id="scheme"></dd>
+  <dt>fetch() from file://</dt><dd id="fetch">pending</dd>
+  <dt>ES module import</dt><dd id="module">pending</dd>
+</dl>
+<script type="module">
+  const $ = (id) => document.getElementById(id);
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  $("scheme").textContent = dark ? "dark" : "light";
+  console.log("LIMPID_TEST scheme=" + (dark ? "dark" : "light"));
+
+  let n = 0;
+  $("count").addEventListener("click", (e) => { e.target.textContent = ++n; });
+
+  try {
+    const data = await (await fetch("./data.json")).json();
+    $("fetch").textContent = JSON.stringify(data);
+    console.log("LIMPID_TEST fetch=ok " + data.answer);
+  } catch (err) {
+    $("fetch").textContent = "failed: " + err;
+    console.log("LIMPID_TEST fetch=fail " + err);
+  }
+
+  try {
+    const { greet } = await import("./mod.js");
+    $("module").textContent = greet("limpid");
+    console.log("LIMPID_TEST module=ok");
+  } catch (err) {
+    $("module").textContent = "failed: " + err;
+    console.log("LIMPID_TEST module=fail " + err);
+  }
+  console.log("LIMPID_TEST done");
+</script>
+</body>
+</html>

@@ -73,10 +73,13 @@ installed, and the benchmarks are no worse than the P0.1 baseline.
 
 - [x] **P4.1** `limpid-host`: windows, shared WebKit context, JIT setting,
   per-scheme hosts, `--separate`, and exit when the last window closes.
-- [ ] **P4.2** Port the key dispatcher (`keys.py`) and its tests.
-- [ ] **P4.3** Port the handoff server tests, including pane. Accept only the
-  same user, as today.
-- [ ] **P4.4** Port the remaining window tests.
+- [x] **P4.2** Port the key dispatcher (`keys.py`) and its tests. The host
+  owns reload/zoom/inspector/quit/history; the page owns the rest.
+- [x] **P4.3** Port the handoff server tests, including pane and the same-user
+  check.
+- [x] **P4.4** Port the window tests: file:// fetch and ES modules, the forced
+  color scheme, one shared web process across windows, and watched-file
+  reload. Display-gated so headless CI skips them.
 - [x] **P4.5** Script message handler plumbing (`reply`, `comment`,
   `mermaid-svg`) with a test harness. Each handler is filled in by its phase.
 - [x] **P4.6** Delete the Python host.

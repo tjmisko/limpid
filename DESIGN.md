@@ -350,9 +350,10 @@ appear after an external edit and after limpid saves a comment.
   - **Settings:** an unknown key in the settings file.
   - **Replies:** a reply containing `-->`, and a file that changed on disk
     between render and save.
-- **Host:** the handoff and window tests from htmlview are ported. New tests
-  cover reply round trips through a fake reply command and Tab order across
-  fields.
+- **Host:** the handoff and window tests from htmlview are ported, plus the
+  ported key dispatcher. Window tests are display-gated and cover file://
+  fetch and ES modules, the forced color scheme, one shared web process, and
+  watched-file reload.
 - **Benchmarks:** `bench/` holds the measurement scripts from
   `~/.cache/htmlview-bench/`, adapted for limpid. Each phase that touches the
   hot path reports cold start, warm start and private memory for 1, 2 and 3
