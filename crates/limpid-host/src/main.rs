@@ -17,6 +17,31 @@ use webkit6::prelude::*;
 
 mod keys;
 
+// Ctrl-Up/Down: jump to the previous/next section. Sections are the targets of
+// the page's table of contents (in-page links inside <nav>) when it has one,
+// else its h1-h3 headings. DIRECTION is replaced with 1 or -1.
+const SECTION_JUMP: &str = r##"
+(() => {
+  const SLACK = 8;
+  const fromToc = [...document.querySelectorAll('nav a[href^="#"]')]
+    .map((a) => document.getElementById(decodeURIComponent(a.hash.slice(1))))
+    .filter(Boolean);
+  const targets = fromToc.length ? fromToc : [...document.querySelectorAll('h1, h2, h3')];
+  const tops = [...new Set(targets
+    .filter((el) => el.getClientRects().length)
+    .map((el) => {
+      const margin = parseFloat(getComputedStyle(el).scrollMarginTop) || 0;
+      return Math.round(el.getBoundingClientRect().top + window.scrollY - margin);
+    }))].sort((a, b) => a - b);
+  const y = window.scrollY;
+  const target = DIRECTION > 0
+    ? tops.find((top) => top > y + SLACK)
+    : tops.reverse().find((top) => top < y - SLACK);
+  const top = target !== undefined ? target : DIRECTION < 0 ? 0 : y;
+  window.scrollTo({ top, behavior: 'instant' });
+})();
+"##;
+
 struct WindowState {
     window: gtk4::ApplicationWindow,
     view: webkit6::WebView,
@@ -397,6 +422,14 @@ fn open_request(
                 key_view.go_forward();
                 true
             }
+            Some(keys::Action::SectionNext) => {
+                jump_section(&key_view, 1);
+                true
+            }
+            Some(keys::Action::SectionPrev) => {
+                jump_section(&key_view, -1);
+                true
+            }
             _ => false,
         };
         if handled {
@@ -473,6 +506,16 @@ fn refresh_file(state: &WindowState) -> Result<(), Box<dyn Error>> {
     *state.file_stamp.borrow_mut() = Some(stamp);
     reload_with_anchor(&state.view, &state.restore_anchor);
     Ok(())
+}
+
+fn jump_section(view: &webkit6::WebView, direction: i32) {
+    view.evaluate_javascript(
+        &SECTION_JUMP.replace("DIRECTION", &direction.to_string()),
+        None,
+        None,
+        None::<&gio::Cancellable>,
+        |_| {},
+    );
 }
 
 fn reload_with_anchor(view: &webkit6::WebView, anchor: &Rc<RefCell<Option<String>>>) {
