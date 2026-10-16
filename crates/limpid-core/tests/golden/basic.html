@@ -207,9 +207,8 @@ figure.diagram .limpid-copy{opacity:1;background:var(--raised)}
 .limpid-error{position:fixed;left:20px;right:20px;bottom:20px;z-index:30;max-width:760px;margin:auto;padding:12px 16px;border:1px solid var(--rule);border-radius:8px;background:var(--surface);box-shadow:0 8px 28px #0004;color:var(--text);white-space:pre-wrap}
 .limpid-focused{position:relative}
 .limpid-focused::before{content:"";position:absolute;top:0;bottom:0;left:var(--band-left,0);right:var(--band-right,0);z-index:1;background:var(--focus-soft);border-radius:6px;pointer-events:none}
-/* Code, diagrams and tables stay legible: an outline marks focus instead of a
-   background tint. */
-.limpid-focused:is(figure.code,figure.diagram,.table-wrap)::before{display:none}
+/* Code, diagrams and tables stay legible: an outline marks focus, and the
+   translucent band still shows either side so it lines up with the rest. */
 .limpid-focused:is(figure.code,figure.diagram,.table-wrap){outline:2px solid var(--focus-edge);outline-offset:2px}
 /* A focused heading reads through its text colour; the band joins it to the
    rest of a visual selection. */
@@ -219,7 +218,7 @@ body.limpid-mouse .limpid-focused::before{background:var(--focus-faint)}
 body.limpid-mouse .limpid-focused:is(figure.code,figure.diagram,.table-wrap){outline-color:var(--focus-edge-faint)}
 /* Visual selection: one continuous band behind the blocks. Opaque blocks cut
    through it and take the same outline. */
-.limpid-selection{position:absolute;z-index:0;background:var(--focus);border-radius:6px;pointer-events:none}
+.limpid-selection{position:fixed;z-index:0;background:var(--focus);border-radius:6px;pointer-events:none}
 body.limpid-visual .limpid-focused::before{display:none}
 .limpid-selected-special{position:relative;z-index:1;background:var(--bg);outline:2px solid var(--teal);outline-offset:2px}
 .limpid-error:empty{display:none}
@@ -378,7 +377,7 @@ body.limpid-visual .limpid-focused::before{display:none}
   const queueScrollSpy = () => {
     if (spyQueued) return;
     spyQueued = true;
-    requestAnimationFrame(() => { spyQueued = false; updateScrollSpy(); });
+    requestAnimationFrame(() => { spyQueued = false; updateScrollSpy(); if (visual) updateVisual(); });
   };
   window.addEventListener('scroll', queueScrollSpy, {passive: true});
   for (const type of ['mousemove', 'mousedown', 'wheel', 'touchstart']) {
@@ -491,18 +490,18 @@ body.limpid-visual .limpid-focused::before{display:none}
     const blocks = visualRange();
     if (!blocks.length) { clearVisual(); return; }
     if (blocks.length === 1 && isHeading(blocks[0])) { clearVisual(); return; }
-    const article = blocks[0].closest('article');
+    const article = blocks[0].closest('article') || document.body;
     const column = article.getBoundingClientRect();
     const first = blocks[0].getBoundingClientRect();
     const last = blocks[blocks.length - 1].getBoundingClientRect();
     if (!selectionEl) {
       selectionEl = document.createElement('div');
       selectionEl.className = 'limpid-selection';
-      article.append(selectionEl);
+      document.body.append(selectionEl);
     }
-    selectionEl.style.left = `${BLEED_INSET}px`;
-    selectionEl.style.width = `${article.clientWidth - BLEED_INSET * 2}px`;
-    selectionEl.style.top = `${first.top - column.top}px`;
+    selectionEl.style.left = `${column.left + BLEED_INSET}px`;
+    selectionEl.style.width = `${column.width - BLEED_INSET * 2}px`;
+    selectionEl.style.top = `${first.top}px`;
     selectionEl.style.height = `${last.bottom - first.top}px`;
     const special = new Set(blocks.filter(isSpecial));
     for (const element of document.querySelectorAll('.limpid-selected-special')) {

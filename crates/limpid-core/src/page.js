@@ -141,7 +141,7 @@
   const queueScrollSpy = () => {
     if (spyQueued) return;
     spyQueued = true;
-    requestAnimationFrame(() => { spyQueued = false; updateScrollSpy(); });
+    requestAnimationFrame(() => { spyQueued = false; updateScrollSpy(); if (visual) updateVisual(); });
   };
   window.addEventListener('scroll', queueScrollSpy, {passive: true});
   for (const type of ['mousemove', 'mousedown', 'wheel', 'touchstart']) {
@@ -254,18 +254,18 @@
     const blocks = visualRange();
     if (!blocks.length) { clearVisual(); return; }
     if (blocks.length === 1 && isHeading(blocks[0])) { clearVisual(); return; }
-    const article = blocks[0].closest('article');
+    const article = blocks[0].closest('article') || document.body;
     const column = article.getBoundingClientRect();
     const first = blocks[0].getBoundingClientRect();
     const last = blocks[blocks.length - 1].getBoundingClientRect();
     if (!selectionEl) {
       selectionEl = document.createElement('div');
       selectionEl.className = 'limpid-selection';
-      article.append(selectionEl);
+      document.body.append(selectionEl);
     }
-    selectionEl.style.left = `${BLEED_INSET}px`;
-    selectionEl.style.width = `${article.clientWidth - BLEED_INSET * 2}px`;
-    selectionEl.style.top = `${first.top - column.top}px`;
+    selectionEl.style.left = `${column.left + BLEED_INSET}px`;
+    selectionEl.style.width = `${column.width - BLEED_INSET * 2}px`;
+    selectionEl.style.top = `${first.top}px`;
     selectionEl.style.height = `${last.bottom - first.top}px`;
     const special = new Set(blocks.filter(isSpecial));
     for (const element of document.querySelectorAll('.limpid-selected-special')) {
