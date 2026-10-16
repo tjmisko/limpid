@@ -99,7 +99,7 @@ figure.code pre code{color:var(--ink)}
 .limpid-command-sigil{padding-right:4px;color:var(--teal);font:14px var(--mono);user-select:none}
 .limpid-command{flex:1;min-width:0;padding:8px 0;border:0;outline:none;background:transparent;color:var(--ink);font:14px var(--mono)}
 .limpid-editor{margin:12px 0;border:1px solid var(--rule);border-radius:10px;overflow:hidden;background:var(--surface);box-shadow:0 6px 20px #0003}
-.limpid-editor .cm-editor{font-size:15px;min-height:120px}
+.limpid-editor .cm-editor{font-size:15px}
 .limpid-editor .cm-scroller{font-family:var(--mono);line-height:1.7}
 .limpid-review{width:min(760px,calc(100vw - 32px));max-height:80vh;padding:18px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink);box-shadow:0 18px 60px #0009}
 .limpid-review::backdrop{background:#0009}
@@ -825,7 +825,8 @@ body.limpid-visual .limpid-focused::before{display:none}
     ['zt / zz / zb', 'Block to top / center / bottom'],
     ['1–9', 'Pick a question option'],
     ['Enter / i', 'Edit the focused reply'],
-    ['c', 'Comment, or edit the focused comment'],
+    ['i / I / A', 'Comment insert at the start / start / end'],
+    ['c / o', 'Comment, or edit the focused comment'],
     ['x', 'Delete the focused comment'],
     ['S', 'Review the composed reply'],
     ['/', 'Search'],
@@ -958,7 +959,7 @@ body.limpid-visual .limpid-focused::before{display:none}
     currentComments.delete(key);
     note.remove();
   }
-  async function edit(target, kind) {
+  async function edit(target, kind, enter) {
     if (editing || !target || !await loadEditor()) return;
     // A comment on a question is an answer to that question.
     if (kind === 'comment' && target.matches?.('.question-field')) kind = 'reply';
@@ -993,7 +994,7 @@ body.limpid-visual .limpid-focused::before{display:none}
         saveComment(target, commentKey, quote, text);
       }
       finish();
-    }, finish);
+    }, finish, enter);
   }
   window.limpidShowReview = message => {
     let dialog = document.querySelector('.limpid-review');
@@ -1185,7 +1186,17 @@ body.limpid-visual .limpid-focused::before{display:none}
       edit(field, 'reply');
       return;
     }
-    if (event.key === 'c') {
+    if (event.key === 'Enter' && focused?.classList.contains('limpid-annotation')) {
+      event.preventDefault();
+      edit(focused, 'comment');
+      return;
+    }
+    if (!field && (event.key === 'i' || event.key === 'I' || event.key === 'A')) {
+      event.preventDefault();
+      edit(focused, 'comment', event.key);
+      return;
+    }
+    if (event.key === 'c' || event.key === 'o') {
       event.preventDefault();
       edit(focused, 'comment');
       return;

@@ -607,7 +607,8 @@
     ['zt / zz / zb', 'Block to top / center / bottom'],
     ['1–9', 'Pick a question option'],
     ['Enter / i', 'Edit the focused reply'],
-    ['c', 'Comment, or edit the focused comment'],
+    ['i / I / A', 'Comment insert at the start / start / end'],
+    ['c / o', 'Comment, or edit the focused comment'],
     ['x', 'Delete the focused comment'],
     ['S', 'Review the composed reply'],
     ['/', 'Search'],
@@ -740,7 +741,7 @@
     currentComments.delete(key);
     note.remove();
   }
-  async function edit(target, kind) {
+  async function edit(target, kind, enter) {
     if (editing || !target || !await loadEditor()) return;
     // A comment on a question is an answer to that question.
     if (kind === 'comment' && target.matches?.('.question-field')) kind = 'reply';
@@ -775,7 +776,7 @@
         saveComment(target, commentKey, quote, text);
       }
       finish();
-    }, finish);
+    }, finish, enter);
   }
   window.limpidShowReview = message => {
     let dialog = document.querySelector('.limpid-review');
@@ -967,7 +968,17 @@
       edit(field, 'reply');
       return;
     }
-    if (event.key === 'c') {
+    if (event.key === 'Enter' && focused?.classList.contains('limpid-annotation')) {
+      event.preventDefault();
+      edit(focused, 'comment');
+      return;
+    }
+    if (!field && (event.key === 'i' || event.key === 'I' || event.key === 'A')) {
+      event.preventDefault();
+      edit(focused, 'comment', event.key);
+      return;
+    }
+    if (event.key === 'c' || event.key === 'o') {
       event.preventDefault();
       edit(focused, 'comment');
       return;
