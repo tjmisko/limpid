@@ -241,7 +241,7 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
     for (const [key, comment] of Object.entries(comments)) {
       const [turn, range] = key.includes(':') ? key.split(':', 2) : ['', key];
       const target = [...document.querySelectorAll('article [data-src]')]
-        .find(block => block.dataset.src === range && (block.closest('.turn')?.id || '') === turn);
+        .findLast(block => block.dataset.src === range && (block.closest('.turn')?.id || '') === turn);
       if (!target) continue;
       const note = document.createElement('aside');
       note.className = 'limpid-annotation';

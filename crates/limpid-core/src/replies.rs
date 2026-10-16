@@ -39,12 +39,7 @@ pub fn compose_message(title: &str, agent: &str, context: &str, replies: &AgentR
         }
     }
     let mut comments = replies.comments.iter().collect::<Vec<_>>();
-    comments.sort_by_key(|(range, _)| {
-        range
-            .split_once('-')
-            .and_then(|(start, _)| start.parse::<usize>().ok())
-            .unwrap_or(usize::MAX)
-    });
+    comments.sort_by_key(|(key, _)| comment_position(key));
     for (_, comment) in comments {
         if comment.text.trim().is_empty() {
             continue;
@@ -67,6 +62,24 @@ pub fn compose_message(title: &str, agent: &str, context: &str, replies: &AgentR
         ));
     }
     lines.join("\n")
+}
+
+fn comment_position(key: &str) -> (usize, usize) {
+    let (turn_order, range) = if let Some((turn, range)) = key.split_once(':') {
+        let turn_order = turn
+            .strip_prefix("turn-")
+            .and_then(|number| number.parse::<usize>().ok())
+            .map(|number| usize::MAX - number)
+            .unwrap_or(usize::MAX);
+        (turn_order, range)
+    } else {
+        (0, key)
+    };
+    let start = range
+        .split_once('-')
+        .and_then(|(start, _)| start.parse::<usize>().ok())
+        .unwrap_or(usize::MAX);
+    (turn_order, start)
 }
 
 enum AnnotationKind {
@@ -519,6 +532,41 @@ mod tests {
         assert_eq!(
             compose_message("Plan", "claude", "turn 0", &replies),
             "re: Plan (claude, turn 0)\nq1: SQLite\nq2: no\nq10: later\nc \"Use the existing pool\" (L42-48): this leaks"
+        );
+    }
+
+    #[test]
+    fn composes_agent_comments_in_displayed_turn_order() {
+        let mut replies = AgentReplies::default();
+        for (key, text) in [
+            ("turn-0:50-60", "newer late"),
+            ("turn-1:40-50", "older late"),
+            ("turn-0:10-20", "newer early"),
+            ("turn-1:5-10", "older early"),
+        ] {
+            replies.comments.insert(
+                key.into(),
+                Comment {
+                    text: text.into(),
+                    quote: text.into(),
+                    start_line: 1,
+                    end_line: 1,
+                },
+            );
+        }
+        let message = compose_message("Plan", "codex", "turns 0–1", &replies);
+        let comments = message
+            .lines()
+            .filter(|line| line.starts_with("c \""))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            comments,
+            [
+                "c \"older early\" (L1-1): older early",
+                "c \"older late\" (L1-1): older late",
+                "c \"newer early\" (L1-1): newer early",
+                "c \"newer late\" (L1-1): newer late",
+            ]
         );
     }
 
