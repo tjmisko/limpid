@@ -210,22 +210,39 @@
     setFocus(target.element);
     window.scrollTo({top: centered, behavior: 'instant'});
   }
+  // { / } and Ctrl-Up / Ctrl-Down step one section at a time. Focus lands on
+  // the section's first stop, and the scroll puts the section title at the top
+  // of the viewport.
   function sectionJump(direction) {
     const stops = focusStops();
-    if (!stops.length) return;
-    const position = focused
-      ? focused.getBoundingClientRect().top + window.scrollY
-      : window.scrollY + 25;
-    const tops = headings.map(head => head.getBoundingClientRect().top + window.scrollY);
-    const target = direction > 0
-      ? tops.find(top => top > position + 2)
-      : tops.filter(top => top < position - 2).at(-1);
-    if (target === undefined) {
-      setFocus(direction > 0 ? stops.at(-1) : stops[0], true);
+    const scrollTop = window.scrollY;
+    const heads = headings.map(head => ({
+      head,
+      top: Math.round(head.getBoundingClientRect().top + scrollTop),
+    }));
+    if (!heads.length) return;
+    const focusTop = focused ? focused.getBoundingClientRect().top + scrollTop : scrollTop + 25;
+    const current = heads.findLastIndex(item => item.top <= focusTop + 1);
+    const nextIndex = current + direction;
+    if (nextIndex < 0) {
+      window.scrollTo({top: 0, behavior: 'instant'});
+      if (stops.length) setFocus(stops[0]);
       return;
     }
-    const stop = stops.find(element => element.getBoundingClientRect().top + window.scrollY >= target - 1);
-    setFocus(stop || (direction > 0 ? stops.at(-1) : stops[0]), true);
+    if (nextIndex >= heads.length) {
+      window.scrollTo({top: document.documentElement.scrollHeight, behavior: 'instant'});
+      if (stops.length) setFocus(stops.at(-1));
+      return;
+    }
+    const target = heads[nextIndex];
+    const bound = nextIndex + 1 < heads.length ? heads[nextIndex + 1].top : Infinity;
+    const stop = stops.find(element => {
+      const top = element.getBoundingClientRect().top + scrollTop;
+      return top >= target.top - 1 && top < bound;
+    });
+    const margin = parseFloat(getComputedStyle(target.head).scrollMarginTop) || 0;
+    window.scrollTo({top: Math.max(0, target.top - margin), behavior: 'instant'});
+    if (stop) setFocus(stop);
   }
   function initFocus(force = false) {
     if (!force && focused?.isConnected) return;
