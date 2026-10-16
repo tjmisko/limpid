@@ -1,19 +1,21 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Golden page</title><style>:root{
-  --bg:#0c1015; --rail:#0a0e12; --surface:#12181f; --raised:#18212a;
-  --rule:#27313d; --rule-soft:#1b242d;
-  --ink:#e8eeed; --muted:#95a4b1; --faint:#627484;
-  --teal:#7cdec7; --blue:#90bdf5; --amber:#f0bc72; --purple:#b6a3ee;
-  --code:#0e1419;
+  /* Catppuccin Mocha */
+  --bg:#1e1e2e; --rail:#181825; --surface:#313244; --raised:#45475a;
+  --rule:#45475a; --rule-soft:#313244;
+  --ink:#cdd6f4; --muted:#a6adc8; --faint:#7f849c;
+  --teal:#94e2d5; --blue:#89b4fa; --amber:#fab387; --purple:#cba6f7;
+  --code:#181825;
   --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
   --sans:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
   --rail-w:220px;
   color-scheme:dark;
 }
 :root[data-theme="light"]{
-  --bg:#fbfaf7;--rail:#f3f2ed;--surface:#f0eee8;--raised:#e8e6df;
-  --rule:#d4d1c8;--rule-soft:#e3e0d8;--ink:#20252a;--muted:#53616c;
-  --faint:#71818d;--teal:#126d5d;--blue:#245b9b;--amber:#966024;
-  --purple:#6955a5;--code:#f3f2ee;color-scheme:light;
+  /* Catppuccin Latte */
+  --bg:#eff1f5;--rail:#e6e9ef;--surface:#ccd0da;--raised:#bcc0cc;
+  --rule:#bcc0cc;--rule-soft:#ccd0da;--ink:#4c4f69;--muted:#6c6f85;
+  --faint:#8c8fa1;--teal:#179299;--blue:#1e66f5;--amber:#fe640b;
+  --purple:#8839ef;--code:#e6e9ef;color-scheme:light;
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
@@ -52,12 +54,12 @@ h2{font-size:clamp(21px,2.6vw,27px);font-weight:720;margin:36px 0 14px;padding-t
 h3{font-size:18px;font-weight:680;margin:30px 0 10px}
 h4{font-size:15.5px;font-weight:680;margin:24px 0 10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
 p{margin:0 0 16px}
-strong{font-weight:680;color:#fff}
-em{color:#d6dee4}
+strong{font-weight:680;color:var(--ink)}
+em{color:var(--muted)}
 ul,ol{margin:0 0 18px;padding-left:26px}
 li{margin:6px 0}
 li > ul,li > ol{margin:6px 0}
-blockquote{margin:20px 0;padding:4px 18px;border-left:3px solid var(--teal);background:rgba(124,222,199,.05);color:var(--muted);border-radius:0 8px 8px 0}
+blockquote{margin:20px 0;padding:4px 18px;border-left:3px solid var(--teal);background:rgba(148,226,213,.06);color:var(--muted);border-radius:0 8px 8px 0}
 blockquote p:last-child{margin-bottom:0}
 code{font-family:var(--mono);font-size:.87em}
 p code,li code,td code,h1 code,h2 code,h3 code,h4 code{background:var(--raised);border:1px solid var(--rule);border-radius:5px;padding:1px 5px;color:var(--blue)}

@@ -10,8 +10,16 @@ fn basic_page_matches_reviewed_html() {
         );
     }
     let source = include_str!("golden/basic.md");
-    let expected = include_str!("golden/basic.html");
     let actual = render::page(&render::render(source, RenderMode::File));
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::write(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/basic.html"),
+            &actual,
+        )
+        .unwrap();
+        return;
+    }
+    let expected = include_str!("golden/basic.html");
     if actual != expected {
         let index = actual
             .bytes()
