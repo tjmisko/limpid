@@ -2,8 +2,9 @@ use limpid_core::transport::{Handoff, Scheme, socket_path};
 use limpid_core::{render, settings::Settings};
 use std::{
     error::Error,
+    ffi::OsStr,
     io::{Read, Write},
-    os::unix::net::UnixStream,
+    os::unix::{net::UnixStream, process::CommandExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::Duration,
@@ -144,13 +145,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             source_hash,
         };
         if separate {
-            let sibling = std::env::current_exe()?.with_file_name("limpid-host");
-            let executable = if sibling.exists() {
-                sibling
-            } else {
-                PathBuf::from("limpid-host")
-            };
-            let mut child = Command::new(executable)
+            let mut child = host_command()?
                 .arg("--separate")
                 .arg(if scheme == Scheme::Dark {
                     "--dark"
@@ -186,13 +181,7 @@ fn launch_host(
     if UnixStream::connect(socket).is_ok() {
         return Ok(None);
     }
-    let sibling = std::env::current_exe()?.with_file_name("limpid-host");
-    let executable = if sibling.exists() {
-        sibling
-    } else {
-        PathBuf::from("limpid-host")
-    };
-    let child = Command::new(executable)
+    let child = host_command()?
         .arg(if scheme == Scheme::Dark {
             "--dark"
         } else {
@@ -203,6 +192,25 @@ fn launch_host(
         .stderr(Stdio::null())
         .spawn()?;
     Ok(Some(child))
+}
+
+fn host_command() -> Result<Command, Box<dyn Error>> {
+    let sibling = std::env::current_exe()?.with_file_name("limpid-host");
+    let executable = if sibling.exists() {
+        sibling
+    } else {
+        PathBuf::from("limpid-host")
+    };
+    Ok(detached_command(executable))
+}
+
+/// The host outlives the caller, so it must not share the caller's process
+/// group: Ctrl-Z or Ctrl-C aimed at the launching shell or agent would
+/// otherwise stop or kill every open window along with it.
+fn detached_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    command.process_group(0);
+    command
 }
 
 fn wait_host(socket: &Path, child: &mut Option<std::process::Child>) -> Result<(), Box<dyn Error>> {
@@ -218,4 +226,26 @@ fn wait_host(socket: &Path, child: &mut Option<std::process::Child>) -> Result<(
         std::thread::sleep(Duration::from_millis(10));
     }
     Err("limpid-host did not open its socket within two seconds".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn process_group_of(pid: u32) -> u32 {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let after_name = stat.rsplit_once(')').unwrap().1;
+        after_name.split_whitespace().nth(2).unwrap().parse().unwrap()
+    }
+
+    #[test]
+    fn should_lead_its_own_process_group_when_spawned_detached() {
+        let mut child = detached_command("sleep").arg("5").spawn().unwrap();
+        let child_group = process_group_of(child.id());
+        let own_group = process_group_of(std::process::id());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(child_group, child.id());
+        assert_ne!(child_group, own_group);
+    }
 }
