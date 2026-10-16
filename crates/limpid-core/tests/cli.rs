@@ -140,6 +140,45 @@ fn codex_command_selects_fixture_turn_and_records_source() {
 }
 
 #[test]
+fn pi_page_path_is_stable_and_session_specific() {
+    let temp = std::env::temp_dir().join(format!("limpid-identity-cli-{}", std::process::id()));
+    fs::create_dir_all(&temp).unwrap();
+    let run = |session: &str, extra: bool| -> PathBuf {
+        let mut branch = vec![
+            serde_json::json!({"type": "message", "message": {"role": "user", "content": "pick"}}),
+            serde_json::json!({"type": "message", "message": {"role": "assistant", "content": "## Questions\n\n1. Which?\n   - A"}}),
+        ];
+        if extra {
+            branch.push(serde_json::json!({"type": "message", "message": {"role": "user", "content": "again"}}));
+            branch.push(serde_json::json!({"type": "message", "message": {"role": "assistant", "content": "## Questions\n\n1. Which?\n   - B"}}));
+        }
+        let input = serde_json::json!({"model": "test", "session_id": session, "branch": branch});
+        let mut child = Command::new(env!("CARGO_BIN_EXE_limpid-core"))
+            .args(["pi", "0"])
+            .env("XDG_CACHE_HOME", &temp)
+            .env("XDG_CONFIG_HOME", &temp)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&serde_json::to_vec(&input).unwrap())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
+    };
+    let first = run("s1", false);
+    assert_eq!(first, run("s1", false));
+    assert_ne!(first, run("s2", false));
+    assert_ne!(first, run("s1", true));
+    fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
 fn invalid_utf8_file_is_rejected_before_rendering() {
     let temp = std::env::temp_dir().join(format!("limpid-utf8-cli-{}", std::process::id()));
     fs::create_dir_all(&temp).unwrap();

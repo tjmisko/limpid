@@ -10,6 +10,7 @@ pub struct AgentPage {
     pub html: String,
     pub context: String,
     pub title: String,
+    pub content_hash: String,
 }
 
 fn first_line(source: &str) -> String {
@@ -45,6 +46,12 @@ pub fn build(
     } else {
         format!("turns {newest}–{oldest}")
     };
+    let mut content = String::new();
+    for index in &indices {
+        let turn = kept[kept.len() - 1 - index];
+        content.push_str(&format!("{index}\0{}\0{}", turn.prompt, turn.response));
+    }
+    let content_hash = crate::replies::source_hash(content.as_bytes());
     let rendered = if kind == "single" {
         let mut rendered = render::render_with_questions(response, RenderMode::Agent, headings);
         rendered.title.clone_from(&title);
@@ -103,6 +110,7 @@ pub fn build(
         html: render::page_with_meta(&rendered, &meta),
         context,
         title,
+        content_hash,
     })
 }
 
@@ -127,6 +135,34 @@ mod tests {
         assert!(page.html.contains("id=\"plan\""));
         assert!(page.html.contains("id=\"plan-2\""));
         assert!(page.html.contains("model · turns 0–1"));
+    }
+
+    #[test]
+    fn content_hash_tracks_only_the_selected_turns() {
+        let turn = |prompt: &str, response: &str| Turn {
+            prompt: prompt.into(),
+            response: response.into(),
+        };
+        let before = [turn("x", "oldest"), turn("a", "one"), turn("b", "two")];
+        let after = [
+            turn("x", "oldest"),
+            turn("a", "one"),
+            turn("b", "two"),
+            turn("c", "three"),
+        ];
+        let first = build(&before, "0", None, &[]).unwrap();
+        assert_eq!(
+            first.content_hash,
+            build(&before, "0", None, &[]).unwrap().content_hash
+        );
+        assert_ne!(
+            first.content_hash,
+            build(&after, "0", None, &[]).unwrap().content_hash
+        );
+        assert_ne!(
+            first.content_hash,
+            build(&before, "0..3", None, &[]).unwrap().content_hash
+        );
     }
 
     #[test]

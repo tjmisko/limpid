@@ -1,5 +1,5 @@
 use limpid_core::{AGENT_INSTRUCTIONS, render};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     error::Error,
@@ -88,12 +88,16 @@ fn grammars(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct PageMeta {
-    agent: &'static str,
+    agent: String,
     session_id: Option<String>,
     turn_spec: String,
     source: Option<PathBuf>,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    feedback_sock: Option<String>,
 }
 
 fn codex(spec: &str) -> Result<(), Box<dyn Error>> {
@@ -116,6 +120,7 @@ fn codex(spec: &str) -> Result<(), Box<dyn Error>> {
         spec,
         thread,
         Some(source),
+        None,
     )
 }
 
@@ -133,6 +138,10 @@ fn stdin_agent(agent: &'static str, spec: &str) -> Result<(), Box<dyn Error>> {
         .or_else(|| value.get("transcript_path"))
         .and_then(Value::as_str)
         .map(PathBuf::from);
+    let feedback_sock = value
+        .get("feedback_sock")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let turns = match agent {
         "pi" => limpid_core::pi::parse_branch(
             value
@@ -170,7 +179,7 @@ fn stdin_agent(agent: &'static str, spec: &str) -> Result<(), Box<dyn Error>> {
         }
         _ => return Err("unsupported agent".into()),
     };
-    write_agent_page(agent, &turns, model, spec, session, source)
+    write_agent_page(agent, &turns, model, spec, session, source, feedback_sock)
 }
 
 fn write_agent_page(
@@ -180,18 +189,13 @@ fn write_agent_page(
     spec: &str,
     session_id: Option<String>,
     source: Option<PathBuf>,
+    feedback_sock: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     let settings = limpid_core::settings::Settings::load_default()?;
     let page = limpid_core::agent_page::build(turns, spec, model, &settings.questions.headings)?;
     let cache = cache_dir()?;
     std::fs::create_dir_all(&cache)?;
-    let filename = format!(
-        "{agent}-{}-{}.html",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos()
-    );
+    let filename = page_filename(agent, session_id.as_deref(), spec, &page.content_hash);
     let destination = cache.join(filename);
     std::fs::write(
         &destination,
@@ -202,15 +206,23 @@ fn write_agent_page(
     std::fs::write(
         meta_path,
         serde_json::to_vec_pretty(&PageMeta {
-            agent,
+            agent: agent.to_owned(),
             session_id,
             turn_spec: spec.to_owned(),
             source,
+            title: page.title.clone(),
+            feedback_sock,
         })?,
     )?;
     println!("{}", destination.display());
     prune_agent_pages(&cache)?;
     Ok(())
+}
+
+fn page_filename(agent: &str, session: Option<&str>, spec: &str, content_hash: &str) -> String {
+    let joined = format!("{agent}\0{}\0{spec}\0{content_hash}", session.unwrap_or(""));
+    let digest = blake3::hash(joined.as_bytes()).to_hex().to_string();
+    format!("{agent}-{}.html", &digest[..16])
 }
 
 fn prune_agent_pages(cache: &Path) -> Result<(), Box<dyn Error>> {
@@ -283,4 +295,39 @@ fn cache_dir() -> Result<PathBuf, Box<dyn Error>> {
         return Ok(PathBuf::from(base).join("limpid"));
     }
     Ok(PathBuf::from(std::env::var_os("HOME").ok_or("HOME is required")?).join(".cache/limpid"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_filename_is_deterministic_and_separates_sessions() {
+        let name = page_filename("pi", Some("s1"), "0", "abc");
+        assert_eq!(name, page_filename("pi", Some("s1"), "0", "abc"));
+        assert!(name.starts_with("pi-"));
+        assert!(name.ends_with(".html"));
+        assert_eq!(name.len(), "pi-".len() + 16 + ".html".len());
+        assert_ne!(name, page_filename("pi", Some("s2"), "0", "abc"));
+        assert_ne!(name, page_filename("pi", Some("s1"), "1", "abc"));
+        assert_ne!(name, page_filename("pi", Some("s1"), "0", "def"));
+        assert_ne!(name, page_filename("claude", Some("s1"), "0", "abc"));
+    }
+
+    #[test]
+    fn page_meta_reads_old_files_without_new_fields() {
+        let old: PageMeta = serde_json::from_str(
+            r#"{"agent":"pi","session_id":"s","turn_spec":"0","source":"/tmp/a.jsonl"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.agent, "pi");
+        assert!(old.title.is_empty());
+        assert!(old.feedback_sock.is_none());
+        let new: PageMeta = serde_json::from_str(
+            r#"{"agent":"pi","session_id":null,"turn_spec":"0","source":null,"title":"T","feedback_sock":"/run/s.sock"}"#,
+        )
+        .unwrap();
+        assert_eq!(new.title, "T");
+        assert_eq!(new.feedback_sock.as_deref(), Some("/run/s.sock"));
+    }
 }
