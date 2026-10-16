@@ -732,6 +732,7 @@
     }
     note.dataset.commentKey = key;
     note.querySelector('p').textContent = text;
+    return note;
   }
   function deleteComment(note) {
     const key = note?.dataset.commentKey;
@@ -763,19 +764,20 @@
     const mount = document.createElement('div');
     mount.className = 'limpid-editor';
     placeCommentAt(mount, target);
-    const finish = () => {
+    const finish = next => {
       mount.remove();
       editing = false;
-      if (target.isConnected) setFocus(target);
+      const focus = next?.isConnected ? next : target;
+      if (focus?.isConnected) setFocus(focus);
     };
     window.limpidCreateEditor(mount, current, text => {
       if (kind === 'reply') {
         target.querySelector('.question-reply').textContent = text;
         rememberReply(target.dataset.field, text);
+        finish(target);
       } else {
-        saveComment(target, commentKey, quote, text);
+        finish(saveComment(target, commentKey, quote, text));
       }
-      finish();
     }, finish, enter);
   }
   window.limpidShowReview = message => {
