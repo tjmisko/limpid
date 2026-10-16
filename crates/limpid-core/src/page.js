@@ -409,9 +409,9 @@
   // the element at the new viewport center and center it. A tall element, one
   // we already sit in, or a center that is too far away just scrolls half a
   // page without re-centering.
-  function halfPageMove(direction) {
+  function halfPageMove(direction, steps = 1) {
     const vh = innerHeight;
-    const delta = direction * vh / 2;
+    const delta = direction * steps * vh / 2;
     const maxScroll = Math.max(0, document.documentElement.scrollHeight - vh);
     const stops = focusStops();
     if (!stops.length) {
@@ -445,7 +445,7 @@
   // { / } and Ctrl-Up / Ctrl-Down step one section at a time. Focus lands on
   // the section's first stop, and the scroll puts the section title at the top
   // of the viewport.
-  function sectionJump(direction) {
+  function sectionJump(direction, steps = 1) {
     const stops = focusStops();
     const scrollTop = window.scrollY;
     const heads = headings.map(head => ({
@@ -455,7 +455,7 @@
     if (!heads.length) return;
     const focusTop = focused ? focused.getBoundingClientRect().top + scrollTop : scrollTop + 25;
     const current = heads.findLastIndex(item => item.top <= focusTop + 1);
-    const nextIndex = current + direction;
+    const nextIndex = current + direction * steps;
     if (nextIndex < 0) {
       window.scrollTo({top: 0, behavior: 'instant'});
       if (stops.length) setFocus(stops[0]);
@@ -597,12 +597,12 @@
     }
   }
   const KEYMAP = [
-    ['j / k, ↓ / ↑', 'Next / previous block'],
+    ['j / k, ↓ / ↑', 'Next / previous block (e.g. 3j)'],
     ['v', 'Visual selection'],
     ['y', 'Yank: yy block, yis section, y j / k blocks'],
     ['Y', 'Yank the whole page'],
     ['PageDown / PageUp, Ctrl-d / Ctrl-u', 'Move half a page and center the block'],
-    ['{ / }, Ctrl-Up / Ctrl-Down', 'Previous / next section'],
+    ['{ / }, Ctrl-Up / Ctrl-Down', 'Previous / next section (e.g. 2})'],
     ['gg / G', 'First / last block'],
     ['zt / zz / zb', 'Block to top / center / bottom'],
     ['1–9', 'Pick a question option'],
@@ -858,6 +858,7 @@
     return active && (active.matches('input,textarea,select') || active.isContentEditable);
   }
   let pendingZ = false;
+  let count = '';
   function clearPending() {
     pendingG = false;
     pendingZ = false;
@@ -889,15 +890,25 @@
     }
     if (pendingY) { handleYankKey(event); return; }
     if (visual && handleVisualKey(event)) { event.preventDefault(); return; }
+    // A count prefixes the next motion.
+    if (!event.ctrlKey && !event.altKey && !event.metaKey && /^[0-9]$/.test(event.key) && !focused?.matches?.('.question-field')) {
+      if (count || event.key !== '0') {
+        count += event.key;
+        event.preventDefault();
+        return;
+      }
+    }
+    const n = count ? Number(count) : 1;
+    count = '';
     if (event.key === '?') { event.preventDefault(); toggleKeymap(); return; }
     if (event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault();
-      sectionJump(event.key === 'ArrowDown' ? 1 : -1);
+      sectionJump(event.key === 'ArrowDown' ? 1 : -1, n);
       return;
     }
     if (event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'd' || event.key === 'u')) {
       event.preventDefault();
-      halfPageMove(event.key === 'd' ? 1 : -1);
+      halfPageMove(event.key === 'd' ? 1 : -1, n);
       return;
     }
     if (event.ctrlKey || event.altKey || event.metaKey) return;
@@ -935,7 +946,7 @@
     if (pendingG) clearPending();
     if (event.key === 'j' || event.key === 'k' || event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
-      moveFocus(event.key === 'j' || event.key === 'ArrowDown' ? 1 : -1);
+      moveFocus((event.key === 'j' || event.key === 'ArrowDown' ? 1 : -1) * n);
       return;
     }
     const field = focused?.matches?.('.question-field') ? focused : null;
@@ -981,12 +992,12 @@
     }
     if (event.key === '{' || event.key === '}') {
       event.preventDefault();
-      sectionJump(event.key === '}' ? 1 : -1);
+      sectionJump(event.key === '}' ? 1 : -1, n);
       return;
     }
     if (event.key === 'PageDown' || event.key === 'PageUp') {
       event.preventDefault();
-      halfPageMove(event.key === 'PageDown' ? 1 : -1);
+      halfPageMove(event.key === 'PageDown' ? 1 : -1, n);
       return;
     }
     if (event.key === 'G') {
