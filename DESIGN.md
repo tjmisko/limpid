@@ -83,6 +83,7 @@ limpid-core codex  [spec]
 limpid-core pi     [spec]
 limpid-core grammars sync | list   install the configured grammars / show catalog
 limpid-core instructions           the one-line agent instruction (see Questions)
+limpid-core feedback <page.html>   saved answers and comments (--json, --session)
 limpid-core send                   reply command: type stdin into $LIMPID_PANE
 ```
 
@@ -100,6 +101,7 @@ Integrations are thin wrappers. `/read` in Claude Code, pi's `Ctrl-R` and
 | `~/.cache/limpid/<page>.html` | Rendered pages, newest 50 kept | `limpid`, `limpid-core` |
 | `~/.cache/limpid/<page>.meta.json` | Agent, session id, turn spec, source path | `limpid-core` |
 | `~/.cache/limpid/<page>.replies.json` | Replies and comments on agent pages | host |
+| `$XDG_RUNTIME_DIR/limpid/<session>.sock` | Feedback wake socket, one per agent session | pi extension |
 | `~/.cache/limpid/assets/<hash>.js` | Shared page scripts and styles | `limpid` |
 | `~/.cache/limpid/mermaid/<hash>.svg` | Rendered diagrams | host |
 | `~/.local/share/limpid/grammars/` | Compiled grammars (`<lang>.so`) and their queries | `limpid-core grammars sync` |
@@ -299,6 +301,125 @@ you can still review it in the agent's own prompt. It falls back to the
 clipboard when no pane is known. Agent-specific delivery (for example a pi
 extension that receives the message directly) plugs in through the same
 setting.
+
+## Feedback loop
+
+Reading a page is half the loop. The other half is getting answers back to the
+agent without polling and without spending turns nobody asked for.
+
+### Stable page identity
+
+Agent pages are named from their content, not from the process that rendered
+them:
+
+```
+page_id  = blake3(agent + "\0" + session_id + "\0" + turn_spec + "\0" + content_hash)
+filename = "<agent>-<first 16 hex of page_id>.html"
+```
+
+`content_hash` covers the exact prompts and responses being rendered. The same
+session reading the same turns always lands on the same path, so its
+`<page>.replies.json` is reused and answers survive every close and reopen. A
+new turn changes `content_hash` and gets a fresh page, so old comments never
+attach to new text. `session_id` keeps concurrent sessions in different
+projects from colliding.
+
+Because identity is content, the sidecar is the durable record.
+`prune_agent_pages` skips any page whose sidecar holds non-empty feedback, so
+pruning never drops feedback that was already saved with `:w`.
+
+### Pull: `limpid-core feedback`
+
+```
+limpid-core feedback <page.html>                 exact
+limpid-core feedback --session <id> [--spec S]  resolve through <page>.meta.json
+limpid-core feedback --json <page.html>
+```
+
+It prints the compact form `compose_message` already produces (fields, then
+quoted comments), or `{"replies":…,"comments":…}` with `--json`. An agent page
+reads its sidecar; a markdown path reads its in-file annotations. Feedback is
+keyed to the questions and comment ranges of the page, the same keys the
+sidecar uses. Empty feedback prints one line and exits zero.
+
+### `/read` does not start the agent
+
+After the page opens, the integration records a note beside the conversation
+with no turn:
+
+- pi: `sendMessage({customType:"limpid-open", …}, {triggerTurn:false})`.
+- Claude Code: return `{context:[…]}` from `command.run`.
+- Codex: the note is just the line `limpid` prints.
+
+The note carries the page path and the pull command. It reaches the model on
+the next turn the user starts; nothing wakes the agent on its own.
+
+### Command mode
+
+`q` is unbound. `:` opens a vim-style command line at the bottom of the page:
+
+| Command | Action |
+|---|---|
+| `:q` | quit; fails with unsaved changes and points to `:wq` or `:q!` |
+| `:w` | save progress to the sidecar |
+| `:wq` | save, send the composed feedback, then quit |
+| `:q!`, `:qa` | quit and discard unsaved changes (`:qa` closes every limpid window) |
+
+Edits do not go to disk as they are made; the page holds them until `:w`.
+`:q` refuses while that buffer is non-empty, leaving a one-line message
+(`unsaved changes — :wq to save and send, :q! to discard`), and only `:wq`
+writes *and* wakes the agent. This guard is what replaces a close menu: the
+same prompt, driven by a command instead of a dialog.
+
+`S` still previews the composed message in the review dialog before it is
+sent, but it composes from the page's pending buffer rather than the saved
+sidecar.
+
+### Wake signal
+
+The host is detached and the agent runs elsewhere, so the integration owns a
+per-session unix socket:
+
+```
+limpid-host ── connect, one JSON line ──▶ $XDG_RUNTIME_DIR/limpid/<session>.sock
+                                              │
+                                              ▼
+                              pi extension: sendUserMessage(message)
+```
+
+- The integration binds the socket in `session_start` (mode 0600 under a 0700
+directory) and removes it in `session_shutdown`.
+- It passes the path as `feedback_sock` in the JSON it already sends to
+`limpid-core`, which records it in `<page>.meta.json`, so the host needs no
+global state to find it.
+- On `:wq` the host composes the feedback, connects, writes `{page, message}`
+as one newline-terminated frame, and waits for `{ok}`. The listener replies,
+then calls `sendUserMessage` (or `{deliverAs:"followUp"}` while streaming). The message is the composed feedback followed by the pull command,
+so the agent has the answers in context and a way to re-read them.
+- No socket, a refused connection, or no `{ok}` — the agent is gone, or it is
+Codex or a plain file — falls back to `reply.command`, the same delivery path
+used today.
+
+`:wq` writes the sidecar before it attempts delivery, so feedback is never
+lost when the wake fails. The socket exists only to auto-send and start a turn;
+without it (Claude Code for now, Codex, or an agent that has exited) the user
+says the feedback is in limpid and the agent pulls it with
+`limpid-core feedback <page>`. Delivery is a convenience, not the record.
+
+### Waiting without burning turns
+
+Feedback is optional. The agent never blocks, never polls, and limpid never
+pushes saved-but-unsent feedback on its own.
+
+- **Pull on request.** Saved feedback stays in the sidecar. The `/read` note
+names the pull command, and the agent may run `limpid-core feedback <page>` on
+any later turn. If it does not, the feedback is skipped. The agent decides, so
+no turn is spent unless it chooses one.
+- **Explicit send.** `:wq` pushes one message and one turn, so the agent reads
+the feedback and responds. This is the only thing that starts a turn, and the
+only token spend the user did not type. `:w` and `:q` never send.
+
+There is no `feedback --wait`: an empty wait costs a turn and a timeout.
 
 ## Windows
 

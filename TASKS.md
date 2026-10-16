@@ -145,3 +145,89 @@ block and get the reply into the agent's prompt without touching the mouse.
 Deferred. `origin`/hook handling and the compositor no-focus rule were removed;
 `/read` (and running `limpid`) opens pages explicitly and they take focus.
 Revisit auto-open later if it is wanted.
+
+## Phase 9: Agent feedback loop
+
+Implements [DESIGN.md](DESIGN.md#feedback-loop). Pull is always available
+through the sidecar; push is only `:wq`, and only the socket makes it
+automatic. Do P9.1-P9.3 first (invisible, testable), then P9.5, then the
+user-visible pair P9.4 + P9.6, then P9.7-P9.9.
+
+- [ ] **P9.1 Stable page identity.** `agent_page::build` also returns a
+  `content_hash` over the selected turns' `prompt` + `response` bytes, in
+  index order. `write_agent_page` names the page `<agent>-<id>.html` with `id`
+  the first 16 hex of `blake3(agent + "\0" + session_id + "\0" + spec + "\0" +
+  content_hash)`, dropping pid and time. Extend `PageMeta` with `title` and
+  `feedback_sock`. Tests: deterministic path, unchanged transcript re-renders to the
+  same path, a new turn gets a new path, two sessions with identical content
+  get different paths.
+- [ ] **P9.2 Pruning exemption.** `prune_agent_pages` loads each candidate's
+  `.replies.json` and skips any page whose replies or comments are non-empty.
+  The newest-50 cap still applies to the rest. Sidecars for pruned pages keep
+  being removed; exempt pages keep theirs. Tests cover a replied page older
+  than 50 others.
+- [ ] **P9.3 `limpid-core feedback`.** New subcommand: `feedback [--json]
+  [--session ID [--spec S]] [PAGE]`. Read the sidecar for an agent page, or
+  `from_file_annotations` when the argument is a markdown file. Text
+  output reuses `compose_message`; `--json` dumps `AgentReplies`. `--session`
+  scans `~/.cache/limpid/*.meta.json` for the session id (and spec) and picks
+  the newest by mtime. Empty feedback prints one line and exits 0; an unknown
+  page or session exits 1. Tests: argument parsing, session resolution, empty,
+  and the file-page path.
+- [ ] **P9.4 Page buffer and command mode.** In `page.js`, stop posting `reply`
+  and `comment` on every edit; keep a dirty set of changed `qN` answers and new
+  comments. Unbind `q`. `:` opens a command line (the search-box pattern
+  already exists): `q`, `w`, `wq`, `q!`, `qa`. `:q` with a dirty set leaves
+  `unsaved changes — :wq to save and send, :q! to discard`. `:w` posts one
+  `save` message with the dirty set and clears it on success. `:wq` posts
+  `save` then `send`. `:q!` closes without saving; `:qa` posts `close-all`.
+  Keep `S` as the preview: the page sends its dirty set to the host, which
+  composes and shows the `.limpid-review` dialog, unchanged otherwise. Host
+  side: a new `save` handler merges agent replies into the sidecar, and for
+  file pages applies every dirty annotation in one `FileRevision` pass
+  (replies upsert, new comments insert), refusing on a stale source hash and
+  re-rendering once. Tests: host batching for agent and file pages, stale
+  file, and the command-mode state (a window test where feasible).
+- [ ] **P9.5 Wake socket client.** `transport` gains
+  `FeedbackSignal {page, message}` and `send_feedback(socket, signal) ->
+  Result<bool>`: connect with read/write timeouts, write one JSON line, read
+  `{ok}`. Tests: round-trip against a local `UnixListener`, a timeout, and a
+  refused connection.
+- [ ] **P9.6 pi extension.** In `session_start`, bind the per-session socket
+  (0700 directory, 0600 socket) under `$XDG_RUNTIME_DIR/limpid/`, falling back
+  to `~/.cache/limpid/run`; remove it in `session_shutdown` (idempotent). Pass
+  its path as `feedback_sock` in the JSON sent to `limpid-core pi`. The
+  listener reads one `{page, message}` frame, replies `{ok:true}`, then calls
+  `pi.sendMessage({customType:"limpid-feedback", content, display:true},
+  ctx.isIdle() ? {triggerTurn:true} : {deliverAs:"followUp"})`. `/read`
+  records the page path and pull command with
+  `{triggerTurn:false}`. Manual check: `:wq` starts a pi turn; `:w` + `:q`
+  does not.
+- [ ] **P9.7 Delivery chain for `:wq`.** The host saves first, then delivers:
+  `feedback_sock` through `send_feedback`, else `reply.command` via the
+  existing `deliver`. The sent message is `compose_message` plus a
+  `limpid-core feedback <page>` line. A failed wake leaves the sidecar written
+  and reports the error; the window still closes after a successful save.
+  Tests: message composition and fallback selection with a fake meta.
+- [ ] **P9.8 Claude Code note.** `register.ts` passes the session id in its
+  JSON for stable identity and returns `{context:[note]}` from `command.run`,
+  carrying the page path and pull command. No socket yet.
+- [ ] **P9.9 Docs and verification.** README covers command mode,
+  `limpid-core feedback` and the pi note. `cargo test --workspace` and `cargo
+  clippy --workspace --all-targets -- -D warnings` pass. Confirm old page meta
+  without the new fields still loads. Manual end-to-end with pi: answer,
+  `:wq`, agent responds; reopen the same turn and the answers are restored;
+  `:w` + `:q` saves without waking.
+
+**Risks.** P9.4 changes save semantics for markdown files too; batching must
+be one atomic pass with a stale check. Buffered edits mean an agent page is
+stale on disk until `:w`, which is the vim behavior we asked for. A socket left
+by a crashed session is removed on the next `session_start` after a refused
+connect. Node has no `SO_PEERCRED`, so the socket relies on the 0700 directory
+and 0600 socket.
+
+**Done when:** answering a page and `:wq` sends the feedback and starts the
+agent's turn; `:w` + `:q` saves without sending; `limpid-core feedback <page>`
+returns saved answers; reopening the same turns restores them; a new turn or a
+second session never reuses another page's sidecar.
+
