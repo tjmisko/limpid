@@ -103,26 +103,32 @@ fn cached_mermaid(source: &str) -> Option<String> {
 
 fn saved_annotation(raw: &str, start: usize, end: usize) -> Option<String> {
     let value = raw.trim();
-    let (label, body) = if let Some(rest) = value.strip_prefix("<!-- limpid reply ") {
+    if let Some(rest) = value.strip_prefix("<!-- limpid reply ") {
         let (field, body) = rest.split_once('\n')?;
         if !crate::replies::valid_question_id(field) {
             return None;
         }
-        (format!("Reply {field}"), body)
-    } else {
-        let body = value.strip_prefix("<!-- limpid comment\n")?;
-        ("Comment".into(), body)
-    };
-    let body = body
-        .trim_end()
-        .strip_suffix("-->")?
-        .trim_end()
-        .replace("--&gt;", "-->");
+        let body = annotation_body(body)?;
+        return Some(format!(
+            "<aside class=\"limpid-annotation limpid-reply\" data-src=\"{start}-{end}\"><strong>Reply {}</strong><p>{}</p></aside>",
+            escape_html(field),
+            escape_html(&body)
+        ));
+    }
+    let body = annotation_body(value.strip_prefix("<!-- limpid comment\n")?)?;
     Some(format!(
-        "<aside class=\"limpid-annotation\" data-src=\"{start}-{end}\"><strong>{}</strong><p>{}</p></aside>",
-        escape_html(&label),
+        "<aside class=\"limpid-annotation limpid-comment\" data-src=\"{start}-{end}\"><p>{}</p></aside>",
         escape_html(&body)
     ))
+}
+
+fn annotation_body(body: &str) -> Option<String> {
+    Some(
+        body.trim_end()
+            .strip_suffix("-->")?
+            .trim_end()
+            .replace("--&gt;", "-->"),
+    )
 }
 
 fn safe_url(url: &str) -> bool {
@@ -700,6 +706,19 @@ mod tests {
     }
 
     #[test]
+    fn renders_file_comments_without_a_label() {
+        let markdown = "Body.\n\n<!-- limpid comment\nNote -->\n";
+        let result = render(markdown, RenderMode::File);
+        assert!(
+            result.body.contains("class=\"limpid-annotation limpid-comment\""),
+            "{}",
+            result.body
+        );
+        assert!(result.body.contains("<p>Note</p>"));
+        assert!(!result.body.contains("Comment"));
+    }
+
+    #[test]
     fn renders_mathml_without_page_javascript() {
         let result = render_markdown("Inline $x^2$ and $$\\frac{1}{2}$$.");
         assert!(result.body.contains("<math"));
@@ -712,7 +731,7 @@ mod tests {
         let markdown = "## Questions\n\n1. Pick?\n\n<!-- limpid reply q1\nA --&gt; B <script>bad</script>\n-->\n";
         let result = render(markdown, RenderMode::File);
         assert!(
-            result.body.contains("class=\"limpid-annotation\""),
+            result.body.contains("class=\"limpid-annotation limpid-reply\""),
             "{}",
             result.body
         );

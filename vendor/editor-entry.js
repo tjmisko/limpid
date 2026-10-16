@@ -5,7 +5,14 @@ let active;
 Vim.defineEx('write', 'w', () => active?.save());
 Vim.defineEx('wq', 'wq', () => active?.save());
 Vim.defineEx('xit', 'x', () => active?.save());
-Vim.defineEx('quit', 'q', () => active?.cancel());
+Vim.defineEx('quit', 'q', (cm, params) => {
+  if (!active) return;
+  if ((params?.argString || '').trim() === '!' || !active.dirty()) {
+    active.cancel();
+    return;
+  }
+  window.limpidShowError?.('unsaved changes — :wq to save, :q! to discard');
+});
 
 window.limpidCreateEditor = (parent, initial, save, cancel) => {
   const view = new EditorView({
@@ -27,6 +34,7 @@ window.limpidCreateEditor = (parent, initial, save, cancel) => {
     parent,
   });
   const session = {
+    dirty: () => view.state.doc.toString() !== initial,
     save() {
       if (!active) return;
       active = null;

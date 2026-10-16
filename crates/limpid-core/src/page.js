@@ -85,14 +85,12 @@
         .findLast(block => block.dataset.src === range && (block.closest('.turn')?.id || '') === turn);
       if (!target) continue;
       const note = document.createElement('aside');
-      note.className = 'limpid-annotation';
-      const heading = document.createElement('strong');
-      heading.textContent = 'Comment';
+      note.className = 'limpid-annotation limpid-comment';
       const text = document.createElement('p');
       text.textContent = comment.text;
-      note.append(heading, text);
+      note.append(text);
       note.dataset.commentKey = key;
-      placeAtSectionEnd(note, target);
+      placeCommentAt(note, target);
       currentComments.set(key, {key, src: range, turn, lineStart: comment.start_line || 0, lineEnd: comment.end_line || 0, quote: comment.quote || '', text: comment.text});
     }
     initFocus(true);
@@ -120,7 +118,7 @@
     requestAnimationFrame(() => { spyQueued = false; updateScrollSpy(); });
   };
   window.addEventListener('scroll', queueScrollSpy, {passive: true});
-  window.addEventListener('resize', queueScrollSpy);
+  window.addEventListener('resize', () => { queueScrollSpy(); if (focused) applyFocusBand(focused); });
   updateScrollSpy();
   const STOP_SELECTOR = 'article p[data-src],article blockquote[data-src],article figure.code[data-src],article figure.diagram[data-src],article div.table-wrap[data-src],article li[data-src],article .limpid-annotation';
   let focused = null;
@@ -129,9 +127,7 @@
   function focusStops() {
     return [...document.querySelectorAll(STOP_SELECTOR)].filter(element => {
       if (element.matches('.question-option')) return false;
-      if (element.matches('.limpid-annotation')) {
-        return element.querySelector('strong')?.textContent.trim() === 'Comment';
-      }
+      if (element.matches('.limpid-annotation')) return element.matches('.limpid-comment');
       if (element.matches('li')) return true;
       return !element.parentElement?.closest('li[data-src],blockquote[data-src]');
     });
@@ -142,8 +138,17 @@
       focused?.classList.remove('limpid-focused');
       element.classList.add('limpid-focused');
       focused = element;
+      applyFocusBand(element);
     }
     if (reveal) revealStop(element);
+  }
+  function applyFocusBand(element) {
+    const article = element.closest('article');
+    if (!article) return;
+    const rect = element.getBoundingClientRect();
+    const column = article.getBoundingClientRect();
+    element.style.setProperty('--band-left', `${column.left - rect.left}px`);
+    element.style.setProperty('--band-right', `${rect.right - column.right}px`);
   }
   function revealStop(element) {
     const rect = element.getBoundingClientRect();
@@ -197,20 +202,31 @@
   let zoom = 1;
   let pendingG = false;
   let editing = false;
-  // The section that owns an element ends just before the next heading of the
-  // same or shallower level, else at the end of the article.
-  function sectionEndFor(element) {
-    const article = element.closest('article') || document.querySelector('article') || document.body;
-    const all = [...article.querySelectorAll('h1,h2,h3,h4,h5,h6')];
-    const preceding = all.filter(head => head.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING);
-    const heading = preceding.at(-1);
-    const level = heading ? Number(heading.tagName.slice(1)) : 7;
-    const following = all.filter(head => (head.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_PRECEDING) && Number(head.tagName.slice(1)) <= level);
-    return {article, before: following[0] || null};
+  // A comment sits directly under its block. Inside a list it goes into the
+  // item, so it never renders as a new list element.
+  function placeCommentAt(node, block) {
+    if (!block) return;
+    if (block.matches('li')) block.append(node);
+    else block.after(node);
+    bleed(node, block);
   }
-  function placeAtSectionEnd(node, element) {
-    const {article, before} = sectionEndFor(element);
-    article.insertBefore(node, before);
+  function precedingStop(note) {
+    for (let node = note.previousElementSibling; node; node = node.previousElementSibling) {
+      if (node.matches('.limpid-annotation')) continue;
+      if (node.matches('[data-src]')) return node;
+      const inner = node.querySelectorAll('[data-src]');
+      if (inner.length) return inner[inner.length - 1];
+    }
+    return null;
+  }
+  // Stretch a node to the article's reading edges, whatever its list indent.
+  function bleed(node, block) {
+    const article = node.closest('article');
+    if (!article) return;
+    const rect = (block || node).getBoundingClientRect();
+    const column = article.getBoundingClientRect();
+    node.style.marginLeft = `${column.left - rect.left}px`;
+    node.style.marginRight = `${rect.right - column.right}px`;
   }
   function post(name, payload) {
     window.webkit?.messageHandlers?.[name]?.postMessage(payload ?? {});
@@ -326,28 +342,25 @@
     area.remove();
     return ok;
   }
-  // Saved comments are stored beside their block; show them at the section end.
-  // File pages render them inline, so give each one a key for edit and delete.
-  for (const note of [...document.querySelectorAll('article .limpid-annotation')]) {
-    if (note.querySelector('strong')?.textContent.trim() !== 'Comment') continue;
-    if (!note.dataset.commentKey) {
-      const range = note.dataset.src || '';
-      if (range) {
-        const key = `file:${range}`;
-        note.dataset.commentKey = key;
-        const body = note.querySelector('p')?.textContent || '';
-        currentComments.set(key, {
-          key,
-          src: range,
-          turn: '',
-          lineStart: Number(note.dataset.lineStart || 0),
-          lineEnd: Number(note.dataset.lineEnd || 0),
-          quote: body.trim().slice(0, 80),
-          text: body,
-        });
-      }
+  // File pages render comments inline; move each under its block and give it a
+  // key for edit and delete.
+  for (const note of [...document.querySelectorAll('article .limpid-comment')]) {
+    const range = note.dataset.src || '';
+    if (range) {
+      const key = `file:${range}`;
+      note.dataset.commentKey = key;
+      const body = note.querySelector('p')?.textContent || '';
+      currentComments.set(key, {
+        key,
+        src: range,
+        turn: '',
+        lineStart: Number(note.dataset.lineStart || 0),
+        lineEnd: Number(note.dataset.lineEnd || 0),
+        quote: body.trim().slice(0, 80),
+        text: body,
+      });
     }
-    placeAtSectionEnd(note, note);
+    placeCommentAt(note, precedingStop(note));
   }
   function commentRecord(target, quote) {
     return {
@@ -369,12 +382,11 @@
       : null;
     if (!note) {
       note = document.createElement('aside');
-      note.className = 'limpid-annotation';
-      const heading = document.createElement('strong');
-      heading.textContent = 'Comment';
+      note.className = 'limpid-annotation limpid-comment';
       const body = document.createElement('p');
-      note.append(heading, body);
-      placeAtSectionEnd(note, target);
+      note.append(body);
+      note.dataset.commentKey = key;
+      placeCommentAt(note, target);
     }
     note.dataset.commentKey = key;
     note.querySelector('p').textContent = text;
@@ -406,7 +418,7 @@
     }
     const mount = document.createElement('div');
     mount.className = 'limpid-editor';
-    placeAtSectionEnd(mount, target);
+    placeCommentAt(mount, target);
     const finish = () => {
       mount.remove();
       editing = false;
