@@ -121,6 +121,7 @@
   window.addEventListener('resize', () => { queueScrollSpy(); if (focused) applyFocusBand(focused); });
   updateScrollSpy();
   const STOP_SELECTOR = 'article p[data-src],article blockquote[data-src],article figure.code[data-src],article figure.diagram[data-src],article div.table-wrap[data-src],article li[data-src],article .limpid-annotation';
+  const BLEED_INSET = 10;
   let focused = null;
   // Only the outermost stop counts, except that every list item is its own
   // stop. Question options are part of their field, not stops.
@@ -147,8 +148,8 @@
     if (!article) return;
     const rect = element.getBoundingClientRect();
     const column = article.getBoundingClientRect();
-    element.style.setProperty('--band-left', `${column.left - rect.left}px`);
-    element.style.setProperty('--band-right', `${rect.right - column.right}px`);
+    element.style.setProperty('--band-left', `${column.left - rect.left + BLEED_INSET}px`);
+    element.style.setProperty('--band-right', `${rect.right - column.right + BLEED_INSET}px`);
   }
   function revealStop(element) {
     const rect = element.getBoundingClientRect();
@@ -252,7 +253,9 @@
   }
   let search = '';
   let searchBox;
+  let commandBar;
   let commandBox;
+  let keymapDialog;
   let zoom = 1;
   let pendingG = false;
   let editing = false;
@@ -279,8 +282,8 @@
     if (!article) return;
     const rect = (block || node).getBoundingClientRect();
     const column = article.getBoundingClientRect();
-    node.style.marginLeft = `${column.left - rect.left}px`;
-    node.style.marginRight = `${rect.right - column.right}px`;
+    node.style.marginLeft = `${column.left - rect.left + BLEED_INSET}px`;
+    node.style.marginRight = `${rect.right - column.right + BLEED_INSET}px`;
   }
   function post(name, payload) {
     window.webkit?.messageHandlers?.[name]?.postMessage(payload ?? {});
@@ -308,12 +311,17 @@
     };
   }
   function openCommand() {
-    if (!commandBox) {
+    if (!commandBar) {
+      commandBar = document.createElement('div');
+      commandBar.className = 'limpid-command-bar';
+      const sigil = document.createElement('span');
+      sigil.className = 'limpid-command-sigil';
+      sigil.textContent = ':';
       commandBox = document.createElement('input');
       commandBox.className = 'limpid-command';
       commandBox.type = 'text';
       commandBox.setAttribute('aria-label', 'Command');
-      commandBox.placeholder = ':q  :w  :wq  :q!  :qa';
+      commandBox.placeholder = 'q    w    wq    q!    qa';
       commandBox.addEventListener('keydown', event => {
         if (event.key === 'Escape') {
           closeCommand();
@@ -325,35 +333,79 @@
           event.preventDefault();
         }
       });
-      document.body.append(commandBox);
+      commandBar.append(sigil, commandBox);
+      document.body.append(commandBar);
     }
-    commandBox.hidden = false;
+    commandBar.hidden = false;
     commandBox.value = '';
     commandBox.focus();
   }
   function closeCommand() {
-    if (!commandBox) return;
-    commandBox.hidden = true;
+    if (!commandBar) return;
+    commandBar.hidden = true;
     commandBox.blur();
   }
   function runCommand(command) {
-    if (command === 'q') {
-      if (dirtyReplies.size || dirtyComments.size) {
+    const name = command.replace(/^:+/, '');
+    if (name === 'q') {
+      if (dirtyReplies.size || dirtyComments.size || deletedComments.size) {
         window.limpidShowError?.('unsaved changes — :wq to save and send, :q! to discard');
       } else {
         post('close', {});
       }
-    } else if (command === 'w') {
+    } else if (name === 'w') {
       post('save', dirtyPayload());
-    } else if (command === 'wq') {
+    } else if (name === 'wq') {
       post('deliver', dirtyPayload());
-    } else if (command === 'q!') {
+    } else if (name === 'q!') {
       post('close', {});
-    } else if (command === 'qa') {
+    } else if (name === 'qa') {
       post('close-all', {});
-    } else if (command) {
-      window.limpidShowError?.(`Not a command: :${command}`);
+    } else if (name) {
+      window.limpidShowError?.(`Not a command: :${name}`);
     }
+  }
+  const KEYMAP = [
+    ['j / k, ↓ / ↑', 'Next / previous block'],
+    ['PageDown / PageUp, Ctrl-d / Ctrl-u', 'Move half a page and center the block'],
+    ['{ / }, Ctrl-Up / Ctrl-Down', 'Previous / next section'],
+    ['gg / G', 'First / last block'],
+    ['zt / zz / zb', 'Block to top / center / bottom'],
+    ['1–9', 'Pick a question option'],
+    ['Enter / i', 'Edit the focused reply'],
+    ['c', 'Comment, or edit the focused comment'],
+    ['x', 'Delete the focused comment'],
+    ['S', 'Review the composed reply'],
+    ['/', 'Search'],
+    ['n / N', 'Next / previous match'],
+    [':w  :wq  :q  :q!  :qa', 'Save / save and send / quit / discard / close all'],
+    ['t / F1', 'Toggle the rail'],
+    ['r', 'Reload'],
+    ['+ / - / 0', 'Zoom in / out / reset'],
+    ['[ / ]', 'History back / forward'],
+    ['?', 'Toggle this keymap'],
+  ];
+  function toggleKeymap() {
+    if (!keymapDialog) {
+      keymapDialog = document.createElement('dialog');
+      keymapDialog.className = 'limpid-keymap';
+      const heading = document.createElement('h2');
+      heading.textContent = 'Keys';
+      const list = document.createElement('dl');
+      for (const [keys, action] of KEYMAP) {
+        const dt = document.createElement('dt');
+        dt.textContent = keys;
+        const dd = document.createElement('dd');
+        dd.textContent = action;
+        list.append(dt, dd);
+      }
+      const hint = document.createElement('p');
+      hint.textContent = '? or Esc to close';
+      keymapDialog.append(heading, list, hint);
+      document.body.append(keymapDialog);
+    }
+    if (keymapDialog.open) keymapDialog.close();
+    else keymapDialog.showModal();
   }
   window.limpidSaved = () => {
     dirtyReplies.clear();
@@ -574,12 +626,17 @@
     pendingZ = false;
   }
   document.addEventListener('keydown', event => {
+    if (keymapDialog?.open) {
+      if (event.key === 'Escape' || event.key === '?') toggleKeymap();
+      return;
+    }
     if (event.key === 'F1') {
       event.preventDefault();
       document.querySelector('.shell')?.classList.toggle('rail-hidden');
       return;
     }
     if (editable()) return;
+    if (event.key === '?') { event.preventDefault(); toggleKeymap(); return; }
     if (event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault();
       sectionJump(event.key === 'ArrowDown' ? 1 : -1);

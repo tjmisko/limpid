@@ -86,8 +86,10 @@ article ::selection{background:var(--teal);color:var(--bg)}
 figure.code pre code{color:var(--ink)}
 .limpid-search{position:fixed;right:22px;bottom:18px;z-index:20;width:min(340px,calc(100vw - 44px));padding:8px 12px;border:1px solid var(--teal);border-radius:7px;background:var(--surface);color:var(--ink);box-shadow:0 8px 24px #0005;font:14px var(--sans)}
 .limpid-search[hidden]{display:none}
-.limpid-command{position:fixed;left:22px;right:22px;bottom:18px;z-index:40;padding:8px 12px;border:1px solid var(--teal);border-radius:7px;background:var(--surface);color:var(--ink);box-shadow:0 8px 24px #0005;font:14px var(--mono)}
-.limpid-command[hidden]{display:none}
+.limpid-command-bar{position:fixed;left:22px;right:22px;bottom:18px;z-index:40;display:flex;align-items:center;padding:0 12px;border:1px solid var(--teal);border-radius:7px;background:var(--surface);color:var(--ink);box-shadow:0 8px 24px #0005}
+.limpid-command-bar[hidden]{display:none}
+.limpid-command-sigil{padding-right:4px;color:var(--teal);font:14px var(--mono);user-select:none}
+.limpid-command{flex:1;min-width:0;padding:8px 0;border:0;outline:none;background:transparent;color:var(--ink);font:14px var(--mono)}
 .limpid-editor{margin:12px 0;border:1px solid var(--rule);border-radius:10px;overflow:hidden;background:var(--surface);box-shadow:0 6px 20px #0003}
 .limpid-editor .cm-editor{font-size:15px;min-height:120px}
 .limpid-editor .cm-scroller{font-family:var(--mono);line-height:1.7}
@@ -95,6 +97,13 @@ figure.code pre code{color:var(--ink)}
 .limpid-review::backdrop{background:#0009}
 .limpid-review textarea{display:block;width:100%;height:min(50vh,420px);resize:vertical;padding:12px;border:1px solid var(--rule);border-radius:6px;background:var(--code);color:var(--ink);font:13px/1.5 var(--mono)}
 .limpid-review p{margin:9px 0 0;color:var(--muted);font-size:12px}
+.limpid-keymap{width:min(560px,calc(100vw - 32px));max-height:80vh;overflow-y:auto;padding:22px 26px;border:1px solid var(--rule);border-radius:12px;background:var(--surface);color:var(--ink);box-shadow:0 18px 60px #0009}
+.limpid-keymap::backdrop{background:#0009}
+.limpid-keymap h2{margin:0 0 14px;padding:0;border:0;font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint)}
+.limpid-keymap dl{display:grid;grid-template-columns:auto 1fr;gap:7px 20px;margin:0}
+.limpid-keymap dt{font-family:var(--mono);font-size:12.5px;color:var(--teal);white-space:nowrap}
+.limpid-keymap dd{margin:0;font-size:14px}
+.limpid-keymap p{margin:16px 0 0;color:var(--faint);font-size:12px}
 figure.diagram{margin:22px 0;padding:14px;border:1px solid var(--rule);border-radius:10px;overflow-x:auto;background:var(--surface)}
 figure.diagram .limpid-copy{opacity:1;background:var(--raised)}
 figure.diagram pre.mermaid{padding:0;background:transparent;color:var(--muted)}
@@ -306,6 +315,7 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
   window.addEventListener('resize', () => { queueScrollSpy(); if (focused) applyFocusBand(focused); });
   updateScrollSpy();
   const STOP_SELECTOR = 'article p[data-src],article blockquote[data-src],article figure.code[data-src],article figure.diagram[data-src],article div.table-wrap[data-src],article li[data-src],article .limpid-annotation';
+  const BLEED_INSET = 10;
   let focused = null;
   // Only the outermost stop counts, except that every list item is its own
   // stop. Question options are part of their field, not stops.
@@ -332,8 +342,8 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
     if (!article) return;
     const rect = element.getBoundingClientRect();
     const column = article.getBoundingClientRect();
-    element.style.setProperty('--band-left', `${column.left - rect.left}px`);
-    element.style.setProperty('--band-right', `${rect.right - column.right}px`);
+    element.style.setProperty('--band-left', `${column.left - rect.left + BLEED_INSET}px`);
+    element.style.setProperty('--band-right', `${rect.right - column.right + BLEED_INSET}px`);
   }
   function revealStop(element) {
     const rect = element.getBoundingClientRect();
@@ -437,7 +447,9 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
   }
   let search = '';
   let searchBox;
+  let commandBar;
   let commandBox;
+  let keymapDialog;
   let zoom = 1;
   let pendingG = false;
   let editing = false;
@@ -464,8 +476,8 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
     if (!article) return;
     const rect = (block || node).getBoundingClientRect();
     const column = article.getBoundingClientRect();
-    node.style.marginLeft = `${column.left - rect.left}px`;
-    node.style.marginRight = `${rect.right - column.right}px`;
+    node.style.marginLeft = `${column.left - rect.left + BLEED_INSET}px`;
+    node.style.marginRight = `${rect.right - column.right + BLEED_INSET}px`;
   }
   function post(name, payload) {
     window.webkit?.messageHandlers?.[name]?.postMessage(payload ?? {});
@@ -493,12 +505,17 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
     };
   }
   function openCommand() {
-    if (!commandBox) {
+    if (!commandBar) {
+      commandBar = document.createElement('div');
+      commandBar.className = 'limpid-command-bar';
+      const sigil = document.createElement('span');
+      sigil.className = 'limpid-command-sigil';
+      sigil.textContent = ':';
       commandBox = document.createElement('input');
       commandBox.className = 'limpid-command';
       commandBox.type = 'text';
       commandBox.setAttribute('aria-label', 'Command');
-      commandBox.placeholder = ':q  :w  :wq  :q!  :qa';
+      commandBox.placeholder = 'q    w    wq    q!    qa';
       commandBox.addEventListener('keydown', event => {
         if (event.key === 'Escape') {
           closeCommand();
@@ -510,35 +527,79 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
           event.preventDefault();
         }
       });
-      document.body.append(commandBox);
+      commandBar.append(sigil, commandBox);
+      document.body.append(commandBar);
     }
-    commandBox.hidden = false;
+    commandBar.hidden = false;
     commandBox.value = '';
     commandBox.focus();
   }
   function closeCommand() {
-    if (!commandBox) return;
-    commandBox.hidden = true;
+    if (!commandBar) return;
+    commandBar.hidden = true;
     commandBox.blur();
   }
   function runCommand(command) {
-    if (command === 'q') {
-      if (dirtyReplies.size || dirtyComments.size) {
+    const name = command.replace(/^:+/, '');
+    if (name === 'q') {
+      if (dirtyReplies.size || dirtyComments.size || deletedComments.size) {
         window.limpidShowError?.('unsaved changes — :wq to save and send, :q! to discard');
       } else {
         post('close', {});
       }
-    } else if (command === 'w') {
+    } else if (name === 'w') {
       post('save', dirtyPayload());
-    } else if (command === 'wq') {
+    } else if (name === 'wq') {
       post('deliver', dirtyPayload());
-    } else if (command === 'q!') {
+    } else if (name === 'q!') {
       post('close', {});
-    } else if (command === 'qa') {
+    } else if (name === 'qa') {
       post('close-all', {});
-    } else if (command) {
-      window.limpidShowError?.(`Not a command: :${command}`);
+    } else if (name) {
+      window.limpidShowError?.(`Not a command: :${name}`);
     }
+  }
+  const KEYMAP = [
+    ['j / k, ↓ / ↑', 'Next / previous block'],
+    ['PageDown / PageUp, Ctrl-d / Ctrl-u', 'Move half a page and center the block'],
+    ['{ / }, Ctrl-Up / Ctrl-Down', 'Previous / next section'],
+    ['gg / G', 'First / last block'],
+    ['zt / zz / zb', 'Block to top / center / bottom'],
+    ['1–9', 'Pick a question option'],
+    ['Enter / i', 'Edit the focused reply'],
+    ['c', 'Comment, or edit the focused comment'],
+    ['x', 'Delete the focused comment'],
+    ['S', 'Review the composed reply'],
+    ['/', 'Search'],
+    ['n / N', 'Next / previous match'],
+    [':w  :wq  :q  :q!  :qa', 'Save / save and send / quit / discard / close all'],
+    ['t / F1', 'Toggle the rail'],
+    ['r', 'Reload'],
+    ['+ / - / 0', 'Zoom in / out / reset'],
+    ['[ / ]', 'History back / forward'],
+    ['?', 'Toggle this keymap'],
+  ];
+  function toggleKeymap() {
+    if (!keymapDialog) {
+      keymapDialog = document.createElement('dialog');
+      keymapDialog.className = 'limpid-keymap';
+      const heading = document.createElement('h2');
+      heading.textContent = 'Keys';
+      const list = document.createElement('dl');
+      for (const [keys, action] of KEYMAP) {
+        const dt = document.createElement('dt');
+        dt.textContent = keys;
+        const dd = document.createElement('dd');
+        dd.textContent = action;
+        list.append(dt, dd);
+      }
+      const hint = document.createElement('p');
+      hint.textContent = '? or Esc to close';
+      keymapDialog.append(heading, list, hint);
+      document.body.append(keymapDialog);
+    }
+    if (keymapDialog.open) keymapDialog.close();
+    else keymapDialog.showModal();
   }
   window.limpidSaved = () => {
     dirtyReplies.clear();
@@ -759,12 +820,17 @@ math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:cen
     pendingZ = false;
   }
   document.addEventListener('keydown', event => {
+    if (keymapDialog?.open) {
+      if (event.key === 'Escape' || event.key === '?') toggleKeymap();
+      return;
+    }
     if (event.key === 'F1') {
       event.preventDefault();
       document.querySelector('.shell')?.classList.toggle('rail-hidden');
       return;
     }
     if (editable()) return;
+    if (event.key === '?') { event.preventDefault(); toggleKeymap(); return; }
     if (event.ctrlKey && !event.altKey && !event.metaKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault();
       sectionJump(event.key === 'ArrowDown' ? 1 : -1);

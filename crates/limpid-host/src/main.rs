@@ -331,6 +331,23 @@ fn open_request(
             show_page_error(&deliver_view, &format!("Could not save: {error}"));
             return;
         }
+        match has_feedback(&deliver_request.borrow()) {
+            Ok(true) => {}
+            Ok(false) => {
+                deliver_view.evaluate_javascript(
+                    "window.webkit?.messageHandlers?.close?.postMessage({})",
+                    None,
+                    None,
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+                return;
+            }
+            Err(error) => {
+                show_page_error(&deliver_view, &format!("Could not read feedback: {error}"));
+                return;
+            }
+        }
         let title = deliver_view
             .title()
             .map(|value| value.to_string())
@@ -735,6 +752,17 @@ fn save_comment(
     );
     replies.save(&path)?;
     Ok(false)
+}
+
+fn has_feedback(request: &Handoff) -> Result<bool, Box<dyn Error>> {
+    let replies = if let Some(source) = &request.source {
+        limpid_core::replies::from_file_annotations(&fs::read_to_string(source)?)
+    } else {
+        let mut path = request.path.clone();
+        path.set_extension("replies.json");
+        limpid_core::replies::AgentReplies::load(&path)?
+    };
+    Ok(replies.has_feedback())
 }
 
 fn page_meta(request: &Handoff) -> Result<serde_json::Value, Box<dyn Error>> {
@@ -1263,6 +1291,33 @@ mod tests {
         assert_eq!(saved.replies["q1"], "SQLite");
         assert_eq!(saved.replies["q9"], "new");
         assert_eq!(saved.comments["turn-0:10-20"].text, "fix");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn has_feedback_reports_only_non_empty_text() {
+        let directory = std::env::temp_dir().join(format!(
+            "limpid-host-feedback-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let page = directory.join("agent.html");
+        fs::write(&page, "<html></html>").unwrap();
+        let mut sidecar = page.clone();
+        sidecar.set_extension("replies.json");
+        let request = Handoff {
+            path: page.clone(),
+            theme: Scheme::Dark,
+            pane: None,
+            source: None,
+            source_hash: None,
+        };
+        assert!(!has_feedback(&request).unwrap());
+        fs::write(&sidecar, br#"{"replies":{"q1":"  "},"comments":{}}"#).unwrap();
+        assert!(!has_feedback(&request).unwrap());
+        fs::write(&sidecar, br#"{"replies":{},"comments":{"1-2":{"text":"note","quote":"q","start_line":1,"end_line":1}}}"#).unwrap();
+        assert!(has_feedback(&request).unwrap());
         fs::remove_dir_all(directory).unwrap();
     }
 

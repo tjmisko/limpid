@@ -229,6 +229,14 @@ pub fn deliver_reply(
 }
 
 impl AgentReplies {
+    pub fn has_feedback(&self) -> bool {
+        self.replies.values().any(|text| !text.trim().is_empty())
+            || self
+                .comments
+                .values()
+                .any(|comment| !comment.text.trim().is_empty())
+    }
+
     pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         match fs::read(path) {
             Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
