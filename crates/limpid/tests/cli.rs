@@ -1,4 +1,4 @@
-use limpid_core::transport::{Handoff, Origin, Scheme, socket_path};
+use limpid_core::transport::{Handoff, Scheme, socket_path};
 use std::{
     fs,
     io::{Read, Write},
@@ -38,7 +38,7 @@ fn receive_handoff(runtime: &Path, scheme: Scheme) -> JoinHandle<Option<Handoff>
 }
 
 #[test]
-fn markdown_open_renders_and_hands_off_hook_context() {
+fn markdown_open_renders_and_hands_off() {
     let directory = std::env::temp_dir().join(format!(
         "limpid-front-{}-{:?}",
         std::process::id(),
@@ -54,7 +54,7 @@ fn markdown_open_renders_and_hands_off_hook_context() {
     let receiver = receive_handoff(&directory, Scheme::Light);
 
     let output = Command::new(env!("CARGO_BIN_EXE_limpid"))
-        .args(["--hook", "--slot", "session-1", "--light"])
+        .arg("--light")
         .arg(&source)
         .env("XDG_RUNTIME_DIR", &directory)
         .env("XDG_CACHE_HOME", &directory)
@@ -68,8 +68,6 @@ fn markdown_open_renders_and_hands_off_hook_context() {
         String::from_utf8_lossy(&output.stderr)
     );
     let request = receiver.join().unwrap().expect("no handoff received");
-    assert_eq!(request.slot.as_deref(), Some("session-1"));
-    assert_eq!(request.origin, Origin::Hook);
     assert_eq!(request.theme, Scheme::Light);
     assert_eq!(request.pane.as_deref(), Some("4242"));
     assert_eq!(request.source, Some(source.canonicalize().unwrap()));
@@ -144,63 +142,5 @@ fn export_writes_self_contained_page_without_a_display() {
         .unwrap();
     assert!(child.wait_with_output().unwrap().status.success());
     assert!(fs::read_to_string(&piped).unwrap().contains("Piped page"));
-    fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn codex_hook_opens_question_turn_in_its_session_slot() {
-    let directory = std::env::temp_dir().join(format!(
-        "limpid-codex-hook-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let sessions = directory.join("codex/sessions/2026/10/15");
-    let config = directory.join("config/limpid");
-    fs::create_dir_all(&sessions).unwrap();
-    fs::create_dir_all(&config).unwrap();
-    fs::write(config.join("config.toml"), "[autoopen]\ncodex = true\n").unwrap();
-    let source = sessions.join("rollout-2026-10-15T10-00-00-x.jsonl");
-    let fixture = fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../limpid-core/tests/fixtures/codex/simple.jsonl"
-    ))
-    .unwrap()
-    .replace("second answer", "## Questions\\n\\n1. Which?\\n   - SQLite");
-    fs::write(&source, fixture).unwrap();
-    let receiver = receive_handoff(&directory, Scheme::Dark);
-    let payload = serde_json::json!({
-        "type": "agent-turn-complete",
-        "thread-id": "x",
-        "cwd": directory,
-    });
-    let output = Command::new(env!("CARGO_BIN_EXE_limpid"))
-        .args(["hook", "codex", &payload.to_string()])
-        .env("CODEX_HOME", directory.join("codex"))
-        .env("XDG_RUNTIME_DIR", &directory)
-        .env("XDG_CACHE_HOME", &directory)
-        .env("XDG_CONFIG_HOME", directory.join("config"))
-        .env("WEZTERM_PANE", "4242")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let request = receiver.join().unwrap().expect("no hook handoff received");
-    assert_eq!(request.origin, Origin::Hook);
-    assert_eq!(request.slot.as_deref(), Some("x"));
-    assert_eq!(request.pane.as_deref(), Some("4242"));
-    assert!(
-        fs::read_to_string(&request.path)
-            .unwrap()
-            .contains("class=\"question-field\"")
-    );
-    let mut meta_path = request.path;
-    meta_path.set_extension("meta.json");
-    let meta: serde_json::Value = serde_json::from_slice(&fs::read(meta_path).unwrap()).unwrap();
-    assert_eq!(meta["agent"], "codex");
-    assert_eq!(meta["session_id"], "x");
-    assert_eq!(meta["source"], source.to_string_lossy().as_ref());
     fs::remove_dir_all(directory).unwrap();
 }

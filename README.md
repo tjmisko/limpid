@@ -27,8 +27,6 @@ limpid notes.md
 limpid page.html
 cat response.md | limpid -
 limpid --out response.html response.md
-limpid --slot session-1 notes.md
-limpid --hook --slot session-1 notes.md
 limpid --separate notes.md
 ```
 
@@ -41,24 +39,15 @@ Math renders as MathML. Mermaid fences show their source immediately; the
 diagram script loads after first paint, and completed SVGs are cached for the
 next render.
 
-Hook windows (`--hook`) never take focus. limpid is Wayland-only and asks GDK
-for the Wayland backend, so the compositor sees the app id
-`io.quasioptimal.limpid`. The rule that keeps hook windows unfocused lives in
-your compositor config; [`integrations/hyprland/limpid.conf`](integrations/hyprland/limpid.conf)
-is the canonical copy.
+Nothing opens automatically. The pi extension adds `/read` and `Ctrl-R`, and
+the Claude Code plugin adds `/read`; both render the current turn with
+`limpid-core` and then open it with `limpid`, so the window takes focus like
+any other.
 
 For a Codex session, run `limpid codex` or `limpid codex 0..2`. The core reader
 also accepts `limpid-core claude [spec]` and `limpid-core pi [spec]`, with their
 transcript data as JSON on stdin. Each prints a cached page path that can be
 passed to `limpid`.
-
-Auto-open is off by default. Set `autoopen.claude = true` and merge
-[`integrations/claude-code/stop-hook.settings.json`](integrations/claude-code/stop-hook.settings.json)
-into Claude Code's settings to open turns with numbered Questions without
-taking focus. The pi extension uses its `agent_end` event when `autoopen.pi` is
-true. Both reuse a window by session ID. `limpid hook codex '<json>'` accepts a
-Codex turn-complete payload as the final command argument; this repository does
-not enable a Codex notification command.
 
 Turn specs include `0`, `3`, `0..2`, `1..=3`, `2..`, `..4`, and `..`. Ranges are
 limited to ten turns.
@@ -92,10 +81,6 @@ headings = ["Questions", "Open questions", "Questions for you"]
 
 [reply]
 command = "wl-copy"
-
-[autoopen]
-claude = false
-pi = false
 codex = false
 ```
 

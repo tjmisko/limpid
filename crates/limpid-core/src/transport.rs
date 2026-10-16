@@ -25,22 +25,10 @@ impl Scheme {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Origin {
-    #[default]
-    User,
-    Hook,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Handoff {
     pub path: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slot: Option<String>,
-    #[serde(default)]
-    pub origin: Origin,
     pub theme: Scheme,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane: Option<String>,
@@ -121,8 +109,6 @@ mod tests {
     fn handoff_round_trip_and_socket_names() {
         let request = Handoff {
             path: "/tmp/agent.html".into(),
-            slot: Some("session-1".into()),
-            origin: Origin::Hook,
             theme: Scheme::Dark,
             pane: Some("3".into()),
             source: None,
@@ -143,8 +129,6 @@ mod tests {
         let (mut client, server) = UnixStream::pair().unwrap();
         let handoff = Handoff {
             path: "/tmp/a.html".into(),
-            slot: None,
-            origin: Origin::User,
             theme: Scheme::Light,
             pane: None,
             source: None,
@@ -165,7 +149,7 @@ mod tests {
     fn handoff_rejects_malformed_enums_and_missing_required_fields() {
         for payload in [
             r#"{"path":"/tmp/a.html","theme":"sepia"}"#,
-            r#"{"path":"/tmp/a.html","theme":"dark","origin":"other"}"#,
+            r#"{"path":"/tmp/a.html","theme":"dark","origin":"hook"}"#,
             r#"{"path":"/tmp/a.html"}"#,
             r#"{"theme":"dark"}"#,
             "garbage",
@@ -184,8 +168,6 @@ mod tests {
             .write_all(b"{\"path\":\"/tmp/a.html\",\"theme\":\"dark\"}\n")
             .unwrap();
         let request = receive(server).unwrap();
-        assert_eq!(request.origin, Origin::User);
-        assert!(request.slot.is_none());
         assert!(request.pane.is_none());
 
         let (mut client, server) = UnixStream::pair().unwrap();
@@ -234,8 +216,6 @@ mod tests {
 
         let request = Handoff {
             path: "/tmp/valid.html".into(),
-            slot: Some("session".into()),
-            origin: Origin::Hook,
             theme: Scheme::Light,
             pane: Some("7".into()),
             source: None,

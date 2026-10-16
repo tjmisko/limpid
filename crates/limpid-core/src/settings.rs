@@ -7,7 +7,6 @@ pub struct Settings {
     pub highlight: Highlight,
     pub questions: Questions,
     pub reply: Reply,
-    pub autoopen: Autoopen,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -75,14 +74,6 @@ impl Default for Reply {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default, deny_unknown_fields)]
-pub struct Autoopen {
-    pub claude: bool,
-    pub pi: bool,
-    pub codex: bool,
-}
-
 impl Settings {
     pub fn parse(source: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(source)
@@ -116,9 +107,6 @@ mod tests {
         let settings = Settings::parse("[reply]\ncommand = 'limpid-core send'\n").unwrap();
         assert_eq!(settings.reply.command, "limpid-core send");
         assert_eq!(settings.highlight.theme, "default");
-        assert!(!settings.autoopen.claude);
-        assert!(!settings.autoopen.pi);
-        assert!(!settings.autoopen.codex);
     }
 
     #[test]

@@ -57,14 +57,10 @@ TypeScript renderer and test suite are deleted.
   cache; `--out`; hand off over the socket protocol. When no host is running,
   start it first so GTK starts up while the page renders. The Rust host
   replaced the planned interim Python host.
-- [x] **P3.2** Extend the handoff message with `slot`, `origin` and `pane`
-  (captured from `$WEZTERM_PANE`). The host supports slot reuse and no-focus
-  for `--hook`.
+- [x] **P3.2** Extend the handoff message with `pane` (captured from
+  `$WEZTERM_PANE`).
 - [x] **P3.3** Fold htmlview into this repo. The socket name and `HTMLVIEW_JIT`
-  are `limpid` / `LIMPID_JIT`; the window app id stays the valid D-Bus name
-  `io.quasioptimal.limpid` (see DESIGN.md, *Window identity and rules*). The
-  Hyprland rule is `integrations/hyprland/limpid.conf`. Archive the htmlview
-  repo.
+  are `limpid` / `LIMPID_JIT`. Archive the htmlview repo.
 - [x] **P3.4** Turn the Claude Code, pi and Codex integrations into wrappers
   around the binaries. Delete the TypeScript renderer and `node_modules`.
   Switch `install.sh` to `cargo install --path` plus `grammars sync`, and
@@ -78,10 +74,9 @@ installed, and the benchmarks are no worse than the P0.1 baseline.
 - [x] **P4.1** `limpid-host`: windows, shared WebKit context, JIT setting,
   per-scheme hosts, `--separate`, and exit when the last window closes.
 - [ ] **P4.2** Port the key dispatcher (`keys.py`) and its tests.
-- [ ] **P4.3** Port the handoff server and its 19 tests, including slot, origin
-  and pane. Accept only the same user, as today.
-- [ ] **P4.4** Port the 10 window tests. Add tests for slot reuse with scroll
-  kept and `--hook` not taking focus.
+- [ ] **P4.3** Port the handoff server tests, including pane. Accept only the
+  same user, as today.
+- [ ] **P4.4** Port the remaining window tests.
 - [x] **P4.5** Script message handler plumbing (`reply`, `comment`,
   `mermaid-svg`) with a test harness. Each handler is filled in by its phase.
 - [x] **P4.6** Delete the Python host.
@@ -143,14 +138,6 @@ block and get the reply into the agent's prompt without touching the mouse.
 
 ## Phase 8: Auto-open
 
-- [x] **P8.1** Claude Code Stop hook: when `autoopen.claude` is on and the
-  newest turn has a Questions section, render it and open it with
-  `--hook --slot <session id>`.
-- [ ] **P8.2** The same for pi (an extension event) and Codex (a notify hook),
-  where those agents support it.
-- [ ] **P8.3** End-to-end test: a fixture turn with questions opens in its
-  slot, a reply is sent through a fake reply command, and the variables match
-  the session and pane.
-
-**Done when:** an agent asking a question makes a limpid window appear with
-the fields ready, and your answers reach the agent's prompt.
+Deferred. `origin`/hook handling and the compositor no-focus rule were removed;
+`/read` (and running `limpid`) opens pages explicitly and they take focus.
+Revisit auto-open later if it is wanted.

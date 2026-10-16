@@ -43,7 +43,7 @@ limpid-core <agent> [spec]  ─▶  ~/.cache/limpid/<page>.html + <page>.meta.js
 limpid <file.md | page.html | ->      small binary, does not link GTK
    │   renders .md in-process (limpid-core library)
    │   captures $WEZTERM_PANE
-   │   Unix socket: {path, slot, origin, theme, pane}
+   │   Unix socket: {path, theme, pane, source}
    ▼
 limpid-host                           GTK4 + WebKit 6.0, links limpid-core
    │                                  one process, many windows,
@@ -60,7 +60,7 @@ One Cargo workspace, three crates:
 |---|---|---|
 | `limpid-core` | lib + bin | Settings; reading sources (markdown files, stdin, Claude Code, Codex and pi transcripts with turn specs); rendering pages; highlighting and the grammar catalog; finding question fields; reply storage and formatting; agent instructions; `send`. No GTK. |
 | `limpid` | bin | The command you type. Renders `.md` in-process, writes the page to the cache, and hands it to the host over the socket. When no host is running, it starts `limpid-host` first, so GTK starts up while the page renders. |
-| `limpid-host` | bin | Windows, keys, the shared WebKit context, slots, and the script message handlers. It stores replies and runs the reply command through `limpid-core`. |
+| `limpid-host` | bin | Windows, keys, the shared WebKit context, and the script message handlers. It stores replies and runs the reply command through `limpid-core`. |
 
 `limpid` must not link GTK or WebKit. The dynamic linker maps every linked
 library at startup, so keeping GTK and WebKit out of `limpid` keeps the handoff
@@ -73,8 +73,6 @@ the file to the host and exited before importing GTK.
 limpid notes.md                    render and open
 limpid page.html                   open as is
 limpid -                           read markdown from stdin
-limpid --slot ID <target>          reuse the window holding slot ID
-limpid --hook <target>             open without taking focus (origin: hook)
 limpid --dark | --light <target>   theme (separate host per scheme)
 limpid --separate <target>         own process, no host
 limpid --out FILE <target>         write a self-contained page, don't open
@@ -121,9 +119,6 @@ headings = ["Questions", "Open questions", "Questions for you"]
 
 [reply]
 command = "wl-copy"            # or "limpid-core send"
-
-[autoopen]
-claude = false                 # Stop hook opens turns that contain Questions
 ```
 
 Unknown keys are an error with the key's name, so typos don't fail silently.
@@ -303,44 +298,16 @@ clipboard when no pane is known. Agent-specific delivery (for example a pi
 extension that receives the message directly) plugs in through the same
 setting.
 
-## Windows and slots
+## Windows
 
-The handoff message carries an optional `slot`. If a window already holds that
-slot, the host loads the new page there instead of opening a window, and keeps
-the scroll position (by `data-src` anchor) when the page has the same source.
-Hooks use the agent's session id as the slot, so each agent gets one window
-that updates.
+Every handoff opens one window. One host process serves all of them and shares
+a single WebKit context, so an extra window costs about 10 MiB rather than a
+whole new engine. The host quits when its last window closes.
 
-### Window identity and rules
-
-What has keyboard focus is compositor policy, not app policy. Wayland gives a
-window only two identity strings (`app_id` and `title`), and it deliberately
-has no "map me without focus" request. GTK can ask a compositor to *activate* a
-window (`present`), but cannot ask it to suppress activation on map. So
-"origin: hook never takes focus" can only be a compositor rule, and that rule
-must match something the compositor can see.
-
-- **`app_id` identifies the process.** GTK fills it from
-  `GtkApplication::application_id`. The reverse-DNS shape
-  (`io.quasioptimal.limpid`) is not a Wayland requirement: it comes from
-  D-Bus, because that same value is the app's well-known bus name and D-Bus
-  well-known names must be dotted. limpid runs `NON_UNIQUE` and never uses the
-  bus, but GTK still validates the string as a D-Bus name. Under XWayland the
-  compositor instead sees `WM_CLASS`, which GTK derives from the program name
-  (`limpid-host`).
-- **`title` is the only per-window string.** One host process serves every
-  window (one shared WebKit engine), so normal and hook windows have the same
-  `app_id`; the hook/normal distinction has to live in the title. limpid keeps
-  a stable `limpid-hook` prefix on hook titles, so the rule matches even when
-  the page title arrives before the first map.
-- **The rule lives in the user's compositor config**, because compositor
-  policy cannot live in this repo. `integrations/hyprland/limpid.conf` is the
-  canonical copy of it; the app id and title prefix are the only strings that
-  must stay in sync.
-
-limpid targets Wayland. `limpid-host` asks GDK for the Wayland backend when
-`WAYLAND_DISPLAY` is set, so it cannot silently land on XWayland where the
-class (and therefore the rule) is different.
+limpid does not try to control keyboard focus. A window that opens takes focus
+like any other; what has focus is the compositor's decision, not the app's.
+There is no automatic opening: `/read` (or running `limpid`) is the only thing
+that opens a page.
 
 ## Watch
 
@@ -383,9 +350,9 @@ appear after an external edit and after limpid saves a comment.
   - **Settings:** an unknown key in the settings file.
   - **Replies:** a reply containing `-->`, and a file that changed on disk
     between render and save.
-- **Host:** the 19 handoff tests and 10 window tests from htmlview are ported.
-  New tests cover reusing a slot, `--hook` not taking focus, reply round trips
-  through a fake reply command, and Tab order across fields.
+- **Host:** the handoff and window tests from htmlview are ported. New tests
+  cover reply round trips through a fake reply command and Tab order across
+  fields.
 - **Benchmarks:** `bench/` holds the measurement scripts from
   `~/.cache/htmlview-bench/`, adapted for limpid. Each phase that touches the
   hot path reports cold start, warm start and private memory for 1, 2 and 3

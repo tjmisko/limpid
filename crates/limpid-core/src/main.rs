@@ -40,34 +40,20 @@ fn run() -> Result<(), Box<dyn Error>> {
             println!("{}", destination.display());
         }
         Some("send") if args.len() == 1 => send()?,
-        Some("codex") if args.len() <= 2 => codex(
-            args.get(1).and_then(|arg| arg.to_str()).unwrap_or(""),
-            false,
-        )?,
+        Some("codex") if args.len() <= 2 => {
+            codex(args.get(1).and_then(|arg| arg.to_str()).unwrap_or(""))?
+        }
         Some("claude") if args.len() <= 2 => stdin_agent(
             "claude",
             args.get(1).and_then(|arg| arg.to_str()).unwrap_or(""),
-            false,
         )?,
-        Some("pi") if args.len() <= 2 => stdin_agent(
-            "pi",
-            args.get(1).and_then(|arg| arg.to_str()).unwrap_or(""),
-            false,
-        )?,
-        Some("autoopen") if args.len() == 2 => {
-            let settings = limpid_core::settings::Settings::load_default()?;
-            match args[1].to_str() {
-                Some("claude") if settings.autoopen.claude => stdin_agent("claude", "0", true)?,
-                Some("pi") if settings.autoopen.pi => stdin_agent("pi", "0", true)?,
-                Some("codex") if settings.autoopen.codex => codex("0", true)?,
-                Some("claude" | "pi" | "codex") => {}
-                _ => return Err("usage: limpid-core autoopen claude|pi|codex".into()),
-            }
+        Some("pi") if args.len() <= 2 => {
+            stdin_agent("pi", args.get(1).and_then(|arg| arg.to_str()).unwrap_or(""))?
         }
         Some("grammars") => grammars(&args[1..])?,
         _ => {
             return Err(
-                "usage: limpid-core render FILE.md | claude [spec] | codex [spec] | pi [spec] | autoopen claude|pi|codex | grammars list|sync | instructions | send".into(),
+                "usage: limpid-core render FILE.md | claude [spec] | codex [spec] | pi [spec] | grammars list|sync | instructions | send".into(),
             );
         }
     }
@@ -110,7 +96,7 @@ struct PageMeta {
     source: Option<PathBuf>,
 }
 
-fn codex(spec: &str, questions_only: bool) -> Result<(), Box<dyn Error>> {
+fn codex(spec: &str) -> Result<(), Box<dyn Error>> {
     let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME is required")?);
     let root = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
@@ -123,9 +109,6 @@ fn codex(spec: &str, questions_only: bool) -> Result<(), Box<dyn Error>> {
         limpid_core::codex::find_rollout(&root, thread.as_deref(), &std::env::current_dir()?)
             .ok_or("no Codex rollout found for this session or directory")?;
     let turns = limpid_core::codex::parse_rollout(&std::fs::read_to_string(&source)?);
-    if questions_only && !has_questions(&turns.turns)? {
-        return Ok(());
-    }
     write_agent_page(
         "codex",
         &turns.turns,
@@ -136,11 +119,7 @@ fn codex(spec: &str, questions_only: bool) -> Result<(), Box<dyn Error>> {
     )
 }
 
-fn stdin_agent(
-    agent: &'static str,
-    spec: &str,
-    questions_only: bool,
-) -> Result<(), Box<dyn Error>> {
+fn stdin_agent(agent: &'static str, spec: &str) -> Result<(), Box<dyn Error>> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
     let value: Value = serde_json::from_str(&input)?;
@@ -191,27 +170,7 @@ fn stdin_agent(
         }
         _ => return Err("unsupported agent".into()),
     };
-    if questions_only && !has_questions(&turns)? {
-        return Ok(());
-    }
     write_agent_page(agent, &turns, model, spec, session, source)
-}
-
-fn has_questions(turns: &[limpid_core::codex::Turn]) -> Result<bool, Box<dyn Error>> {
-    let Some(turn) = turns
-        .iter()
-        .rev()
-        .find(|turn| !turn.response.trim().is_empty())
-    else {
-        return Ok(false);
-    };
-    let settings = limpid_core::settings::Settings::load_default()?;
-    let rendered = render::render_with_questions(
-        &turn.response,
-        render::RenderMode::Agent,
-        &settings.questions.headings,
-    );
-    Ok(rendered.body.contains("class=\"question-field\""))
 }
 
 fn write_agent_page(

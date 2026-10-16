@@ -47,14 +47,6 @@ fn run() -> Result<(), Box<dyn Error>> {
             std::env::set_var("JSC_useJIT", "0");
         }
     }
-    // limpid is Wayland-only. Prefer the native backend when a Wayland display
-    // exists so the window class is the app id the compositor rule matches,
-    // instead of the XWayland WM_CLASS (which is the program name).
-    if std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("GDK_BACKEND").is_none() {
-        unsafe {
-            std::env::set_var("GDK_BACKEND", "wayland");
-        }
-    }
     let (sender, receiver) = mpsc::channel::<Handoff>();
     let socket = if separate {
         let request = serde_json::from_reader(std::io::stdin())?;
@@ -70,7 +62,6 @@ fn run() -> Result<(), Box<dyn Error>> {
     let receiver = Rc::new(RefCell::new(receiver));
 
     let app = gtk4::Application::builder()
-        .application_id("io.quasioptimal.limpid")
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
     app.connect_activate(move |app| {
@@ -140,47 +131,6 @@ fn open_request(
         gio::File::for_path(&path).uri(),
         request.theme.as_str()
     );
-    if let Some(slot) = &request.slot
-        && let Some(existing) = windows
-            .borrow()
-            .iter()
-            .find(|state| state.request.borrow().slot.as_ref() == Some(slot))
-    {
-        let old_source = source_identity(&existing.request.borrow())?;
-        let new_source = source_identity(&request)?;
-        let view = existing.view.clone();
-        let active_request = existing.request.clone();
-        let restore_anchor = existing.restore_anchor.clone();
-        let window = existing.window.clone();
-        if old_source.is_none() || old_source != new_source {
-            *restore_anchor.borrow_mut() = None;
-            *active_request.borrow_mut() = request.clone();
-            view.load_uri(&uri);
-            if request.origin == limpid_core::transport::Origin::User {
-                window.present();
-            }
-            return Ok(());
-        }
-        existing.view.evaluate_javascript(
-            "window.limpidCaptureAnchor()",
-            None,
-            None,
-            None::<&gio::Cancellable>,
-            move |result| {
-                let anchor = result
-                    .ok()
-                    .and_then(|value| value.to_json(0))
-                    .map(|value| value.to_string());
-                *restore_anchor.borrow_mut() = anchor;
-                *active_request.borrow_mut() = request.clone();
-                view.load_uri(&uri);
-                if request.origin == limpid_core::transport::Origin::User {
-                    window.present();
-                }
-            },
-        );
-        return Ok(());
-    }
     let manager = webkit6::UserContentManager::new();
     for name in ["reply", "comment", "mermaid-svg", "review", "send", "close"] {
         manager.register_script_message_handler(name, None);
@@ -377,19 +327,14 @@ fn open_request(
             eprintln!("limpid-host: could not cache Mermaid diagram: {error}");
         }
     });
-    let hook = request.origin == limpid_core::transport::Origin::Hook;
     view.load_uri(&uri);
     let window = gtk4::ApplicationWindow::builder()
         .application(app)
-        // Hook windows keep this stable prefix so the compositor rule can
-        // recognise them even when the page title loads before the first map.
-        .title(if hook {
-            "limpid-hook"
-        } else {
+        .title(
             path.file_stem()
                 .and_then(|name| name.to_str())
-                .unwrap_or("limpid")
-        })
+                .unwrap_or("limpid"),
+        )
         .default_width(1000)
         .default_height(800)
         .build();
@@ -403,11 +348,6 @@ fn open_request(
     let title_window = window.clone();
     view.connect_title_notify(move |view| {
         if let Some(title) = view.title() {
-            let title = if hook {
-                format!("limpid-hook: {title}")
-            } else {
-                title.to_string()
-            };
             title_window.set_title(Some(&title));
         }
     });
@@ -426,22 +366,8 @@ fn open_request(
         restore_anchor,
         file_stamp: Rc::new(RefCell::new(None)),
     });
-    if hook {
-        window.set_visible(true);
-    } else {
-        window.present();
-    }
+    window.present();
     Ok(())
-}
-
-fn source_identity(request: &Handoff) -> Result<Option<std::path::PathBuf>, Box<dyn Error>> {
-    if let Some(source) = &request.source {
-        return Ok(Some(source.clone()));
-    }
-    Ok(page_meta(request)?
-        .get("source")
-        .and_then(serde_json::Value::as_str)
-        .map(std::path::PathBuf::from))
 }
 
 fn refresh_file(state: &WindowState) -> Result<(), Box<dyn Error>> {
@@ -746,8 +672,6 @@ mod tests {
         .unwrap();
         let mut request = Handoff {
             path: page.clone(),
-            slot: Some("session-1".into()),
-            origin: limpid_core::transport::Origin::Hook,
             theme: Scheme::Dark,
             pane: Some("7".into()),
             source: None,
@@ -799,8 +723,6 @@ mod tests {
         fs::write(&source, markdown).unwrap();
         let mut request = Handoff {
             path: page.clone(),
-            slot: None,
-            origin: limpid_core::transport::Origin::User,
             theme: Scheme::Dark,
             pane: None,
             source: Some(source.clone()),
