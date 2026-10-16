@@ -116,7 +116,7 @@ async function openTurns(pi: ExtensionAPI, spec: string, ctx: ExtensionContext):
 	}
 	const note = `The user opened limpid page ${path}. Answers and comments arrive complete; only run \`limpid-core feedback ${path}\` if something is unclear.`;
 	void pi.sendMessage(
-		{customType: "limpid-open", content: note, display: true},
+		{customType: "limpid-open", content: note, display: false},
 		{triggerTurn: false},
 	);
 }
