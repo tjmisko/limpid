@@ -35,8 +35,15 @@
     });
     return editorPromise;
   }
-  const theme = new URLSearchParams(location.search).get('theme');
+  const params = new URLSearchParams(location.search);
+  const theme = params.get('theme');
   if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+  const sourceBacked = params.has('source-backed') && !!document.getElementById('limpid-sources');
+  const guideMode = !sourceBacked;
+  const KEY_ATTR = guideMode ? 'data-limpid-src' : 'data-src';
+  const KEY_SELECTOR = `[${KEY_ATTR}]`;
+  const keyOf = element => element?.getAttribute(KEY_ATTR) || '';
+  document.body.classList.toggle('limpid-guide', guideMode);
   // Markdown keyed by turn id, so a yank can slice the original source by
   // each block's data-src range.
   const sources = JSON.parse(document.getElementById('limpid-sources')?.textContent || '{}');
@@ -54,14 +61,14 @@
   const dirtyComments = new Set();
   const deletedComments = new Set();
   window.limpidCaptureAnchor = () => {
-    const blocks = [...document.querySelectorAll('article [data-src]')];
+    const blocks = [...document.querySelectorAll(`article ${KEY_SELECTOR}`)];
     const block = blocks.filter(item => item.getBoundingClientRect().top <= 25).at(-1) || blocks[0];
-    return block ? {src: block.dataset.src, turn: block.closest('.turn')?.id || '', offset: block.getBoundingClientRect().top} : null;
+    return block ? {src: keyOf(block), turn: block.closest('.turn')?.id || '', offset: block.getBoundingClientRect().top} : null;
   };
   window.limpidRestoreAnchor = anchor => {
     if (!anchor) return;
-    const block = [...document.querySelectorAll('article [data-src]')]
-      .find(item => item.dataset.src === anchor.src && (item.closest('.turn')?.id || '') === anchor.turn);
+    const block = [...document.querySelectorAll(`article ${KEY_SELECTOR}`)]
+      .find(item => keyOf(item) === anchor.src && (item.closest('.turn')?.id || '') === anchor.turn);
     if (block) window.scrollTo({top: block.getBoundingClientRect().top + scrollY - anchor.offset});
     initFocus(true);
   };
@@ -87,8 +94,8 @@
   window.limpidRestoreComments = comments => {
     for (const [key, comment] of Object.entries(comments)) {
       const [turn, range] = key.includes(':') ? key.split(':', 2) : ['', key];
-      const target = [...document.querySelectorAll('article [data-src]')]
-        .findLast(block => block.dataset.src === range && (block.closest('.turn')?.id || '') === turn);
+      const target = [...document.querySelectorAll(`article ${KEY_SELECTOR}`)]
+        .findLast(block => keyOf(block) === range && (block.closest('.turn')?.id || '') === turn);
       if (!target) continue;
       const note = document.createElement('aside');
       note.className = 'limpid-annotation limpid-comment';
@@ -171,7 +178,6 @@
   }
   // Pages limpid did not render have no embedded sources; key each block by
   // its text so comments can attach and yank can read the DOM.
-  const guideMode = !document.getElementById('limpid-sources');
   function blockHash(element) {
     const text = element.textContent.trim();
     let hash = 2166136261;
@@ -185,12 +191,14 @@
     if (!guideMode) return;
     const seen = new Set();
     for (const element of focusStops()) {
-      if (element.dataset.src || element.classList.contains('limpid-annotation')) continue;
+      if (element.classList.contains('limpid-annotation')) continue;
+      const existing = keyOf(element);
+      if (existing) { seen.add(existing); continue; }
       let key = blockHash(element);
       let nth = 2;
       while (seen.has(key)) key = `${blockHash(element)}-${nth++}`;
       seen.add(key);
-      element.dataset.src = key;
+      element.setAttribute(KEY_ATTR, key);
     }
   }
   function setFocus(element, reveal = false) {
@@ -226,7 +234,7 @@
     return element.matches('h1,h2,h3,h4,h5,h6');
   }
   function stopRange(element) {
-    const value = element?.dataset?.src;
+    const value = keyOf(element);
     if (!value) return null;
     const [start, end] = value.split('-').map(Number);
     return Number.isFinite(start) && Number.isFinite(end) ? [start, end] : null;
@@ -254,18 +262,24 @@
     const blocks = visualRange();
     if (!blocks.length) { clearVisual(); return; }
     if (blocks.length === 1 && isHeading(blocks[0])) { clearVisual(); return; }
-    const article = blocks[0].closest('article') || document.body;
-    const column = article.getBoundingClientRect();
+    const article = blocks[0].closest('article');
+    const column = (article || document.body).getBoundingClientRect();
     const first = blocks[0].getBoundingClientRect();
     const last = blocks[blocks.length - 1].getBoundingClientRect();
     if (!selectionEl) {
       selectionEl = document.createElement('div');
       selectionEl.className = 'limpid-selection';
-      document.body.append(selectionEl);
+      (guideMode ? document.body : article).append(selectionEl);
     }
-    selectionEl.style.left = `${column.left + BLEED_INSET}px`;
-    selectionEl.style.width = `${column.width - BLEED_INSET * 2}px`;
-    selectionEl.style.top = `${first.top}px`;
+    if (guideMode) {
+      selectionEl.style.left = `${column.left + BLEED_INSET}px`;
+      selectionEl.style.width = `${column.width - BLEED_INSET * 2}px`;
+      selectionEl.style.top = `${first.top}px`;
+    } else {
+      selectionEl.style.left = `${BLEED_INSET}px`;
+      selectionEl.style.width = `${article.clientWidth - BLEED_INSET * 2}px`;
+      selectionEl.style.top = `${first.top - column.top}px`;
+    }
     selectionEl.style.height = `${last.bottom - first.top}px`;
     const special = new Set(blocks.filter(isSpecial));
     for (const element of document.querySelectorAll('.limpid-selected-special')) {
@@ -619,8 +633,8 @@
   function precedingStop(note) {
     for (let node = note.previousElementSibling; node; node = node.previousElementSibling) {
       if (node.matches('.limpid-annotation')) continue;
-      if (node.matches('[data-src]')) return node;
-      const inner = node.querySelectorAll('[data-src]');
+      if (node.matches(KEY_SELECTOR)) return node;
+      const inner = node.querySelectorAll(KEY_SELECTOR);
       if (inner.length) return inner[inner.length - 1];
     }
     return null;
@@ -805,7 +819,7 @@
   // key for edit and delete.
   for (const note of [...document.querySelectorAll('article .limpid-comment')]) {
     const block = precedingStop(note);
-    const range = note.dataset.src || '';
+    const range = keyOf(note);
     if (range) {
       const key = `file:${range}`;
       note.dataset.commentKey = key;
@@ -824,10 +838,10 @@
   }
   function commentRecord(target, quote) {
     return {
-      src: target.dataset.src || '',
+      src: keyOf(target),
       turn: target.closest('.turn')?.id || '',
-      lineStart: Number(target.dataset.lineStart || 0),
-      lineEnd: Number(target.dataset.lineEnd || 0),
+      lineStart: guideMode ? 0 : Number(target.dataset.lineStart || 0),
+      lineEnd: guideMode ? 0 : Number(target.dataset.lineEnd || 0),
       quote,
     };
   }

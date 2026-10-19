@@ -36,6 +36,8 @@ pub struct Handoff {
     pub source: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_hash: Option<String>,
+    #[serde(default)]
+    pub source_backed: bool,
 }
 
 pub fn socket_path(runtime: &Path, scheme: Scheme) -> PathBuf {
@@ -143,6 +145,7 @@ mod tests {
             pane: Some("3".into()),
             source: None,
             source_hash: None,
+            source_backed: false,
         };
         assert_eq!(
             serde_json::from_slice::<Handoff>(&serde_json::to_vec(&request).unwrap()).unwrap(),
@@ -163,6 +166,7 @@ mod tests {
             pane: None,
             source: None,
             source_hash: None,
+            source_backed: false,
         };
         serde_json::to_writer(&mut client, &handoff).unwrap();
         client.write_all(b"\n").unwrap();
@@ -313,6 +317,7 @@ mod tests {
             pane: Some("7".into()),
             source: None,
             source_hash: None,
+            source_backed: false,
         };
         send(&socket, &request).unwrap();
         assert_eq!(

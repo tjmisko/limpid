@@ -164,8 +164,13 @@ fn open_request(
     {
         return Err("handoff target must be a local HTML file".into());
     }
+    let source_backed = if request.source_backed {
+        "&source-backed=1"
+    } else {
+        ""
+    };
     let uri = format!(
-        "{}?theme={}",
+        "{}?theme={}{source_backed}",
         gio::File::for_path(&path).uri(),
         request.theme.as_str()
     );
@@ -1141,6 +1146,7 @@ mod tests {
             pane: Some("7".into()),
             source: None,
             source_hash: None,
+            source_backed: false,
         };
 
         assert!(!save_reply(&mut request, "q1", "Use SQLite", "10-20").unwrap());
@@ -1204,6 +1210,7 @@ mod tests {
             pane: None,
             source: None,
             source_hash: None,
+            source_backed: false,
         };
 
         let socket = directory.join("wake.sock");
@@ -1272,6 +1279,7 @@ mod tests {
             pane: None,
             source: None,
             source_hash: None,
+            source_backed: false,
         };
         let value = serde_json::json!({
             "replies": {"q1": "SQLite", "q9": "new"},
@@ -1300,6 +1308,7 @@ mod tests {
             pane: None,
             source: None,
             source_hash: None,
+            source_backed: false,
         };
         assert!(!has_feedback(&request).unwrap());
         fs::write(&page, r#"<html><body><script type="application/json" id="limpid-annotations">{"replies":{"q1":"  "},"comments":{}}</script></body></html>"#).unwrap();
@@ -1327,6 +1336,7 @@ mod tests {
             pane: None,
             source: Some(source.clone()),
             source_hash: Some(limpid_core::replies::source_hash(markdown.as_bytes())),
+            source_backed: false,
         };
         let pick = markdown.find("SQLite").unwrap() + "SQLite".len();
         let value = serde_json::json!({
@@ -1374,6 +1384,7 @@ mod tests {
             pane: None,
             source: Some(source.clone()),
             source_hash: Some(limpid_core::replies::source_hash(markdown.as_bytes())),
+            source_backed: false,
         };
         let start = markdown.find("<!-- limpid comment").unwrap();
         let end = markdown[start..].find("-->").unwrap() + start + "-->".len();
@@ -1426,6 +1437,7 @@ mod tests {
             pane: None,
             source: Some(source.clone()),
             source_hash: Some(limpid_core::replies::source_hash(markdown.as_bytes())),
+            source_backed: false,
         };
         assert!(
             save_reply(

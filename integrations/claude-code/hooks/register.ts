@@ -38,9 +38,9 @@ export const register: Register = on => {
     if (!path) return { text: 'limpid-core did not return a page path' }
 
     let opened
-    try { opened = await $.process.run(['limpid', path], { timeoutMs: TIMEOUT_MS }) }
+    try { opened = await $.process.run(['limpid', '--source-backed', path], { timeoutMs: TIMEOUT_MS }) }
     catch {
-      try { opened = await $.process.run([`${home}/.local/bin/limpid`, path], { timeoutMs: TIMEOUT_MS }) }
+      try { opened = await $.process.run([`${home}/.local/bin/limpid`, '--source-backed', path], { timeoutMs: TIMEOUT_MS }) }
       catch { return { text: 'limpid was not found' } }
     }
     if (opened.exitCode !== 0) return { text: opened.stderr.trim().split(/\r?\n/)[0] || `limpid exited with ${opened.exitCode}` }

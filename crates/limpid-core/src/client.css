@@ -61,7 +61,8 @@ body.limpid-mouse .limpid-focused::before{background:var(--focus-faint)}
 body.limpid-mouse .limpid-focused:is(figure.code,figure.diagram,.table-wrap){outline-color:var(--focus-edge-faint)}
 /* Visual selection: one continuous band behind the blocks. Opaque blocks cut
    through it and take the same outline. */
-.limpid-selection{position:fixed;z-index:0;background:var(--focus);border-radius:6px;pointer-events:none}
+.limpid-selection{position:absolute;z-index:0;background:var(--focus);border-radius:6px;pointer-events:none}
+body.limpid-guide .limpid-selection{position:fixed}
 body.limpid-visual .limpid-focused::before{display:none}
 .limpid-selected-special{position:relative;z-index:1;background:var(--bg);outline:2px solid var(--teal);outline-offset:2px}
 .limpid-error:empty{display:none}

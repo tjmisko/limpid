@@ -25,16 +25,18 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut turn_spec = None;
     let mut scheme = Scheme::Dark;
     let mut separate = false;
+    let mut source_backed_flag = false;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--out") => out = Some(args.next().ok_or("--out requires a file path")?),
             Some("--watch") => {}
             Some("--separate") => separate = true,
+            Some("--source-backed") => source_backed_flag = true,
             Some("--dark") => scheme = Scheme::Dark,
             Some("--light") => scheme = Scheme::Light,
             Some("--help" | "-h") => {
                 println!(
-                    "Usage: limpid [--out FILE] [--watch] [--separate] [--dark|--light] <file.md | page.html | ->"
+                    "Usage: limpid [--out FILE] [--watch] [--separate] [--source-backed] [--dark|--light] <file.md | page.html | ->"
                 );
                 return Ok(());
             }
@@ -51,6 +53,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
     }
     let mut target = target.ok_or("missing target; use --help for usage")?;
+    let mut generated = false;
     if target == "codex" {
         let sibling = std::env::current_exe()?.with_file_name("limpid-core");
         let executable = if sibling.exists() {
@@ -72,6 +75,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             .into());
         }
         target = String::from_utf8(output.stdout)?.trim().into();
+        generated = true;
     }
     let output_only = out.is_some();
     let (socket, mut host) = if out.is_none() && !separate {
@@ -87,6 +91,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             .extension()
             .and_then(|extension| extension.to_str())
             == Some("html");
+    let source_backed = !target_is_html || generated || source_backed_flag;
     let mut source_path = None;
     let mut source_hash = None;
     let html = if target_is_html && out.is_none() {
@@ -143,6 +148,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             pane: std::env::var("WEZTERM_PANE").ok(),
             source: source_path,
             source_hash,
+            source_backed,
         };
         if separate {
             let mut child = host_command()?

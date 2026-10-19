@@ -109,7 +109,7 @@ async function openTurns(pi: ExtensionAPI, spec: string, ctx: ExtensionContext):
 		return;
 	}
 	const path = page.stdout.trim();
-	const opened = await command("limpid", [path]);
+	const opened = await command("limpid", ["--source-backed", path]);
 	if (opened.code !== 0) {
 		process.stderr.write(`limpid: ${opened.stderr.trim().split("\n")[0] || "could not open the page"}\n`);
 		return;

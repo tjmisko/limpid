@@ -72,6 +72,7 @@ fn markdown_open_renders_and_hands_off() {
     assert_eq!(request.pane.as_deref(), Some("4242"));
     assert_eq!(request.source, Some(source.canonicalize().unwrap()));
     assert!(request.source_hash.is_some());
+    assert!(request.source_backed);
     assert!(request.path.starts_with(&directory));
     assert!(
         fs::read_to_string(&request.path)
@@ -80,6 +81,45 @@ fn markdown_open_renders_and_hands_off() {
     );
 
     fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn html_source_backed_is_explicit() {
+    for (suffix, flag, expected) in [("default", false, false), ("flagged", true, true)] {
+        let directory = std::env::temp_dir().join(format!(
+            "limpid-html-{suffix}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let page = directory.join("page.html");
+        fs::write(
+            &page,
+            "<!doctype html><html><body><p>Text</p></body></html>",
+        )
+        .unwrap();
+        let receiver = receive_handoff(&directory, Scheme::Dark);
+        let mut command = Command::new(env!("CARGO_BIN_EXE_limpid"));
+        if flag {
+            command.arg("--source-backed");
+        }
+        let output = command
+            .arg("--dark")
+            .arg(&page)
+            .env("XDG_RUNTIME_DIR", &directory)
+            .env("XDG_CACHE_HOME", &directory)
+            .env("XDG_CONFIG_HOME", &directory)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let request = receiver.join().unwrap().expect("no handoff received");
+        assert_eq!(request.source_backed, expected);
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 #[test]
