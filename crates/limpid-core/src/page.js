@@ -363,11 +363,15 @@
     for (const row of rows.slice(1)) lines.push(`| ${row.join(' | ')} |`);
     return lines.join('\n');
   }
+  function codeContent(element) {
+    const code = element.querySelector('pre code') || element.querySelector('pre');
+    return (code?.textContent || '').replace(/\n$/, '');
+  }
   function elementMarkdown(element) {
     if (element.matches('figure.code')) {
       const code = element.querySelector('pre code') || element.querySelector('pre');
       const match = (code?.className || '').match(/language-([\w-]+)/);
-      return `\`\`\`${match ? match[1] : ''}\n${(code?.textContent || '').replace(/\n$/, '')}\n\`\`\``;
+      return `\`\`\`${match ? match[1] : ''}\n${codeContent(element)}\n\`\`\``;
     }
     if (element.matches('div.table-wrap')) {
       const table = element.querySelector('table');
@@ -383,6 +387,12 @@
   }
   function yankBlocks(blocks) {
     if (!blocks.length) return;
+    if (blocks.length === 1 && blocks[0].matches('figure.code')) {
+      const code = codeContent(blocks[0]);
+      if (!code.trim()) return;
+      copyMarkdown(`${code}\n`, 'code');
+      return;
+    }
     if (guideMode) {
       const parts = blocks.map(elementMarkdown).filter(part => part.trim());
       copyMarkdown(`${parts.join('\n\n').trim()}\n`, `${blocks.length} block${blocks.length === 1 ? '' : 's'}`);
