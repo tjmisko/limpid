@@ -63,6 +63,7 @@ body.limpid-mouse .limpid-focused:is(figure.code,figure.diagram,.table-wrap){out
    through it and take the same outline. */
 .limpid-selection{position:absolute;z-index:0;background:var(--focus);border-radius:6px;pointer-events:none}
 body.limpid-guide .limpid-selection{position:fixed}
+.limpid-scroll-space{display:block;height:100vh;min-height:100vh;flex:none;pointer-events:none}
 body.limpid-visual .limpid-focused::before{display:none}
 .limpid-selected-special{position:relative;z-index:1;background:var(--bg);outline:2px solid var(--teal);outline-offset:2px}
 .limpid-error:empty{display:none}

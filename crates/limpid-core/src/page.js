@@ -44,6 +44,10 @@
   const KEY_SELECTOR = `[${KEY_ATTR}]`;
   const keyOf = element => element?.getAttribute(KEY_ATTR) || '';
   document.body.classList.toggle('limpid-guide', guideMode);
+  const scrollSpace = document.createElement('div');
+  scrollSpace.className = 'limpid-scroll-space';
+  scrollSpace.setAttribute('aria-hidden', 'true');
+  document.body.append(scrollSpace);
   // Markdown keyed by turn id, so a yank can slice the original source by
   // each block's data-src range.
   const sources = JSON.parse(document.getElementById('limpid-sources')?.textContent || '{}');
