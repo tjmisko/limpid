@@ -149,9 +149,12 @@ h1:hover .anchor,h2:hover .anchor,h3:hover .anchor,h4:hover .anchor{opacity:1}
 .question-option:hover{color:var(--teal)}
 .question-field > ul{list-style:none;counter-reset:answer;padding-left:8px}
 .question-option::before{counter-increment:answer;content:counter(answer) ". ";font-family:var(--mono);color:var(--teal);margin-right:5px}
-.question-reply{min-height:22px;margin-top:8px;border-top:1px solid var(--rule-soft);color:var(--muted)}
+.question-reply{min-height:22px;margin-top:10px;padding:8px 10px;border:1px solid var(--rule-soft);border-radius:6px;background:var(--surface);color:var(--ink);font-weight:500;white-space:pre-wrap}
+.question-reply:empty{padding:0;border:0;background:none}
 math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:center}
 .shell.has-rail.rail-hidden{grid-template-columns:minmax(0,1fr)}
 .rail-hidden .rail{display:none}
 .question-field:focus{outline:2px solid var(--teal);outline-offset:3px}
+.question-field.limpid-focused::before{display:none}
+.question-field.limpid-focused{box-shadow:0 0 0 2px var(--teal)}
 .question-option.selected{color:var(--teal);font-weight:600}

@@ -752,6 +752,7 @@
     ['{ / }, Ctrl-Up / Ctrl-Down', 'Previous / next section (e.g. 2})'],
     ['gg / G', 'First / last block'],
     ['zt / zz / zb', 'Block to top / center / bottom'],
+    ['Q', 'First unanswered question'],
     ['1–9', 'Pick a question option'],
     ['Enter / i', 'Edit the focused reply'],
     ['i / I / A', 'Comment insert at the start / start / end'],
@@ -1097,6 +1098,13 @@
     if (event.key === 'j' || event.key === 'k' || event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
       moveFocus((event.key === 'j' || event.key === 'ArrowDown' ? 1 : -1) * n);
+      return;
+    }
+    if (event.key === 'Q') {
+      const field = fields.find(item => !(item.querySelector('.question-reply')?.textContent || '').trim());
+      if (field) setFocus(field, true);
+      else flashStatus('No unanswered questions');
+      event.preventDefault();
       return;
     }
     const field = focused?.matches?.('.question-field') ? focused : null;

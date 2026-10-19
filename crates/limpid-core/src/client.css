@@ -30,6 +30,8 @@ figure.code:hover .limpid-copy,figure.diagram:hover .limpid-copy,.limpid-copy:fo
 .limpid-editor:focus-within{border-color:var(--teal);box-shadow:0 0 0 1px var(--teal),0 6px 20px #0003}
 .limpid-editor .cm-editor{font-size:15px}
 .limpid-editor .cm-scroller{font-family:var(--mono);line-height:1.7;max-height:70vh;overflow-y:auto}
+.limpid-editor .cm-vim-panel{background:var(--surface);color:var(--ink);font-family:var(--mono);font-size:13px;padding:6px 14px;border-top:1px solid var(--rule)}
+.limpid-editor .cm-vim-panel input{background:var(--surface);color:var(--ink);font:inherit;caret-color:var(--teal)}
 .limpid-review{width:min(760px,calc(100vw - 32px));max-height:80vh;padding:18px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink);box-shadow:0 18px 60px #0009}
 .limpid-review::backdrop{background:#0009}
 .limpid-review textarea{display:block;width:100%;height:min(50vh,420px);resize:vertical;padding:12px;border:1px solid var(--rule);border-radius:6px;background:var(--code);color:var(--ink);font:13px/1.5 var(--mono)}

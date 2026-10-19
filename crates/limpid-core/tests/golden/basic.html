@@ -149,11 +149,14 @@ h1:hover .anchor,h2:hover .anchor,h3:hover .anchor,h4:hover .anchor{opacity:1}
 .question-option:hover{color:var(--teal)}
 .question-field > ul{list-style:none;counter-reset:answer;padding-left:8px}
 .question-option::before{counter-increment:answer;content:counter(answer) ". ";font-family:var(--mono);color:var(--teal);margin-right:5px}
-.question-reply{min-height:22px;margin-top:8px;border-top:1px solid var(--rule-soft);color:var(--muted)}
+.question-reply{min-height:22px;margin-top:10px;padding:8px 10px;border:1px solid var(--rule-soft);border-radius:6px;background:var(--surface);color:var(--ink);font-weight:500;white-space:pre-wrap}
+.question-reply:empty{padding:0;border:0;background:none}
 math[display="block"]{display:block;overflow-x:auto;margin:20px 0;text-align:center}
 .shell.has-rail.rail-hidden{grid-template-columns:minmax(0,1fr)}
 .rail-hidden .rail{display:none}
 .question-field:focus{outline:2px solid var(--teal);outline-offset:3px}
+.question-field.limpid-focused::before{display:none}
+.question-field.limpid-focused{box-shadow:0 0 0 2px var(--teal)}
 .question-option.selected{color:var(--teal);font-weight:600}
 /* The focus band, selection, annotations and editors. Injected into
    pages limpid did not render; page.css carries the same rules inline. */
@@ -187,6 +190,8 @@ figure.code:hover .limpid-copy,figure.diagram:hover .limpid-copy,.limpid-copy:fo
 .limpid-editor:focus-within{border-color:var(--teal);box-shadow:0 0 0 1px var(--teal),0 6px 20px #0003}
 .limpid-editor .cm-editor{font-size:15px}
 .limpid-editor .cm-scroller{font-family:var(--mono);line-height:1.7;max-height:70vh;overflow-y:auto}
+.limpid-editor .cm-vim-panel{background:var(--surface);color:var(--ink);font-family:var(--mono);font-size:13px;padding:6px 14px;border-top:1px solid var(--rule)}
+.limpid-editor .cm-vim-panel input{background:var(--surface);color:var(--ink);font:inherit;caret-color:var(--teal)}
 .limpid-review{width:min(760px,calc(100vw - 32px));max-height:80vh;padding:18px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink);box-shadow:0 18px 60px #0009}
 .limpid-review::backdrop{background:#0009}
 .limpid-review textarea{display:block;width:100%;height:min(50vh,420px);resize:vertical;padding:12px;border:1px solid var(--rule);border-radius:6px;background:var(--code);color:var(--ink);font:13px/1.5 var(--mono)}
@@ -991,6 +996,7 @@ body.limpid-visual .limpid-focused::before{display:none}
     ['{ / }, Ctrl-Up / Ctrl-Down', 'Previous / next section (e.g. 2})'],
     ['gg / G', 'First / last block'],
     ['zt / zz / zb', 'Block to top / center / bottom'],
+    ['Q', 'First unanswered question'],
     ['1–9', 'Pick a question option'],
     ['Enter / i', 'Edit the focused reply'],
     ['i / I / A', 'Comment insert at the start / start / end'],
@@ -1336,6 +1342,13 @@ body.limpid-visual .limpid-focused::before{display:none}
     if (event.key === 'j' || event.key === 'k' || event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
       moveFocus((event.key === 'j' || event.key === 'ArrowDown' ? 1 : -1) * n);
+      return;
+    }
+    if (event.key === 'Q') {
+      const field = fields.find(item => !(item.querySelector('.question-reply')?.textContent || '').trim());
+      if (field) setFocus(field, true);
+      else flashStatus('No unanswered questions');
+      event.preventDefault();
       return;
     }
     const field = focused?.matches?.('.question-field') ? focused : null;
