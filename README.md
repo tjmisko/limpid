@@ -35,7 +35,13 @@ without opening a window. A running host shares one WebKit context among its
 windows; `--separate` opens a dedicated host process. `--dark` and `--light`
 select separate hosts.
 
-Math renders as MathML. Mermaid fences show their source immediately; the
+Math renders as MathML: `$x^2$` is inline math and `$$…$$` is display math.
+A dollar sign followed by a digit is treated as currency, so prices such as
+`~$0.12` need no escaping. For numeric formulas, use `$$5$$` or start inline
+math with a LaTeX command, such as `$\mathrm{5}$`. Single tildes stay literal;
+use `~~removed~~` for strikethrough. Code spans and fences keep their contents.
+
+Mermaid fences show their source immediately; the
 diagram script loads after first paint, and completed SVGs are cached for the
 next render.
 

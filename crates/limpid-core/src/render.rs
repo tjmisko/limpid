@@ -208,6 +208,67 @@ fn add_source_lines(body: &str, source: &str) -> String {
     result
 }
 
+// Insert Markdown escapes only in ordinary text. Keep a boundary map so all
+// source attributes and copy operations continue to address the original bytes.
+fn protect_prose(source: &str, options: Options) -> (String, Vec<usize>) {
+    let mut insert = vec![false; source.len()];
+    let plain = options - Options::ENABLE_MATH - Options::ENABLE_STRIKETHROUGH;
+    for (event, range) in Parser::new_ext(source, plain).into_offset_iter() {
+        if !matches!(event, Event::Text(_)) {
+            continue;
+        }
+        let bytes = source.as_bytes();
+        for i in range {
+            if bytes[i] == b'$'
+                && bytes[..i].iter().rev().take_while(|&&b| b == b'\\').count() % 2 == 0
+                && bytes.get(i + 1).is_some_and(u8::is_ascii_digit)
+                && (i == 0 || bytes[i - 1] != b'$')
+            {
+                insert[i] = true;
+            }
+        }
+    }
+    let escape = |input: &str, flags: &[bool]| {
+        let mut offsets = Vec::new();
+        for (i, _) in input.bytes().enumerate() {
+            if flags[i] {
+                offsets.push(i);
+            }
+            offsets.push(i);
+        }
+        let mut bytes = Vec::new();
+        for (i, byte) in input.bytes().enumerate() {
+            if flags[i] {
+                bytes.push(b'\\');
+            }
+            bytes.push(byte);
+        }
+        offsets.push(input.len());
+        (String::from_utf8(bytes).unwrap(), offsets)
+    };
+    let (currency_safe, first_map) = escape(source, &insert);
+    let mut tildes = vec![false; currency_safe.len()];
+    for (event, range) in
+        Parser::new_ext(&currency_safe, options - Options::ENABLE_STRIKETHROUGH).into_offset_iter()
+    {
+        if !matches!(event, Event::Text(_)) {
+            continue;
+        }
+        let bytes = currency_safe.as_bytes();
+        for i in range {
+            if bytes[i] == b'~'
+                && bytes[..i].iter().rev().take_while(|&&b| b == b'\\').count() % 2 == 0
+                && (i == 0 || bytes[i - 1] != b'~')
+                && bytes.get(i + 1) != Some(&b'~')
+            {
+                tildes[i] = true;
+            }
+        }
+    }
+    let (text, second_map) = escape(&currency_safe, &tildes);
+    (text, second_map.into_iter().map(|i| first_map[i]).collect())
+}
+
 pub(crate) fn render_with_state(
     source: &str,
     mode: RenderMode,
@@ -228,8 +289,10 @@ pub(crate) fn render_with_state(
         | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
         | Options::ENABLE_MATH
         | Options::ENABLE_GFM;
-    let events: Vec<_> = Parser::new_ext(source, options)
+    let (protected, offsets) = protect_prose(source, options);
+    let events: Vec<_> = Parser::new_ext(&protected, options)
         .into_offset_iter()
+        .map(|(event, range)| (event, offsets[range.start]..offsets[range.end]))
         .collect();
     let mut output = Vec::with_capacity(events.len());
     let mut toc = Vec::new();
@@ -671,7 +734,8 @@ mod tests {
         let open = "id=\"limpid-sources\">";
         let start = page.find(open).expect("sources script") + open.len();
         let end = page[start..].find("</script>").unwrap();
-        let parsed: HashMap<String, String> = serde_json::from_str(&page[start..start + end]).unwrap();
+        let parsed: HashMap<String, String> =
+            serde_json::from_str(&page[start..start + end]).unwrap();
         assert_eq!(parsed[""], "# Title\n\nBody with <tag>.");
     }
 
@@ -757,12 +821,42 @@ mod tests {
         let markdown = "Body.\n\n<!-- limpid comment\nNote -->\n";
         let result = render(markdown, RenderMode::File);
         assert!(
-            result.body.contains("class=\"limpid-annotation limpid-comment\""),
+            result
+                .body
+                .contains("class=\"limpid-annotation limpid-comment\""),
             "{}",
             result.body
         );
         assert!(result.body.contains("<p>Note</p>"));
         assert!(!result.body.contains("Comment"));
+    }
+
+    #[test]
+    fn prose_delimiters_preserve_prices_formatting_and_source_offsets() {
+        let source = "- Core **$0.014–$0.041 per paper** (mean ~$0.023), down from ~$0.12.\n\n~approx~ and ~~removed~~; `~$2~`; $x^2$; $$5$$.\n\nUnicode café.\n";
+        for mode in [RenderMode::Agent, RenderMode::File] {
+            let result = render(source, mode);
+            assert!(
+                result
+                    .body
+                    .contains("<strong>$0.014–$0.041 per paper</strong>"),
+                "{}",
+                result.body
+            );
+            assert!(result.body.contains("(mean ~$0.023), down from ~$0.12."));
+            assert!(result.body.contains("~approx~ and <del>removed</del>"));
+            assert!(result.body.contains("<code>~$2~</code>"));
+            assert_eq!(result.body.matches("<math").count(), 2);
+            let start = source.find("Unicode").unwrap();
+            assert!(
+                result
+                    .body
+                    .contains(&format!("data-src=\"{start}-{}\"", source.len()))
+            );
+            assert_eq!(result.sources[""], source);
+        }
+        let result = render_markdown(r"Escaped \$2 and \~literal\~; ```");
+        assert!(result.body.contains("Escaped $2 and ~literal~"));
     }
 
     #[test]
@@ -778,7 +872,9 @@ mod tests {
         let markdown = "## Questions\n\n1. Pick?\n\n<!-- limpid reply q1\nA --&gt; B <script>bad</script>\n-->\n";
         let result = render(markdown, RenderMode::File);
         assert!(
-            result.body.contains("class=\"limpid-annotation limpid-reply\""),
+            result
+                .body
+                .contains("class=\"limpid-annotation limpid-reply\""),
             "{}",
             result.body
         );
