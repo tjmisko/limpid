@@ -207,6 +207,45 @@ pub fn from_file_annotations(source: &str) -> AgentReplies {
     saved
 }
 
+struct ReplyStderr {
+    path: PathBuf,
+    file: fs::File,
+}
+
+impl ReplyStderr {
+    fn new() -> std::io::Result<Self> {
+        use std::os::unix::fs::OpenOptionsExt;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        for _ in 0..100 {
+            let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "limpid-reply-{}-{serial}.stderr",
+                std::process::id()
+            ));
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+            {
+                Ok(file) => return Ok(Self { path, file }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not reserve reply stderr file",
+        ))
+    }
+}
+
+impl Drop for ReplyStderr {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 pub fn deliver_reply(
     command_line: &str,
     message: &str,
@@ -215,13 +254,16 @@ pub fn deliver_reply(
     source: Option<&Path>,
     pane: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // A reply command may daemonize (wl-copy does) and keep inherited pipes
+    // open, so capture stderr in a file instead of waiting for a pipe to close.
+    let errors = ReplyStderr::new()?;
     let mut command = Command::new("sh");
     command
         .arg("-c")
         .arg(command_line)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::from(errors.file.try_clone()?))
         .env_remove("LIMPID_AGENT")
         .env_remove("LIMPID_SESSION")
         .env_remove("LIMPID_SOURCE")
@@ -242,14 +284,11 @@ pub fn deliver_reply(
         .take()
         .ok_or("reply command has no stdin")?
         .write_all(message.as_bytes())?;
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "reply command exited with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        )
-        .into());
+    let status = child.wait()?;
+    let stderr = fs::read(&errors.path)?;
+    let stderr = String::from_utf8_lossy(&stderr);
+    if !status.success() {
+        return Err(format!("reply command exited with {status}: {}", stderr.trim()).into());
     }
     Ok(())
 }
@@ -957,6 +996,51 @@ mod tests {
         assert!(saved.contains("<!-- limpid reply q1\nExample only\n-->"));
         assert_eq!(from_file_annotations(&saved).replies["q1"], "Actual answer");
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn reply_does_not_wait_for_background_stderr_to_close() {
+        let start = std::time::Instant::now();
+        deliver_reply(
+            "cat >/dev/null; sleep 5 & exit 0",
+            "reply",
+            "pi",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn reply_errors_preserve_non_utf8_stderr() {
+        let error = deliver_reply(
+            "cat >/dev/null; printf 'bad \\377 error' >&2; exit 7",
+            "reply",
+            "pi",
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("7"));
+        assert!(message.contains("bad \u{fffd} error"), "{message}");
+    }
+
+    #[test]
+    fn stderr_guard_removes_private_file_on_early_return() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut path = PathBuf::new();
+        let result = (|| -> std::io::Result<()> {
+            let errors = ReplyStderr::new()?;
+            path = errors.path.clone();
+            assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
+            Err(std::io::Error::other("early exit"))
+        })();
+        assert!(result.is_err());
+        assert!(!path.exists());
     }
 
     #[test]
