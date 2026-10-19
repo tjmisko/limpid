@@ -176,6 +176,7 @@
     return [...document.querySelectorAll(STOP_SELECTOR)].filter(element => {
       if (element.matches('.question-option')) return false;
       if (element.matches('.limpid-annotation')) return element.matches('.limpid-comment');
+      if (!guideMode && (element.matches('h1,h2,h3,h4,h5,h6') || element.matches('.meta') || element.closest('.toc-compact'))) return false;
       if (element.matches('li')) return true;
       return !element.parentElement?.closest('li,blockquote');
     });
