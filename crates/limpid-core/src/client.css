@@ -53,6 +53,7 @@ figure.diagram .limpid-copy{opacity:1;background:var(--raised)}
 /* Code, diagrams and tables stay legible: an outline marks focus, and the
    translucent band still shows either side so it lines up with the rest. */
 .limpid-focused:is(figure.code,figure.diagram,.table-wrap){outline:2px solid var(--focus-edge);outline-offset:2px}
+.limpid-focused:is(figure.code,figure.diagram,.table-wrap)::before{display:none}
 /* A focused heading reads through its text colour; the band joins it to the
    rest of a visual selection. */
 .limpid-focused:is(h1,h2,h3,h4,h5,h6)::before{display:none}
