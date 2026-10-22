@@ -1,9 +1,23 @@
 # limpid
 
-limpid opens markdown files and agent responses as readable pages in a small
-GTK4/WebKit window. Questions under a `## Questions` heading become keyboard
-answer fields. You can also comment on any rendered block and send a compact
+Limpid renders HTML and Markdown as clean, clear, and keyboard navigable pages.
+
+
+You can also comment on any rendered block and send a compact
 reply back to your agent.
+
+Limpid is built for working with coding agent artifacts and transcripts, but it's
+also a snappy markdown reader.
+
+
+## Use Case
+* You want to use coding agents from a harness in the terminal, but sometimes you
+want a nicer reading environment for long agent responses that include tables, 
+codeblocks, latex, and diagrams.
+* You want to navigate agent responses quickly using a keyboard-first, vim-inspired
+workflow.
+* Leave comments to steer the agent and ask questions *in situ* in the agent's 
+response as you read it.
 
 ## Install
 

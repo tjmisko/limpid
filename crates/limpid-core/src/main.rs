@@ -8,6 +8,8 @@ use std::{
     process::{Command, Stdio},
 };
 
+const KEEP_AGENT_PAGES: usize = 500;
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("limpid-core: {error}");
@@ -216,7 +218,7 @@ fn write_agent_page(
         })?,
     )?;
     println!("{}", destination.display());
-    prune_agent_pages(&cache)?;
+    prune_agent_pages(&cache, &destination)?;
     Ok(())
 }
 
@@ -226,7 +228,7 @@ fn page_filename(agent: &str, session: Option<&str>, spec: &str, content_hash: &
     format!("{agent}-{}.html", &digest[..16])
 }
 
-fn prune_agent_pages(cache: &Path) -> Result<(), Box<dyn Error>> {
+fn prune_agent_pages(cache: &Path, preserve: &Path) -> Result<(), Box<dyn Error>> {
     let mut pages = std::fs::read_dir(cache)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
@@ -251,8 +253,11 @@ fn prune_agent_pages(cache: &Path) -> Result<(), Box<dyn Error>> {
     });
     let (protected, unprotected): (Vec<_>, Vec<_>) =
         pages.into_iter().partition(|page| page_has_feedback(page));
-    let keep = 50usize.saturating_sub(protected.len());
+    let keep = KEEP_AGENT_PAGES.saturating_sub(protected.len());
     for page in unprotected.into_iter().skip(keep) {
+        if page == preserve {
+            continue;
+        }
         std::fs::remove_file(&page)?;
         let mut associated = page.clone();
         associated.set_extension("meta.json");
@@ -484,7 +489,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&cache);
         std::fs::create_dir_all(&cache).unwrap();
         let base = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-        for index in 0..55u64 {
+        for index in 0..(KEEP_AGENT_PAGES as u64 + 5) {
             let page = cache.join(format!("pi-{index:02}.html"));
             File::create(&page).unwrap();
             File::open(&page)
@@ -512,19 +517,41 @@ mod tests {
             .set_times(FileTimes::new().set_modified(base + std::time::Duration::from_secs(2)))
             .unwrap();
 
-        prune_agent_pages(&cache).unwrap();
+        let newest = cache.join(format!("pi-{:02}.html", KEEP_AGENT_PAGES + 4));
+        prune_agent_pages(&cache, &newest).unwrap();
 
         let pages = std::fs::read_dir(&cache)
             .unwrap()
             .flatten()
             .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("html"))
             .count();
-        assert_eq!(pages, 50);
+        assert_eq!(pages, KEEP_AGENT_PAGES);
         assert!(cache.join("pi-00.html").exists());
         assert!(protected.exists());
         assert!(!cache.join("pi-01.html").exists());
         assert!(!cache.join("pi-02.html").exists());
         assert!(cache.join("pi-06.html").exists());
+        std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    #[test]
+    fn pruning_keeps_the_new_page_when_feedback_fills_the_cache() {
+        use std::fs::File;
+        let cache = std::env::temp_dir().join(format!("limpid-prune-full-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        std::fs::create_dir_all(&cache).unwrap();
+        for index in 0..KEEP_AGENT_PAGES as u64 {
+            let page = cache.join(format!("pi-{index:02}.html"));
+            std::fs::write(
+                &page,
+                r#"<html><body><script type="application/json" id="limpid-annotations">{"replies":{"q1":"keep"},"comments":{}}</script></body></html>"#,
+            )
+            .unwrap();
+        }
+        let fresh = cache.join("pi-fresh.html");
+        File::create(&fresh).unwrap();
+        prune_agent_pages(&cache, &fresh).unwrap();
+        assert!(fresh.exists());
         std::fs::remove_dir_all(&cache).unwrap();
     }
 

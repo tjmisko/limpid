@@ -113,14 +113,14 @@ fn saved_annotation(raw: &str, start: usize, end: usize) -> Option<String> {
         }
         let body = annotation_body(body)?;
         return Some(format!(
-            "<aside class=\"limpid-annotation limpid-reply\" data-src=\"{start}-{end}\"><strong>Reply {}</strong><p>{}</p></aside>",
+            "<aside class=\"limpid-annotation limpid-reply\" data-src=\"{start}-{end}\"><strong>Reply {}</strong><div class=\"limpid-body\">{}</div></aside>",
             escape_html(field),
             escape_html(&body)
         ));
     }
     let body = annotation_body(value.strip_prefix("<!-- limpid comment\n")?)?;
     Some(format!(
-        "<aside class=\"limpid-annotation limpid-comment\" data-src=\"{start}-{end}\"><p>{}</p></aside>",
+        "<aside class=\"limpid-annotation limpid-comment\" data-src=\"{start}-{end}\"><div class=\"limpid-body\">{}</div></aside>",
         escape_html(&body)
     ))
 }
@@ -590,7 +590,17 @@ pub fn client_editor_asset(cache: &Path) -> std::io::Result<std::path::PathBuf> 
 }
 
 fn page_css() -> String {
-    format!("{}{}", include_str!("page.css"), include_str!("client.css"))
+    let mut css = format!("{}{}", include_str!("page.css"), include_str!("client.css"));
+    if let Ok(settings) = crate::settings::Settings::load_default() {
+        css.push_str(&format!(
+            ":root{{--page-font-size:{}px}}",
+            settings.style.font_size
+        ));
+        if let Some(custom) = settings.custom_css() {
+            css.push_str(&custom);
+        }
+    }
+    css
 }
 
 pub fn page_with_meta(rendered: &Rendered, meta: &str) -> String {
@@ -827,7 +837,11 @@ mod tests {
             "{}",
             result.body
         );
-        assert!(result.body.contains("<p>Note</p>"));
+        assert!(
+            result
+                .body
+                .contains("<div class=\"limpid-body\">Note</div>")
+        );
         assert!(!result.body.contains("Comment"));
     }
 

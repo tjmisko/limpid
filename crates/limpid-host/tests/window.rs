@@ -219,6 +219,49 @@ fn second_handoff_shares_one_web_process() {
 }
 
 #[test]
+fn comment_markdown_renders_in_the_client() {
+    if !display_available() {
+        return;
+    }
+    let runtime = temp_dir("comment-md");
+    let source = "## Questions\n\n1. Pick?\n\n<!-- limpid reply q1\n- yes\n- no\n-->\n\n<!-- limpid comment\n**bold** _it_ `code` [link](https://example.com) [bad](javascript:alert(1)) &lt;tag&gt;\n- one\n- two\n-->\n";
+    let headings = ["Questions".to_owned()];
+    let rendered = limpid_core::render::render_with_questions(
+        source,
+        limpid_core::render::RenderMode::File,
+        &headings,
+    );
+    let mut html = limpid_core::render::page(&rendered);
+    html.push_str(
+        "<script>console.log('LIMPID_TEST comment=' + document.querySelector('.limpid-comment .limpid-body').innerHTML);console.log('LIMPID_TEST reply=' + document.querySelector('.question-reply').innerHTML)</script>",
+    );
+    let page = runtime.join("comment.html");
+    fs::write(&page, html).unwrap();
+
+    let host = Host::start(&runtime, "--light");
+    host.open(&page, "light");
+    thread::sleep(SETTLE);
+    let stderr = host.stop();
+    assert!(stderr.contains("<strong>bold</strong>"), "{stderr}");
+    assert!(stderr.contains("<em>it</em>"), "{stderr}");
+    assert!(stderr.contains("<code>code</code>"), "{stderr}");
+    assert!(
+        stderr.contains("<a href=\"https://example.com\">link</a>"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("javascript:alert(1)"), "{stderr}");
+    assert!(!stderr.contains("<a href=\"javascript"), "{stderr}");
+    assert!(
+        stderr.contains("<ul><li>one</li><li>two</li></ul>"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("<ul><li>yes</li><li>no</li></ul>"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn watched_markdown_reloads_after_an_edit() {
     if !display_available() {
         return;

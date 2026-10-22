@@ -98,7 +98,7 @@ Integrations are thin wrappers. `/read` in Claude Code, pi's `Ctrl-R` and
 | Path | Contents | Written by |
 |---|---|---|
 | `~/.config/limpid/config.toml` | Settings (below) | you |
-| `~/.cache/limpid/<page>.html` | Rendered pages, newest 50 kept | `limpid`, `limpid-core` |
+| `~/.cache/limpid/<page>.html` | Rendered pages, newest 500 kept | `limpid`, `limpid-core` |
 | `~/.cache/limpid/<page>.meta.json` | Agent, session id, turn spec, source path | `limpid-core` |
 | `~/.cache/limpid/<page>.replies.json` | Replies and comments on agent pages | host |
 | `$XDG_RUNTIME_DIR/limpid/<session>.sock` | Feedback wake socket, one per agent session | pi extension |

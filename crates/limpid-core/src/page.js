@@ -1,6 +1,61 @@
 (() => {
   if (window.__limpidReady) return;
   window.__limpidReady = true;
+  function escapeHtml(text) {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function safeLink(url) {
+    const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1];
+    return !scheme || ['http', 'https', 'mailto', 'file'].includes(scheme.toLowerCase());
+  }
+  // Comments and answers show a small Markdown subset: code, links, bold,
+  // italic, strikethrough and lists. Images and other block syntax stay literal.
+  function renderInlineMarkdown(text) {
+    const code = [];
+    let html = escapeHtml(text).replace(/`([^`\n]+)`/g, (_, body) => {
+      code.push(body);
+      return `\uE000${code.length - 1}\uE001`;
+    });
+    html = html.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (match, label, url) =>
+      safeLink(url) ? `<a href="${url}">${label}</a>` : match);
+    html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+    html = html.replace(/(^|[^A-Za-z0-9_])_([^_\n]+)_(?=[^A-Za-z0-9_]|$)/g, '$1<em>$2</em>');
+    html = html.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+    return html.replace(/\uE000(\d+)\uE001/g, (_, index) => `<code>${code[index]}</code>`);
+  }
+  const UL = /^\s*[-*+]\s+(.*)$/;
+  const OL = /^\s*\d+[.)]\s+(.*)$/;
+  function renderCommentMarkdown(text) {
+    const lines = text.split('\n');
+    let html = '';
+    for (let i = 0; i < lines.length;) {
+      if (!lines[i].trim()) { i += 1; continue; }
+      const ordered = OL.test(lines[i]);
+      if (ordered || UL.test(lines[i])) {
+        const pattern = ordered ? OL : UL;
+        const items = [];
+        while (i < lines.length && pattern.test(lines[i])) {
+          items.push(renderInlineMarkdown(lines[i].replace(pattern, '$1')));
+          i += 1;
+        }
+        html += `<${ordered ? 'ol' : 'ul'}>${items.map(item => `<li>${item}</li>`).join('')}</${ordered ? 'ol' : 'ul'}>`;
+        continue;
+      }
+      const paragraph = [];
+      while (i < lines.length && lines[i].trim() && !UL.test(lines[i]) && !OL.test(lines[i])) {
+        paragraph.push(renderInlineMarkdown(lines[i]));
+        i += 1;
+      }
+      html += `<p>${paragraph.join('<br>')}</p>`;
+    }
+    return html;
+  }
+  function setBody(container, text) {
+    container.dataset.limpidText = text;
+    container.innerHTML = renderCommentMarkdown(text);
+  }
   const assets = window.limpidAssets || {};
   const editorUrl = document.currentScript?.dataset.editor || assets.editor;
   const mermaidUrl = document.currentScript?.dataset.mermaid || assets.mermaid;
@@ -80,7 +135,8 @@
     for (const [id, text] of Object.entries(replies)) {
       const field = document.getElementById(id);
       if (!field?.classList.contains('question-field')) continue;
-      field.querySelector('.question-reply').textContent = text;
+      const reply = field.querySelector('.question-reply');
+      setBody(reply, text);
       currentReplies.set(id, text);
       for (const option of field.querySelectorAll('.question-option')) {
         option.classList.toggle('selected', option.textContent.trim() === text.trim());
@@ -88,8 +144,10 @@
     }
   };
   for (const field of fields) {
-    const answer = field.querySelector('.question-reply')?.textContent?.trim();
+    const reply = field.querySelector('.question-reply');
+    const answer = reply?.dataset.limpidText || reply?.textContent?.trim();
     if (!answer) continue;
+    setBody(reply, answer);
     currentReplies.set(field.dataset.field, answer);
     for (const option of field.querySelectorAll('.question-option')) {
       option.classList.toggle('selected', option.textContent.trim() === answer);
@@ -103,8 +161,9 @@
       if (!target) continue;
       const note = document.createElement('aside');
       note.className = 'limpid-annotation limpid-comment';
-      const text = document.createElement('p');
-      text.textContent = comment.text;
+      const text = document.createElement('div');
+      text.className = 'limpid-body';
+      setBody(text, comment.text);
       note.append(text);
       note.dataset.commentKey = key;
       placeCommentAt(note, target);
@@ -176,6 +235,8 @@
     return [...document.querySelectorAll(STOP_SELECTOR)].filter(element => {
       if (element.matches('.question-option')) return false;
       if (element.matches('.limpid-annotation')) return element.matches('.limpid-comment');
+      // The callout is one focusable entity; its inner paragraph is not.
+      if (element.closest('.limpid-annotation')) return false;
       if (!guideMode && (element.matches('.meta') || element.closest('.toc-compact'))) return false;
       if (element.matches('li')) return true;
       return !element.parentElement?.closest('li,blockquote');
@@ -833,13 +894,17 @@
   }
   // File pages render comments inline; move each under its block and give it a
   // key for edit and delete.
+  for (const body of document.querySelectorAll('article .limpid-reply .limpid-body')) {
+    setBody(body, body.dataset.limpidText || body.textContent || '');
+  }
   for (const note of [...document.querySelectorAll('article .limpid-comment')]) {
     const block = precedingStop(note);
     const range = keyOf(note);
+    const paragraph = note.querySelector('.limpid-body');
+    const body = paragraph?.dataset.limpidText || paragraph?.textContent || '';
     if (range) {
       const key = `file:${range}`;
       note.dataset.commentKey = key;
-      const body = note.querySelector('p')?.textContent || '';
       currentComments.set(key, {
         key,
         src: range,
@@ -850,6 +915,7 @@
         text: body,
       });
     }
+    if (paragraph) setBody(paragraph, body);
     placeCommentAt(note, block);
   }
   function commentRecord(target, quote) {
@@ -861,25 +927,29 @@
       quote,
     };
   }
-  function saveComment(target, existingKey, quote, text) {
+  function ensureCommentNote(target, existingKey) {
+    let note = existingKey
+      ? document.querySelector(`.limpid-annotation[data-comment-key="${CSS.escape(existingKey)}"]`)
+      : null;
+    if (note) return note;
+    note = document.createElement('aside');
+    note.className = 'limpid-annotation limpid-comment';
+    const body = document.createElement('div');
+    body.className = 'limpid-body';
+    note.append(body);
+    if (existingKey) note.dataset.commentKey = existingKey;
+    placeCommentAt(note, target);
+    return note;
+  }
+  function saveComment(target, existingKey, quote, text, note) {
     const existing = existingKey ? currentComments.get(existingKey) : null;
     const record = existing ? {...existing} : commentRecord(target, quote);
     record.text = text;
     record.key = existingKey || '';
     const key = rememberComment(record);
-    let note = existingKey
-      ? document.querySelector(`.limpid-annotation[data-comment-key="${CSS.escape(existingKey)}"]`)
-      : null;
-    if (!note) {
-      note = document.createElement('aside');
-      note.className = 'limpid-annotation limpid-comment';
-      const body = document.createElement('p');
-      note.append(body);
-      note.dataset.commentKey = key;
-      placeCommentAt(note, target);
-    }
+    if (!note) note = ensureCommentNote(target, existingKey);
     note.dataset.commentKey = key;
-    note.querySelector('p').textContent = text;
+    setBody(note.querySelector('.limpid-body'), text);
     return note;
   }
   function deleteComment(note) {
@@ -898,33 +968,58 @@
     let quote = '';
     let current = '';
     let commentKey = null;
+    let note = null;
+    let body = null;
+    let reply = null;
+    let freshNote = false;
     if (kind === 'reply') {
       if (!target.matches?.('.question-field')) { editing = false; return; }
-      current = target.querySelector('.question-reply')?.textContent || '';
+      reply = target.querySelector('.question-reply');
+      current = reply?.dataset.limpidText || reply?.textContent || '';
     } else if (target.classList.contains('limpid-annotation')) {
       commentKey = target.dataset.commentKey || null;
+      note = target;
       const record = commentKey ? currentComments.get(commentKey) : null;
-      current = record?.text || target.querySelector('p')?.textContent || '';
-      quote = record?.quote || target.textContent.trim().slice(0, 200);
+      body = note.querySelector('.limpid-body');
+      current = record?.text || body?.dataset.limpidText || body?.textContent || '';
+      quote = record?.quote || (precedingStop(note)?.textContent || '').trim().slice(0, 200);
     } else {
       quote = target.textContent.trim().slice(0, 200);
+      note = ensureCommentNote(target, null);
+      body = note.querySelector('.limpid-body');
+      freshNote = true;
     }
+    // Edit in place: the callout becomes the editor, then becomes the callout.
     const mount = document.createElement('div');
     mount.className = 'limpid-editor';
-    placeCommentAt(mount, target);
+    if (kind === 'reply') {
+      reply.hidden = true;
+      target.append(mount);
+    } else {
+      body.hidden = true;
+      note.classList.add('limpid-editing');
+      note.append(mount);
+    }
     const finish = next => {
       mount.remove();
       editing = false;
+      if (kind === 'reply') {
+        reply.hidden = false;
+      } else {
+        note.classList.remove('limpid-editing');
+        body.hidden = false;
+        if (freshNote && !next?.isConnected) note.remove();
+      }
       const focus = next?.isConnected ? next : target;
       if (focus?.isConnected) setFocus(focus);
     };
     window.limpidCreateEditor(mount, current, text => {
       if (kind === 'reply') {
-        target.querySelector('.question-reply').textContent = text;
+        setBody(reply, text);
         rememberReply(target.dataset.field, text);
         finish(target);
       } else {
-        finish(saveComment(target, commentKey, quote, text));
+        finish(saveComment(target, commentKey, quote, text, note));
       }
     }, finish, enter);
   }
@@ -1116,7 +1211,7 @@
       options.forEach(item => item.classList.remove('selected'));
       option.classList.add('selected');
       const answer = option.textContent.trim();
-      field.querySelector('.question-reply').textContent = answer;
+      setBody(field.querySelector('.question-reply'), answer);
       rememberReply(field.dataset.field, answer);
       return;
     }

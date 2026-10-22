@@ -19,6 +19,7 @@ struct Grammar {
 pub struct PageHighlighter {
     directory: Option<PathBuf>,
     aliases: HashMap<String, String>,
+    enabled: Option<BTreeSet<String>>,
     loaded: HashMap<String, Option<Grammar>>,
     classes: Vec<String>,
     configured_count: usize,
@@ -32,7 +33,7 @@ impl Default for PageHighlighter {
 
 impl PageHighlighter {
     pub fn new() -> Self {
-        let aliases = grammars::catalog()
+        let aliases: HashMap<String, String> = grammars::catalog()
             .map(|catalog| {
                 catalog
                     .grammars
@@ -49,9 +50,22 @@ impl PageHighlighter {
                     .collect()
             })
             .unwrap_or_default();
+        // A configured grammar list limits which languages highlight; an
+        // unreadable config leaves every installed grammar available.
+        let enabled = crate::settings::Settings::load_default()
+            .ok()
+            .map(|settings| {
+                settings
+                    .highlight
+                    .grammars
+                    .iter()
+                    .filter_map(|name| aliases.get(&name.to_ascii_lowercase()).cloned())
+                    .collect::<BTreeSet<_>>()
+            });
         Self {
             directory: grammars::grammar_dir().ok(),
             aliases,
+            enabled,
             loaded: HashMap::new(),
             classes: Vec::new(),
             configured_count: 0,
@@ -63,6 +77,13 @@ impl PageHighlighter {
             return escape_html(source);
         };
         let name = name.clone();
+        if self
+            .enabled
+            .as_ref()
+            .is_some_and(|enabled| !enabled.contains(&name))
+        {
+            return escape_html(source);
+        }
         if !self.loaded.contains_key(&name) {
             self.loaded.insert(name.clone(), self.load(&name).ok());
         }
@@ -215,6 +236,20 @@ mod tests {
         highlighter.directory = Some(root.clone());
         assert_eq!(highlighter.render("rust", "<script>"), "&lt;script&gt;");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn configured_grammar_list_disables_other_languages() {
+        let mut highlighter = PageHighlighter::new();
+        highlighter.enabled = Some(BTreeSet::from(["rust".to_owned()]));
+        if highlighter
+            .directory
+            .as_ref()
+            .is_some_and(|dir| dir.join("python.so").is_file())
+        {
+            let html = highlighter.render("python", "print('hi')");
+            assert!(!html.contains("hl-"), "{html}");
+        }
     }
 
     #[test]

@@ -8,6 +8,11 @@ fn basic_page_matches_reviewed_html() {
             "XDG_DATA_HOME",
             concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/no-grammars"),
         );
+        // Point config at a missing directory so the golden uses built-in defaults.
+        std::env::set_var(
+            "XDG_CONFIG_HOME",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/no-config"),
+        );
     }
     let source = include_str!("golden/basic.md");
     let actual = render::page(&render::render(source, RenderMode::File));
