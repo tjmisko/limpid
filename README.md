@@ -108,9 +108,9 @@ narrow it). The compact form is self-contained: an agent answers from it and
 only pulls the page when something is unclear, so it never has to load the
 whole document.
 
-The pi extension binds a per-session socket. `/read` leaves a note with the
-page path and a fallback pull command, without starting a turn. `:wq` writes
-the answers and wakes that session. Without a socket the host falls back to the
+The pi extension and the Claude Code plugin each bind a per-session socket.
+`/read` leaves a note with the page path and a fallback pull command, without
+starting a turn. `:wq` writes the answers and wakes that session. Without a socket the host falls back to the
 configured `reply.command`.
 
 ## Configure

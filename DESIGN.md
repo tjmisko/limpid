@@ -101,7 +101,7 @@ Integrations are thin wrappers. `/read` in Claude Code, pi's `Ctrl-R` and
 | `~/.cache/limpid/<page>.html` | Rendered pages, newest 500 kept | `limpid`, `limpid-core` |
 | `~/.cache/limpid/<page>.meta.json` | Agent, session id, turn spec, source path | `limpid-core` |
 | `~/.cache/limpid/<page>.replies.json` | Replies and comments on agent pages | host |
-| `$XDG_RUNTIME_DIR/limpid/<session>.sock` | Feedback wake socket, one per agent session | pi extension |
+| `$XDG_RUNTIME_DIR/limpid/<session>.sock` | Feedback wake socket, one per agent session | pi extension, Claude Code plugin |
 | `~/.cache/limpid/assets/<hash>.js` | Shared page scripts and styles | `limpid` |
 | `~/.cache/limpid/mermaid/<hash>.svg` | Rendered diagrams | host |
 | `~/.local/share/limpid/grammars/` | Compiled grammars (`<lang>.so`) and their queries | `limpid-core grammars sync` |
@@ -401,10 +401,13 @@ limpid-host ── connect, one JSON line ──▶ $XDG_RUNTIME_DIR/limpid/<ses
                                               │
                                               ▼
                               pi extension: sendUserMessage(message)
+                              Claude Code plugin: $.prompt.submit(message)
 ```
 
 - The integration binds the socket in `session_start` (mode 0600 under a 0700
-directory) and removes it in `session_shutdown`.
+directory) and removes it in `session_shutdown`. Claude Code mods have no
+sockets, so its plugin spawns a small Python listener that prints each frame
+and answers `{ok}` only after the print succeeds.
 - It passes the path as `feedback_sock` in the JSON it already sends to
 `limpid-core`, which records it in `<page>.meta.json`, so the host needs no
 global state to find it.
@@ -419,7 +422,7 @@ used today.
 
 `:wq` writes the sidecar before it attempts delivery, so feedback is never
 lost when the wake fails. The socket exists only to auto-send and start a turn;
-without it (Claude Code for now, Codex, or an agent that has exited) the user
+without it (Codex, or an agent that has exited) the user
 says the feedback is in limpid and the agent pulls it with
 `limpid-core feedback <page>`. Delivery is a convenience, not the record.
 

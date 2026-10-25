@@ -218,6 +218,12 @@ user-visible pair P9.4 + P9.6, then P9.7-P9.9.
   without the new fields still loads. Manual end-to-end with pi: answer,
   `:wq`, agent responds; reopen the same turn and the answers are restored;
   `:w` + `:q` saves without waking.
+- [x] **P9.10 Claude Code wake socket.** `register.ts` spawns a Python
+  listener on `$XDG_RUNTIME_DIR/limpid/claude-<session>.sock` in
+  `session.start`, passes it as `feedback_sock`, and submits each frame with
+  `$.prompt.submit`. The listener answers `{ok}` only after it hands the frame
+  on, so a dead session falls back to `reply.command`. Stopped on
+  `session.end` and on reload.
 
 **Risks.** P9.4 changes save semantics for markdown files too; batching must
 be one atomic pass with a stale check. Buffered edits mean an agent page is
