@@ -816,12 +816,7 @@ pub fn save_comment(
 }
 
 pub fn has_feedback(request: &Handoff) -> Result<bool, Box<dyn Error>> {
-    let replies = if let Some(source) = &request.source {
-        from_file_annotations(&fs::read_to_string(source)?)
-    } else {
-        read_annotations_file(&request.path)?
-    };
-    Ok(replies.has_feedback())
+    Ok(saved_replies(request)?.has_feedback())
 }
 
 pub fn page_meta(request: &Handoff) -> Result<serde_json::Value, Box<dyn Error>> {
@@ -834,7 +829,13 @@ pub fn page_meta(request: &Handoff) -> Result<serde_json::Value, Box<dyn Error>>
     }
 }
 
-pub fn compose_review(request: &Handoff, title: &str) -> Result<String, Box<dyn Error>> {
+/// The message for `replies` with the page's agent and turn named in its
+/// first line.
+pub fn compose_for_page(
+    request: &Handoff,
+    title: &str,
+    replies: &AgentReplies,
+) -> Result<String, Box<dyn Error>> {
     let meta = page_meta(request)?;
     let agent = meta
         .get("agent")
@@ -849,12 +850,20 @@ pub fn compose_review(request: &Handoff, title: &str) -> Result<String, Box<dyn 
     } else {
         format!("turn {}", if spec.is_empty() { "0" } else { spec })
     };
-    let replies = if let Some(source) = &request.source {
-        from_file_annotations(&fs::read_to_string(source)?)
-    } else {
-        read_annotations_file(&request.path)?
-    };
-    Ok(compose_message(title, agent, &context, &replies))
+    Ok(compose_message(title, agent, &context, replies))
+}
+
+/// The feedback saved for the page: in-file annotations of a Markdown file,
+/// else the page's own annotations.
+pub fn saved_replies(request: &Handoff) -> Result<AgentReplies, Box<dyn Error>> {
+    if let Some(source) = &request.source {
+        return Ok(from_file_annotations(&fs::read_to_string(source)?));
+    }
+    read_annotations_file(&request.path)
+}
+
+pub fn compose_review(request: &Handoff, title: &str) -> Result<String, Box<dyn Error>> {
+    compose_for_page(request, title, &saved_replies(request)?)
 }
 
 pub fn replies_from_value(value: &serde_json::Value) -> Result<AgentReplies, Box<dyn Error>> {
@@ -915,26 +924,7 @@ pub fn compose_pending(
     title: &str,
     value: &serde_json::Value,
 ) -> Result<String, Box<dyn Error>> {
-    let meta = page_meta(request)?;
-    let agent = meta
-        .get("agent")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("file");
-    let spec = meta
-        .get("turn_spec")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("0");
-    let context = if agent == "file" {
-        "file".to_owned()
-    } else {
-        format!("turn {}", if spec.is_empty() { "0" } else { spec })
-    };
-    Ok(compose_message(
-        title,
-        agent,
-        &context,
-        &replies_from_value(value)?,
-    ))
+    compose_for_page(request, title, &replies_from_value(value)?)
 }
 
 pub fn save_pending(
