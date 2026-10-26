@@ -577,23 +577,32 @@ mod tests {
     }
 
     #[test]
-    fn should_restart_nvim_when_opening_after_a_quit() {
+    fn should_keep_the_same_process_when_opening_after_a_quit() {
         let Some(mut editor) = started() else { return };
         editor.open("first", BoxKind::Reply).unwrap();
+        let pid = editor.process.as_ref().unwrap().child.id();
         editor.input(":q<CR>");
         collect_until(&mut editor, |_, seen| {
             seen.contains(&EditorEvent::Quit { discard: false })
         });
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while editor.is_running() && Instant::now() < deadline {
-            editor.poll();
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        assert!(editor.is_running(), "quitting a box must not end nvim");
         editor.open("second", BoxKind::Comment).unwrap();
+        assert_eq!(editor.process.as_ref().unwrap().child.id(), pid);
         editor.input("A!<Esc>:w<CR>");
         collect_until(&mut editor, |_, seen| {
             seen.contains(&EditorEvent::Save("second!".into()))
         });
+    }
+
+    #[test]
+    fn should_report_discard_and_stay_alive_when_quitting_with_bang() {
+        let Some(mut editor) = started() else { return };
+        editor.open("x", BoxKind::Reply).unwrap();
+        editor.input("Ay<Esc>:q!<CR>");
+        collect_until(&mut editor, |_, seen| {
+            seen.contains(&EditorEvent::Quit { discard: true })
+        });
+        assert!(editor.is_running());
     }
 
     #[test]

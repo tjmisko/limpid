@@ -176,37 +176,25 @@ fn paint_row_text(
     let characters: Vec<(u16, char)> = (0..visible_cols)
         .filter_map(|col| grid.cell(row, col).map(|c| (col, c.ch)))
         .collect();
-    let has_wide = characters.iter().any(|(_, ch)| *ch == CONTINUATION);
     let style = TextStyle::mono(theme.ink);
-    if has_wide {
-        // Wide characters break the one-advance-per-cell assumption, so
-        // each character is placed on its own cell.
-        for (col, ch) in characters {
-            if ch == CONTINUATION || ch == ' ' {
-                continue;
-            }
-            let x = origin.0 + f32::from(col) * cell.0;
-            draw_run(
-                canvas,
-                &ch.to_string(),
-                x,
-                origin.1,
-                cell.1,
-                theme,
-                style,
-                fonts,
-            );
+    // Every character is placed on its own cell so glyphs, backgrounds and
+    // the cursor share one grid whatever the font's fractional advance is.
+    for (col, ch) in characters {
+        if ch == CONTINUATION || ch == ' ' {
+            continue;
         }
-        return;
+        let x = origin.0 + f32::from(col) * cell.0;
+        draw_run(
+            canvas,
+            &ch.to_string(),
+            x,
+            origin.1,
+            cell.1,
+            theme,
+            style,
+            fonts,
+        );
     }
-    let line: String = characters.iter().map(|(_, ch)| *ch).collect();
-    let line = line.trim_end();
-    if line.is_empty() {
-        return;
-    }
-    draw_run(
-        canvas, line, origin.0, origin.1, cell.1, theme, style, fonts,
-    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -358,6 +346,46 @@ mod tests {
         scene.paint(&grid, Rect::new(10.0, 10.0, 200.0, 100.0));
         let second_row = Rect::new(10.0, 10.0 + height, 100.0, height);
         assert!(!scene.differs_from_background(second_row));
+    }
+
+    #[test]
+    fn should_align_glyphs_with_their_cell_when_the_column_is_far_right() {
+        let mut fonts = Fonts::new();
+        let theme = Theme::dark();
+        let (width, height) = cell_size(&mut fonts, &theme);
+        let (canvas_width, canvas_height) = (1200u32, (height as u32) + 4);
+        let mut pixels = vec![theme.bg.to_pixel(); (canvas_width * canvas_height) as usize];
+        let mut grid = Grid::new(80, 1);
+        let column = 60u16;
+        grid.cells[column as usize] = Cell { ch: 'M', hl: 0 };
+        grid.cursor = (0, 0);
+        grid.cursor_shape = CursorShape::Underline;
+        let rect = Rect::new(0.0, 0.0, canvas_width as f32, height);
+        {
+            let mut canvas = Canvas::new(&mut pixels, canvas_width, canvas_height);
+            paint_grid(&mut canvas, &grid, rect, &theme, &mut fonts);
+        }
+        let background = theme.bg.to_pixel();
+        let cell_left = f32::from(column) * width;
+        let mut ink_columns = Vec::new();
+        for x in 2 * width as u32..canvas_width {
+            let has_ink = (0..height as u32 - 3)
+                .any(|y| pixels[(y * canvas_width + x) as usize] != background);
+            if has_ink {
+                ink_columns.push(x as f32);
+            }
+        }
+        let first = ink_columns.first().copied().expect("the glyph was drawn");
+        let last = ink_columns.last().copied().unwrap();
+        assert!(
+            first >= cell_left - 1.0,
+            "glyph starts at {first}, cell at {cell_left}"
+        );
+        assert!(
+            last < cell_left + width + 1.0,
+            "glyph ends at {last}, cell ends at {}",
+            cell_left + width
+        );
     }
 
     #[test]
