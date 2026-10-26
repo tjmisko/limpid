@@ -17,6 +17,10 @@ pub enum StateName {
     Visual,
     Search,
     Command,
+    /// A reply or comment box is open and nvim owns every key.
+    Editor,
+    /// The review overlay is showing.
+    Review,
 }
 
 impl StateName {
@@ -26,6 +30,8 @@ impl StateName {
             StateName::Visual => "VISUAL",
             StateName::Search => "SEARCH",
             StateName::Command => "COMMAND",
+            StateName::Editor => "EDITOR",
+            StateName::Review => "REVIEW",
         }
     }
 }
@@ -138,6 +144,7 @@ pub fn paint(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, scale: f32, 
         StateName::Page => theme.muted,
         StateName::Visual => theme.purple,
         StateName::Search | StateName::Command => theme.amber,
+        StateName::Editor | StateName::Review => theme.teal,
     };
     let tag = shape(
         fonts,
@@ -240,6 +247,8 @@ mod tests {
         assert_eq!(StateName::Search.label(), "SEARCH");
         assert_eq!(StateName::Command.label(), "COMMAND");
         assert_eq!(StateName::Visual.label(), "VISUAL");
+        assert_eq!(StateName::Editor.label(), "EDITOR");
+        assert_eq!(StateName::Review.label(), "REVIEW");
     }
 
     #[test]

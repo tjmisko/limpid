@@ -4,6 +4,11 @@
 //! go to [`Nav`], which moves the cursor, searches, yanks and runs commands.
 
 use crate::{
+    editor::keys::translate_key,
+    feedback::{
+        Feedback, FeedbackHandle, Focus,
+        review::{self, ReviewKey},
+    },
     layout::{Layout, LayoutOptions, lay_out_with},
     nav::{
         CloseKind, Io, Nav, NavOptions, NoActions, PageActions, Request, ZoomStep,
@@ -18,7 +23,7 @@ use crate::{
     window::Page,
 };
 use limpid_core::{
-    doc::{Doc, Mode, parse},
+    doc::{Block, Doc, Mode, parse},
     settings::{RailMode, Settings, ViewTheme},
     transport::Scheme,
 };
@@ -154,6 +159,12 @@ pub struct DocPage {
     chrome: bool,
     pending_anchor: Option<SourceAnchor>,
     clock: Instant,
+    /// Replies, comments and the editor box, when the page takes feedback.
+    feedback: Option<Rc<RefCell<Feedback>>>,
+    /// The blocks parsed from the source, before feedback is spliced in.
+    base_blocks: Vec<Block>,
+    /// Scroll the cursor into view at the next paint.
+    reveal_cursor: bool,
 }
 
 impl DocPage {
@@ -243,6 +254,9 @@ impl DocPage {
             chrome: false,
             pending_anchor: None,
             clock: Instant::now(),
+            feedback: None,
+            base_blocks: Vec::new(),
+            reveal_cursor: false,
         };
         if let Some(error) = key_error {
             eprintln!("limpid-view: {error}");
@@ -284,6 +298,20 @@ impl DocPage {
         self
     }
 
+    /// Let the page take feedback: replies to questions and comments on
+    /// blocks, written in the embedded editor and saved through `feedback`.
+    pub fn with_feedback(mut self, feedback: Feedback) -> Self {
+        let shared = Rc::new(RefCell::new(feedback));
+        self.actions = Box::new(FeedbackHandle(shared.clone()));
+        self.feedback = Some(shared);
+        self.adopt_document();
+        self
+    }
+
+    pub fn feedback(&self) -> Option<std::cell::Ref<'_, Feedback>> {
+        self.feedback.as_ref().map(|feedback| feedback.borrow())
+    }
+
     pub fn with_nav_options(mut self, options: NavOptions) -> Self {
         self.nav.options = options;
         self
@@ -313,6 +341,11 @@ impl DocPage {
     /// How many top-level blocks have been laid out so far.
     pub fn laid_out_blocks(&self) -> usize {
         self.layout.as_ref().map_or(0, |layout| layout.blocks.len())
+    }
+
+    /// Milliseconds since the page was made, the clock status flashes use.
+    pub fn elapsed_ms(&self) -> u64 {
+        self.now_ms()
     }
 
     fn now_ms(&self) -> u64 {
@@ -424,9 +457,111 @@ impl DocPage {
             Some(self.doc.blocks.get(index)?.src.clone())
         });
         self.nav.retarget_cursor(retargeted);
+        self.adopt_document();
         self.nav.document_changed(&self.doc);
         self.layout = None;
         self.laid_for = None;
+    }
+
+    /// The document was just parsed: hand it to the feedback layer and show
+    /// it with the pending feedback spliced in.
+    fn adopt_document(&mut self) {
+        let Some(feedback) = self.feedback.clone() else {
+            return;
+        };
+        self.base_blocks = self.doc.blocks.clone();
+        let mut feedback = feedback.borrow_mut();
+        feedback.index_document(&self.base_blocks, &self.doc.source);
+        self.doc.blocks = feedback.overlay(&self.base_blocks);
+        self.layout = None;
+        self.laid_for = None;
+    }
+
+    /// The feedback changed (a reply was picked, a box opened): show the
+    /// blocks again, keeping the viewport and the cursor where they were.
+    fn rebuild_overlay(&mut self) {
+        let Some(feedback) = self.feedback.clone() else {
+            return;
+        };
+        self.pending_anchor = self.layout.as_ref().and_then(|layout| {
+            let index = layout.block_at(self.scroll)?;
+            let block = layout.blocks.get(index)?;
+            Some(SourceAnchor {
+                index,
+                text: block_text(&self.doc, index)?.to_owned(),
+                offset_css: (self.scroll - block.rect.y) / self.scale.max(f32::EPSILON),
+            })
+        });
+        let mut feedback = feedback.borrow_mut();
+        let cursor = self
+            .nav
+            .cursor()
+            .src
+            .as_ref()
+            .map(|src| feedback.identify(src));
+        self.doc.blocks = feedback.overlay(&self.base_blocks);
+        if let Some(src) = cursor.and_then(|focus| feedback.resolve_focus(&focus)) {
+            self.nav.retarget_cursor(Some(src));
+        }
+        drop(feedback);
+        self.nav.document_changed(&self.doc);
+        self.layout = None;
+        self.laid_for = None;
+    }
+
+    /// Take in what the feedback layer did since the last look: messages,
+    /// a file to read again, blocks to rebuild, a place for the cursor.
+    /// Returns whether anything changed on screen.
+    fn sync_feedback(&mut self) -> bool {
+        let Some(feedback) = self.feedback.clone() else {
+            return false;
+        };
+        let mut changed = false;
+        let flashes = feedback.borrow_mut().take_flashes();
+        for message in flashes {
+            if !message.is_empty() {
+                self.flash(message);
+            }
+            changed = true;
+        }
+        let reload = feedback.borrow_mut().take_reload();
+        if reload {
+            self.reload_quietly();
+            changed = true;
+        }
+        let stale = feedback.borrow_mut().take_stale();
+        if stale {
+            self.rebuild_overlay();
+            changed = true;
+        }
+        let focus = feedback.borrow_mut().take_focus();
+        if let Some(focus) = focus {
+            changed |= self.focus_on(&feedback, &focus);
+        }
+        changed
+    }
+
+    fn focus_on(&mut self, feedback: &Rc<RefCell<Feedback>>, focus: &Focus) -> bool {
+        let Some(src) = feedback.borrow().resolve_focus(focus) else {
+            return false;
+        };
+        self.nav.retarget_cursor(Some(src));
+        self.reveal_cursor = true;
+        true
+    }
+
+    /// Read the file again after a save, without announcing it.
+    fn reload_quietly(&mut self) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let Ok(bytes) = std::fs::read(&path) else {
+            return;
+        };
+        if let Some(feedback) = &self.feedback {
+            feedback.borrow_mut().source_reloaded(&bytes);
+        }
+        self.replace_source(&String::from_utf8_lossy(&bytes));
     }
 
     fn reload(&mut self) {
@@ -436,6 +571,9 @@ impl DocPage {
         };
         match std::fs::read(&path) {
             Ok(bytes) => {
+                if let Some(feedback) = &self.feedback {
+                    feedback.borrow_mut().source_reloaded(&bytes);
+                }
                 self.replace_source(&String::from_utf8_lossy(&bytes));
                 self.flash("Reloaded");
             }
@@ -497,6 +635,14 @@ impl DocPage {
     /// Handle one key press. Returns true when the page changed and needs a
     /// repaint.
     pub fn handle_input(&mut self, input: &KeyInput) -> bool {
+        if self.box_open() {
+            // Every key belongs to the editor; they arrive through
+            // [`DocPage::editor_key`].
+            return false;
+        }
+        if self.review_open() {
+            return self.review_input(input);
+        }
         let now = self.now_ms();
         let Some(outcome) = self.with_nav(|nav, env, io| nav.handle(input, now, env, io)) else {
             return false;
@@ -506,7 +652,79 @@ impl DocPage {
             self.perform(request);
             changed = true;
         }
+        changed |= self.sync_feedback();
         changed
+    }
+
+    /// Whether a reply or comment box is open.
+    pub fn box_open(&self) -> bool {
+        self.feedback
+            .as_ref()
+            .is_some_and(|feedback| feedback.borrow().box_open())
+    }
+
+    /// Whether the review overlay is showing.
+    pub fn review_open(&self) -> bool {
+        self.feedback
+            .as_ref()
+            .is_some_and(|feedback| feedback.borrow().review().is_some())
+    }
+
+    fn review_input(&mut self, input: &KeyInput) -> bool {
+        let Some(feedback) = self.feedback.clone() else {
+            return false;
+        };
+        let outcome = feedback
+            .borrow_mut()
+            .review_mut()
+            .map_or(ReviewKey::Ignored, |review| review.handle(input));
+        match outcome {
+            ReviewKey::Ignored => false,
+            ReviewKey::Moved => true,
+            ReviewKey::Dismiss => {
+                feedback.borrow_mut().close_review();
+                true
+            }
+            ReviewKey::Send => {
+                feedback.borrow_mut().close_review();
+                let result = feedback.borrow_mut().write_and_send();
+                let sent = matches!(result, crate::nav::ActionResult::Done(_));
+                let message = match result {
+                    crate::nav::ActionResult::Done(message)
+                    | crate::nav::ActionResult::Nothing(message)
+                    | crate::nav::ActionResult::Failed(message) => message,
+                    crate::nav::ActionResult::Unsupported => "cannot send".to_owned(),
+                };
+                self.flash(message);
+                if sent {
+                    self.perform(Request::Close(CloseKind::Window));
+                }
+                self.sync_feedback();
+                true
+            }
+        }
+    }
+
+    /// One key for the open editor box, in winit terms. `Ctrl-Shift-q`
+    /// closes the box and throws its buffer away; anything else goes to nvim.
+    /// Returns whether the page needs a repaint.
+    pub fn editor_key(&mut self, key: &Key, text: Option<&str>, modifiers: ModifiersState) -> bool {
+        let Some(feedback) = self.feedback.clone() else {
+            return false;
+        };
+        if !feedback.borrow().box_open() {
+            return false;
+        }
+        let force_close = modifiers.control_key()
+            && modifiers.shift_key()
+            && matches!(key, Key::Character(typed) if typed.eq_ignore_ascii_case("q"));
+        if force_close {
+            feedback.borrow_mut().force_close();
+        } else if let Some(keys) = translate_key(key, text, modifiers) {
+            feedback.borrow_mut().input(&keys);
+        }
+        self.sync_feedback();
+        true
     }
 
     /// [`DocPage::handle_input`] for a winit key and whether Control is held.
@@ -550,6 +768,10 @@ impl Page for DocPage {
         self.ensure_to(self.scroll + self.viewport_height * 2.0);
         self.scroll_to(self.scroll);
         self.with_nav(|nav, env, _| nav.init(env));
+        if std::mem::take(&mut self.reveal_cursor) {
+            self.with_nav(|nav, env, _| nav.reveal_cursor(env));
+            self.ensure_to(self.scroll + self.viewport_height * 2.0);
+        }
 
         canvas.clear(self.theme.bg);
         let scroll = self.scroll;
@@ -569,13 +791,52 @@ impl Page for DocPage {
             }
         }
         layout.paint(canvas, &mut self.fonts.borrow_mut(), scroll);
+        if let Some(feedback) = &self.feedback {
+            feedback.borrow_mut().paint_box(
+                canvas,
+                layout,
+                scroll,
+                &self.theme,
+                &mut self.fonts.borrow_mut(),
+            );
+        }
         if !self.chrome {
             return;
         }
         if let Some((query, current)) = self.nav.highlight() {
             search::paint_highlights(canvas, layout, &query, current, scroll);
         }
-        let view = self.nav.status_view(now);
+        let mut view = self.nav.status_view(now);
+        if let Some(feedback) = &self.feedback {
+            let feedback = feedback.borrow();
+            if let Some(open_review) = feedback.review() {
+                view.state = status::StateName::Review;
+                review::paint(
+                    canvas,
+                    &mut self.fonts.borrow_mut(),
+                    &self.theme,
+                    scale,
+                    bar,
+                    open_review,
+                );
+            } else if let Some(open) = feedback.open_box() {
+                view.state = status::StateName::Editor;
+                view.right = open.mode_label().to_owned();
+                if let Some(line) = &open.cmdline {
+                    let mut characters = line.chars();
+                    view.prompt = characters.next().map(|sigil| status::Prompt {
+                        sigil,
+                        text: characters.as_str().to_owned(),
+                        placeholder: "",
+                    });
+                }
+                if view.message.is_empty()
+                    && let Some(message) = &open.message
+                {
+                    view.message = message.clone();
+                }
+            }
+        }
         status::paint(
             canvas,
             &mut self.fonts.borrow_mut(),
@@ -589,12 +850,30 @@ impl Page for DocPage {
         if event.state != ElementState::Pressed {
             return false;
         }
+        if self.box_open() {
+            return self.editor_key(&event.logical_key, event.text.as_deref(), self.modifiers);
+        }
         KeyInput::from_winit(&event.logical_key, self.modifiers)
             .is_some_and(|input| self.handle_input(&input))
     }
 
     fn modifiers_changed(&mut self, modifiers: ModifiersState) {
         self.modifiers = modifiers;
+    }
+
+    fn wants_ticks(&self) -> bool {
+        self.feedback
+            .as_ref()
+            .is_some_and(|feedback| feedback.borrow().wants_ticks())
+    }
+
+    fn tick(&mut self) -> bool {
+        let Some(feedback) = self.feedback.clone() else {
+            return false;
+        };
+        let mut changed = feedback.borrow_mut().tick(Instant::now());
+        changed |= self.sync_feedback();
+        changed
     }
 }
 

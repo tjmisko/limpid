@@ -216,6 +216,25 @@ impl Nav {
         self.cursor.init(env)
     }
 
+    /// Scroll just far enough to show the focused stop, laying the document
+    /// out as far as it takes to find it. Returns whether the view moved.
+    pub fn reveal_cursor(&mut self, env: &mut Env) -> bool {
+        loop {
+            let stops = collect_stops(env.layout);
+            let exact = self
+                .cursor
+                .src
+                .as_ref()
+                .and_then(|src| stops.iter().find(|stop| &stop.src == src));
+            if let Some(stop) = exact {
+                return env.reveal(stop.rect.y, stop.rect.h);
+            }
+            if !env.lay_out_more() {
+                return false;
+            }
+        }
+    }
+
     /// Point the cursor at `src` (the source range of a stop in the document
     /// about to be shown). `None` leaves it to find its own place.
     pub fn retarget_cursor(&mut self, src: Option<Range<usize>>) {

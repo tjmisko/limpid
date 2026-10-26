@@ -4,6 +4,7 @@ use limpid_core::{
 };
 use limpid_view::{
     cli::{self, Args, Snapshot},
+    feedback::Feedback,
     nav::CloseKind,
     page::{Closer, DocPage, SharedFonts},
     serve::{self, Request},
@@ -57,12 +58,14 @@ fn run_snapshot(
     write_png(&snapshot.out, &image)
 }
 
+/// A file named on the command line is its own source: replies and comments
+/// are written into it.
 fn handoff_for(target: &Path, scheme: Scheme) -> Handoff {
     Handoff {
         path: target.to_path_buf(),
         theme: scheme,
         pane: None,
-        source: None,
+        source: Some(target.to_path_buf()),
         source_hash: None,
         source_backed: false,
     }
@@ -117,10 +120,14 @@ fn run_windows(args: Args, settings: Settings, fonts: SharedFonts) -> Result<(),
     let live_pages = Rc::new(Cell::new(0));
     let factory_proxy = proxy.clone();
     let factory: PageFactory = Box::new(move |request: &Handoff| {
-        let page =
-            DocPage::open(&request.path, &settings, request.theme, fonts.clone())?.with_closer(
-                Box::new(WindowCloser::new(live_pages.clone(), factory_proxy.clone())),
-            );
+        let page = DocPage::open(&request.path, &settings, request.theme, fonts.clone())?;
+        let feedback = Feedback::new(request.clone(), page.title(), &settings);
+        let page = page
+            .with_feedback(feedback)
+            .with_closer(Box::new(WindowCloser::new(
+                live_pages.clone(),
+                factory_proxy.clone(),
+            )));
         Ok(Box::new(page) as Box<dyn Page>)
     });
 
@@ -182,6 +189,14 @@ fn default_socket(runtime: &Path, scheme: Scheme) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_make_a_file_its_own_source_when_building_a_handoff() {
+        let handoff = handoff_for(Path::new("/tmp/notes.md"), Scheme::Dark);
+        assert_eq!(handoff.path, PathBuf::from("/tmp/notes.md"));
+        assert_eq!(handoff.source.as_deref(), Some(Path::new("/tmp/notes.md")));
+        assert_eq!(handoff.source_hash, None, "Feedback fills the hash in");
+    }
 
     #[test]
     fn should_name_the_socket_after_the_scheme_when_no_path_is_given() {
