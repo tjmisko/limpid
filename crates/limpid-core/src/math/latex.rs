@@ -6,8 +6,11 @@
 //! `limpid-box N <ht> <dp> <wd>` (TeX points), then unboxed into the preview
 //! environment. The `preview` package itself does not log snippet sizes in a
 //! form that is stable across drivers. The SVG's own height minus the depth
-//! gives the baseline offset from the top. Display formulas are not boxed
-//! (they may be multi-line), so their baseline is the vertical middle.
+//! gives the baseline offset from the top. Display formulas are boxed too, with
+//! top-level line breaks and amsmath environments rewritten to `gathered` /
+//! `aligned` so they can live in a box. Only environments with no boxable
+//! equivalent (`alignat`) are emitted bare, with no metrics (baseline in the
+//! middle).
 
 use super::{
     Backend, BackendError, Formula, MathSettings, Rendered, find_binary, numbered_files,
@@ -261,22 +264,169 @@ pub fn build_document(batch: &[&Formula]) -> String {
         // Trailing whitespace is trimmed (display math from the parser ends in a
         // newline, which would become a blank line, i.e. \par, inside math). The
         // newline before the closing delimiter keeps a trailing `%` comment in the
-        // formula from swallowing it. Both kinds are set in a box so the page is
-        // exactly as wide as the formula, and the box gives the baseline.
+        // formula from swallowing it. Formulas that are safe to box are set in a
+        // box so the page is exactly as wide as the formula, and the box gives
+        // the baseline.
         let latex = formula.latex.trim_end();
-        let (open, close) = if formula.display {
-            ("$\\displaystyle ", "$")
+        let layout = if formula.display {
+            display_layout(latex)
         } else {
-            ("\\(", "\\)")
+            Layout::Boxed {
+                open: "\\(",
+                close: "\\)",
+                body: latex.to_owned(),
+            }
         };
-        document.push_str(&format!(
-            "\\begin{{preview}}\\setbox\\limpidbox\\hbox{{{open}{latex}\n{close}}}\
-             \\typeout{{limpid-box {index} \\the\\ht\\limpidbox\\space\\the\\dp\\limpidbox\\space\\the\\wd\\limpidbox}}\
-             \\unhbox\\limpidbox\\end{{preview}}\n"
-        ));
+        match layout {
+            Layout::Boxed { open, close, body } => document.push_str(&format!(
+                "\\begin{{preview}}\\setbox\\limpidbox\\hbox{{{open}{body}\n{close}}}\
+                 \\typeout{{limpid-box {index} \\the\\ht\\limpidbox\\space\\the\\dp\\limpidbox\\space\\the\\wd\\limpidbox}}\
+                 \\unhbox\\limpidbox\\end{{preview}}\n"
+            )),
+            Layout::Bare(body) => {
+                document.push_str(&format!("\\begin{{preview}}\n{body}\n\\end{{preview}}\n"))
+            }
+        }
     }
     document.push_str("\\end{document}\n");
     document
+}
+
+/// How one formula is placed on its page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Layout {
+    /// Set in an `\hbox` (so its metrics are logged) between the delimiters.
+    Boxed {
+        open: &'static str,
+        close: &'static str,
+        body: String,
+    },
+    /// Emitted as is, in paragraph mode: the formula is itself a display
+    /// environment that cannot live inside a box. No metrics are logged.
+    Bare(String),
+}
+
+/// Environments that need paragraph mode, with the math-mode environment that
+/// sets the same thing inside a box (`None`: just the body).
+const WRAPPABLE_ENVIRONMENTS: &[(&str, Option<&str>)] = &[
+    ("align", Some("aligned")),
+    ("align*", Some("aligned")),
+    ("flalign", Some("aligned")),
+    ("flalign*", Some("aligned")),
+    ("eqnarray", Some("aligned")),
+    ("eqnarray*", Some("aligned")),
+    ("gather", Some("gathered")),
+    ("gather*", Some("gathered")),
+    ("multline", Some("gathered")),
+    ("multline*", Some("gathered")),
+    ("equation", None),
+    ("equation*", None),
+];
+
+/// Environments that only work in paragraph mode and have no boxable
+/// equivalent here; a formula containing one is emitted bare.
+const PARAGRAPH_ONLY_ENVIRONMENTS: &[&str] = &["alignat", "alignat*", "xalignat", "xxalignat"];
+
+fn display_layout(latex: &str) -> Layout {
+    let display = |body: String| Layout::Boxed {
+        open: "$\\displaystyle ",
+        close: "$",
+        body,
+    };
+    if let Some((environment, inner)) = single_environment(latex)
+        && let Some((_, replacement)) = WRAPPABLE_ENVIRONMENTS
+            .iter()
+            .find(|(name, _)| *name == environment)
+    {
+        return display(match replacement {
+            Some(name) => format!("\\begin{{{name}}}{inner}\\end{{{name}}}"),
+            None => inner.to_owned(),
+        });
+    }
+    if mentions_paragraph_only_environment(latex) {
+        return Layout::Bare(latex.to_owned());
+    }
+    if has_top_level_alignment(latex) {
+        let name = if has_top_level(latex, '&') {
+            "aligned"
+        } else {
+            "gathered"
+        };
+        return display(format!("\\begin{{{name}}}{latex}\n\\end{{{name}}}"));
+    }
+    display(latex.to_owned())
+}
+
+fn mentions_paragraph_only_environment(latex: &str) -> bool {
+    PARAGRAPH_ONLY_ENVIRONMENTS
+        .iter()
+        .any(|name| latex.contains(&format!("\\begin{{{name}}}")))
+}
+
+/// `(name, inner)` when the whole formula is one `\begin{name}...\end{name}`.
+fn single_environment(latex: &str) -> Option<(&str, &str)> {
+    let rest = latex.trim().strip_prefix("\\begin{")?;
+    let (name, after) = rest.split_once('}')?;
+    let inner = after.trim_end().strip_suffix(&format!("\\end{{{name}}}"))?;
+    // `\begin{a}x\end{a} + \begin{a}y\end{a}` is not a single environment.
+    if inner.contains(&format!("\\begin{{{name}}}")) {
+        return None;
+    }
+    Some((name, inner))
+}
+
+fn has_top_level_alignment(latex: &str) -> bool {
+    has_top_level(latex, '\\') || has_top_level(latex, '&')
+}
+
+/// Whether `target` (`\\` for a line break, or `&`) occurs outside every
+/// brace group and `\begin..\end` environment. Escaped `\&` and `\%` comments
+/// are skipped.
+fn has_top_level(latex: &str, target: char) -> bool {
+    let mut depth = 0usize;
+    let mut chars = latex.char_indices().peekable();
+    while let Some((at, character)) = chars.next() {
+        match character {
+            '%' => while chars.next_if(|(_, next)| *next != '\n').is_some() {},
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            '&' if target == '&' && depth == 0 => return true,
+            '\\' => {
+                let rest = &latex[at + 1..];
+                if let Some(after) = rest.strip_prefix("begin{") {
+                    let Some(end) = after.find('}') else {
+                        return false;
+                    };
+                    depth += 1;
+                    skip_bytes(&mut chars, at + 1 + "begin{".len() + end);
+                    continue;
+                }
+                if let Some(after) = rest.strip_prefix("end{") {
+                    let Some(end) = after.find('}') else {
+                        return false;
+                    };
+                    depth = depth.saturating_sub(1);
+                    skip_bytes(&mut chars, at + 1 + "end{".len() + end);
+                    continue;
+                }
+                if rest.starts_with('\\') {
+                    if target == '\\' && depth == 0 {
+                        return true;
+                    }
+                    chars.next();
+                    continue;
+                }
+                // Any other escape (`\&`, `\{`, `\%`, a control word): skip one char.
+                chars.next();
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn skip_bytes(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>, through: usize) {
+    while chars.next_if(|(at, _)| *at <= through).is_some() {}
 }
 
 /// Height, depth and width in px of one boxed formula.
@@ -362,8 +512,75 @@ mod tests {
         let document = build_document(&[&display, &inline]);
         assert!(!document.contains("\n\n$}"));
         assert!(!document.contains("\n\n\\)}"));
-        assert!(document.contains("b\n$}"));
+        assert!(!document.contains("\n\n\\end{gathered}"));
+        assert!(document.contains("b\n\\end{gathered}\n$}"));
         assert!(document.contains("x\n\\)}"));
+    }
+
+    fn layout_of(latex: &str) -> Layout {
+        display_layout(latex)
+    }
+
+    fn boxed_body(layout: Layout) -> String {
+        match layout {
+            Layout::Boxed { body, .. } => body,
+            Layout::Bare(body) => panic!("expected a boxed layout, got bare {body}"),
+        }
+    }
+
+    #[test]
+    fn should_wrap_in_gathered_when_display_formula_has_a_top_level_line_break() {
+        let body = boxed_body(layout_of("a = b \\\\ c = d"));
+        assert!(body.starts_with("\\begin{gathered}") && body.contains("\\end{gathered}"));
+    }
+
+    #[test]
+    fn should_wrap_in_aligned_when_display_formula_has_a_top_level_ampersand() {
+        let body = boxed_body(layout_of("a &= b \\\\ c &= d"));
+        assert!(body.starts_with("\\begin{aligned}"));
+        let single = boxed_body(layout_of("a &= b"));
+        assert!(single.starts_with("\\begin{aligned}"));
+    }
+
+    #[test]
+    fn should_not_wrap_when_line_break_is_inside_a_nested_environment_or_braces() {
+        for latex in [
+            "\\begin{pmatrix} a \\\\ b \\end{pmatrix}",
+            "\\frac{a \\\\ b}{c}",
+            "\\text{a \\& b}",
+            "x % a \\\\ comment\ny",
+            "\\left\\{ x \\right.",
+        ] {
+            assert_eq!(boxed_body(layout_of(latex)), latex, "{latex}");
+        }
+    }
+
+    #[test]
+    fn should_convert_amsmath_environments_to_boxable_ones_when_formula_is_one() {
+        let aligned = boxed_body(layout_of("\\begin{align}a &= b \\\\ c &= d\\end{align}"));
+        assert_eq!(aligned, "\\begin{aligned}a &= b \\\\ c &= d\\end{aligned}");
+        let star = boxed_body(layout_of("\\begin{align*}x&=1\\end{align*}"));
+        assert!(star.starts_with("\\begin{aligned}"));
+        let gather = boxed_body(layout_of("\\begin{gather*}a\\\\b\\end{gather*}"));
+        assert!(gather.starts_with("\\begin{gathered}"));
+        let equation = boxed_body(layout_of("\n\\begin{equation}E = mc^2\\end{equation}\n"));
+        assert_eq!(equation, "E = mc^2");
+    }
+
+    #[test]
+    fn should_emit_bare_when_environment_cannot_be_boxed() {
+        let layout = layout_of("\\begin{alignat}{2}a&=b&c&=d\\end{alignat}");
+        assert!(matches!(layout, Layout::Bare(_)));
+        let document =
+            build_document(&[&Formula::new("\\begin{alignat}{2}a&=b\\end{alignat}", true)]);
+        assert!(document.contains("\\begin{preview}\n\\begin{alignat}"));
+        assert!(!document.contains("limpid-box 0"));
+    }
+
+    #[test]
+    fn should_not_treat_two_environments_as_one_when_unwrapping() {
+        let latex = "\\begin{align}a\\end{align} + \\begin{align}b\\end{align}";
+        assert!(single_environment(latex).is_none());
     }
 
     #[test]
@@ -478,13 +695,12 @@ mod tests {
         );
         // Multi-line display math as pulldown-cmark yields it, and a wide one.
         let multiline = Formula::new("\\sum_{n=1}^\\infty n\n", true);
-        let aligned = Formula::new(
-            "\\begin{aligned}a &= b\\\\\nc &= d\\end{aligned}\n",
-            true,
-        );
+        let aligned = Formula::new("\\begin{aligned}a &= b\\\\\nc &= d\\end{aligned}\n", true);
         let terms: Vec<String> = (1..=30).map(|n| format!("a_{{{n}}}")).collect();
         let wide = Formula::new(&terms.join("+"), true);
-        let rendered = backend.render(&[&multiline, &aligned, &wide], &out).unwrap();
+        let rendered = backend
+            .render(&[&multiline, &aligned, &wide], &out)
+            .unwrap();
         assert_eq!(rendered.len(), 3);
         assert!(
             rendered[2].width > 343.7 * 96.0 / 72.27,
@@ -496,6 +712,35 @@ mod tests {
             "display math must be tightly bounded: {:?}",
             rendered[0]
         );
+        // Line breaks and display environments typeset, and are taller than one line.
+        let one_line = Formula::new("a = b", true);
+        let broken_lines = Formula::new("a = b \\\\ c = d", true);
+        let environments: Vec<Formula> = [
+            ("align", "a &= b \\\\ c &= d"),
+            ("align*", "a &= b \\\\ c &= d"),
+            ("gather", "a = b \\\\ c = d"),
+            ("gather*", "a = b \\\\ c = d"),
+            ("multline", "a = b \\\\ c = d"),
+            ("equation", "a = b"),
+        ]
+        .iter()
+        .map(|(name, body)| Formula::new(&format!("\\begin{{{name}}}{body}\\end{{{name}}}"), true))
+        .collect();
+        for formula in &environments {
+            let rendered = backend.render(&[formula], &out).unwrap();
+            assert_eq!(rendered.len(), 1, "{}", formula.latex);
+        }
+        let both = backend.render(&[&one_line, &broken_lines], &out).unwrap();
+        assert!(
+            both[1].height > both[0].height * 1.6,
+            "two lines must be about twice as tall: {both:?}"
+        );
+        assert!(
+            both[1].width < 100.0,
+            "a broken display formula must not span the line: {:?}",
+            both[1]
+        );
+        assert!(both[1].baseline < both[1].height, "depth must be reported");
         let broken = Formula::new("\\undefinedmacro", false);
         let error = backend.render(&[&broken], &out).unwrap_err();
         assert!(error.0.contains("Undefined control sequence"), "{error}");
