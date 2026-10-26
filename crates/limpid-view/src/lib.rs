@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod layout;
 pub mod page;
 pub mod paint;
 pub mod serve;
