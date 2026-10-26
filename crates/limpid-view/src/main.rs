@@ -4,11 +4,10 @@ use limpid_core::{
 };
 use limpid_view::{
     cli::{self, Args, Snapshot},
-    page::{SharedFonts, TextPage},
+    page::{DocPage, SharedFonts},
     serve::{self, Request},
     snapshot::{render, write_png},
     text::Fonts,
-    theme::Theme,
     window::{App, Page, PageFactory, UserEvent, WindowConfig},
 };
 use std::{
@@ -46,8 +45,7 @@ fn run_snapshot(
         .target
         .as_deref()
         .ok_or("--snapshot needs a TARGET file")?;
-    let theme = Theme::from_settings(settings, args.scheme);
-    let mut page = TextPage::open(target, theme, fonts.clone())?;
+    let mut page = DocPage::open(target, settings, args.scheme, fonts.clone())?;
     let image = render(&mut page, snapshot.width, snapshot.height, snapshot.scale)?;
     write_png(&snapshot.out, &image)
 }
@@ -76,8 +74,7 @@ fn run_windows(args: Args, settings: Settings, fonts: SharedFonts) -> Result<(),
         ..WindowConfig::default()
     };
     let factory: PageFactory = Box::new(move |request: &Handoff| {
-        let theme = Theme::from_settings(&settings, request.theme);
-        let page = TextPage::open(&request.path, theme, fonts.clone())?;
+        let page = DocPage::open(&request.path, &settings, request.theme, fonts.clone())?;
         Ok(Box::new(page) as Box<dyn Page>)
     });
     let event_loop = EventLoop::<UserEvent>::with_user_event()

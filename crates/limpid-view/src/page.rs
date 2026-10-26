@@ -1,14 +1,20 @@
-//! The placeholder page for this wave: the target file as styled plain text in
-//! the content column, scrolled with `j`/`k`/`Ctrl-d`/`Ctrl-u`. The real
-//! block layout replaces it in a later work unit.
+//! The document page: parses Markdown into a [`Doc`], lays it out lazily and
+//! paints the visible part. Owns the scroll position and re-lays out on
+//! resize and scale changes, keeping the block at the top of the window.
 
 use crate::{
-    paint::{Canvas, Rect},
-    text::{Fonts, TextBlock, TextStyle},
+    layout::{Layout, LayoutOptions, lay_out_with},
+    paint::Canvas,
+    text::Fonts,
     theme::Theme,
     window::Page,
 };
-use std::{cell::RefCell, ops::Range, path::Path, rc::Rc};
+use limpid_core::{
+    doc::{Doc, Mode, parse},
+    settings::{Settings, ViewTheme},
+    transport::Scheme,
+};
+use std::{cell::RefCell, path::Path, rc::Rc};
 use winit::{
     event::{ElementState, KeyEvent},
     keyboard::{Key, ModifiersState, NamedKey},
@@ -16,40 +22,63 @@ use winit::{
 
 pub type SharedFonts = Rc<RefCell<Fonts>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChunkKind {
-    Plain,
-    Heading(u8),
-    Code,
+/// The theme for `scheme` with the `[view]` and `[style]` settings applied.
+/// `view.theme` other than `auto` overrides `scheme`.
+pub fn theme_for(settings: &Settings, scheme: Scheme) -> Theme {
+    let view = &settings.view;
+    let scheme = match view.theme {
+        ViewTheme::Auto => scheme,
+        ViewTheme::Dark => Scheme::Dark,
+        ViewTheme::Light => Scheme::Light,
+    };
+    let mut theme = Theme::from_settings(settings, scheme);
+    // `style.font_size` predates `view.font_size`; the newer key wins only
+    // when it was moved off its default.
+    if view.font_size > 0 && view.font_size != limpid_core::settings::View::default().font_size {
+        theme.font_size = view.font_size as f32;
+    }
+    if view.line_height.is_finite() && view.line_height > 0.0 {
+        theme.line_height = view.line_height;
+    }
+    if view.content_width > 0 {
+        theme.content_width = view.content_width as f32;
+    }
+    if view.rail_width > 0 {
+        theme.rail_width = view.rail_width as f32;
+    }
+    if view.scroll_fraction.is_finite() && view.scroll_fraction > 0.0 {
+        theme.scroll_fraction = view.scroll_fraction.min(1.0);
+    }
+    if !view.font.trim().is_empty() {
+        theme.families.sans = view.font.trim().to_owned();
+    }
+    if !view.mono_font.trim().is_empty() {
+        theme.families.mono = view.mono_font.trim().to_owned();
+    }
+    theme
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Chunk {
-    range: Range<usize>,
-    kind: ChunkKind,
+pub fn options_for(settings: &Settings) -> LayoutOptions {
+    LayoutOptions {
+        code_wrap: settings.view.code_wrap,
+        rail: settings.view.rail,
+    }
 }
 
-struct LaidChunk {
-    block: TextBlock,
-    top: f32,
-    height: f32,
-    kind: ChunkKind,
-}
-
-/// Inputs the layout was built for; a change throws the layout away.
+/// Inputs the layout was built for; a change throws it away.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct LayoutKey {
-    column_width: f32,
+    width: f32,
     scale: f32,
 }
 
-pub struct TextPage {
+pub struct DocPage {
     title: String,
-    source: String,
-    chunks: Vec<Chunk>,
+    doc: Doc,
     theme: Theme,
+    options: LayoutOptions,
     fonts: SharedFonts,
-    laid: Vec<LaidChunk>,
+    layout: Option<Layout>,
     laid_for: Option<LayoutKey>,
     scale: f32,
     scroll: f32,
@@ -57,30 +86,66 @@ pub struct TextPage {
     modifiers: ModifiersState,
 }
 
-impl TextPage {
-    pub fn open(path: &Path, theme: Theme, fonts: SharedFonts) -> Result<Self, String> {
+impl DocPage {
+    pub fn open(
+        path: &Path,
+        settings: &Settings,
+        scheme: Scheme,
+        fonts: SharedFonts,
+    ) -> Result<Self, String> {
         let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-        let title = path
+        let stem = path
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_else(|| "limpid".to_owned());
         Ok(Self::from_source(
             &String::from_utf8_lossy(&bytes),
-            title,
-            theme,
+            stem,
+            settings,
+            scheme,
             fonts,
         ))
     }
 
-    pub fn from_source(source: &str, title: String, theme: Theme, fonts: SharedFonts) -> Self {
-        let source = source.replace("\r\n", "\n");
+    /// `fallback_title` names the window when the document has no title.
+    pub fn from_source(
+        source: &str,
+        fallback_title: String,
+        settings: &Settings,
+        scheme: Scheme,
+        fonts: SharedFonts,
+    ) -> Self {
+        Self::with_theme(
+            source,
+            fallback_title,
+            settings,
+            theme_for(settings, scheme),
+            options_for(settings),
+            fonts,
+        )
+    }
+
+    pub fn with_theme(
+        source: &str,
+        fallback_title: String,
+        settings: &Settings,
+        theme: Theme,
+        options: LayoutOptions,
+        fonts: SharedFonts,
+    ) -> Self {
+        let doc = parse(source, Mode::File, settings);
+        let title = doc
+            .title
+            .clone()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or(fallback_title);
         Self {
             title,
-            chunks: split_chunks(&source),
-            source,
+            doc,
             theme,
+            options,
             fonts,
-            laid: Vec::new(),
+            layout: None,
             laid_for: None,
             scale: 1.0,
             scroll: 0.0,
@@ -89,128 +154,82 @@ impl TextPage {
         }
     }
 
+    pub fn doc(&self) -> &Doc {
+        &self.doc
+    }
+
+    pub fn layout(&self) -> Option<&Layout> {
+        self.layout.as_ref()
+    }
+
     pub fn scroll(&self) -> f32 {
         self.scroll
     }
 
-    /// How many chunks have been laid out so far (the rest wait for scrolling).
-    pub fn laid_out_chunks(&self) -> usize {
-        self.laid.len()
+    /// How many top-level blocks have been laid out so far.
+    pub fn laid_out_blocks(&self) -> usize {
+        self.layout.as_ref().map_or(0, |layout| layout.blocks.len())
     }
 
-    pub fn chunk_count(&self) -> usize {
-        self.chunks.len()
-    }
-
-    fn page_padding(&self) -> f32 {
-        self.theme.margin * self.scale
-    }
-
-    fn column(&self, canvas_width: f32) -> (f32, f32) {
-        let gutter = self.page_padding();
-        let width = (self.theme.content_width * self.scale)
-            .min(canvas_width - 2.0 * gutter)
-            .max(1.0);
-        ((canvas_width - width).max(0.0) / 2.0, width)
-    }
-
-    fn block_gap(&self) -> f32 {
-        self.theme.font_size * self.scale * 0.9
-    }
-
-    fn code_padding(&self) -> f32 {
-        10.0 * self.scale
-    }
-
-    fn all_laid(&self) -> bool {
-        self.laid.len() == self.chunks.len()
-    }
-
-    fn content_height(&self) -> f32 {
-        self.laid.last().map_or(0.0, |last| last.top + last.height) + self.page_padding() * 2.0
+    fn line(&self) -> f32 {
+        self.theme.font_size * self.theme.line_height * self.scale
     }
 
     fn max_scroll(&self) -> Option<f32> {
-        if !self.all_laid() {
-            return None;
-        }
-        Some((self.content_height() - self.viewport_height).max(0.0))
+        let layout = self.layout.as_ref().filter(|layout| layout.is_complete())?;
+        Some((layout.height - self.viewport_height).max(0.0))
     }
 
-    fn lay_out_next(&mut self, column_width: f32) {
-        let index = self.laid.len();
-        let Some(chunk) = self.chunks.get(index) else {
+    fn ensure_to(&mut self, y: f32) {
+        let Some(layout) = self.layout.as_mut() else {
             return;
         };
-        let theme = &self.theme;
-        let scale = self.scale;
-        let top = self
-            .laid
-            .last()
-            .map_or(0.0, |last| last.top + last.height + self.block_gap());
-        let text = self.source[chunk.range.clone()].trim_end_matches('\n');
-        let kind = chunk.kind;
-        let text = match kind {
-            ChunkKind::Heading(_) => text.trim_start_matches('#').trim_start(),
-            _ => text,
-        };
-        let (size, style, inset) = match kind {
-            ChunkKind::Heading(level) => {
-                let factor = match level {
-                    1 => 1.9,
-                    2 => 1.5,
-                    3 => 1.25,
-                    _ => 1.1,
-                };
-                (
-                    theme.font_size * factor,
-                    TextStyle::sans(theme.ink).bold(),
-                    0.0,
-                )
-            }
-            ChunkKind::Code => (
-                theme.font_size * 0.9,
-                TextStyle::mono(theme.ink),
-                self.code_padding(),
-            ),
-            ChunkKind::Plain => (theme.font_size, TextStyle::sans(theme.ink), 0.0),
-        };
-        let mut fonts = self.fonts.borrow_mut();
-        let mut block = TextBlock::new(&mut fonts, size * scale, size * theme.line_height * scale);
-        block.set_text(&mut fonts, text, style, &theme.families);
-        block.set_width(&mut fonts, Some((column_width - 2.0 * inset).max(1.0)));
-        let height = block.height() + 2.0 * inset;
-        drop(fonts);
-        self.laid.push(LaidChunk {
-            block,
-            top,
-            height,
-            kind,
-        });
-    }
-
-    /// Lay out chunks until the document is covered down to `y`.
-    fn ensure_to(&mut self, y: f32, column_width: f32) {
-        while !self.all_laid() {
-            let covered = self.laid.last().map_or(0.0, |last| last.top + last.height);
-            if covered >= y {
-                return;
-            }
-            self.lay_out_next(column_width);
-        }
+        layout.ensure_to(y, &self.doc, &mut self.fonts.borrow_mut());
     }
 
     fn scroll_to(&mut self, target: f32) {
-        let mut target = target.max(0.0);
+        let mut target = if target.is_finite() {
+            target.max(0.0)
+        } else {
+            0.0
+        };
         if let Some(max) = self.max_scroll() {
             target = target.min(max);
         }
         self.scroll = target;
     }
 
+    /// Lay the document out for a window `width` device pixels wide, keeping
+    /// the block at the top of the viewport in place.
+    fn relayout(&mut self, key: LayoutKey, old_scale: f32) {
+        let anchor = self.layout.as_ref().and_then(|layout| {
+            let index = layout.block_at(self.scroll)?;
+            let rect = layout.blocks[index].rect;
+            Some((index, (self.scroll - rect.y) / old_scale.max(f32::EPSILON)))
+        });
+        let mut fonts = self.fonts.borrow_mut();
+        let mut layout = lay_out_with(
+            &self.doc,
+            key.width,
+            &self.theme,
+            key.scale,
+            &mut fonts,
+            self.options,
+        );
+        if let Some((index, offset)) = anchor {
+            layout.ensure_block(index, &self.doc, &mut fonts);
+            if let Some(block) = layout.blocks.get(index) {
+                self.scroll = block.rect.y + offset * key.scale;
+            }
+        }
+        drop(fonts);
+        self.layout = Some(layout);
+        self.laid_for = Some(key);
+    }
+
     /// Handle one key press. `ctrl` is the Control modifier state.
     pub fn handle_key(&mut self, key: &Key, ctrl: bool) -> bool {
-        let line = self.theme.font_size * self.theme.line_height * self.scale;
+        let line = self.line();
         let half = self.viewport_height * self.theme.scroll_fraction;
         let delta = match key {
             Key::Character(text) if ctrl => match text.as_str() {
@@ -221,6 +240,8 @@ impl TextPage {
             Key::Character(text) => match text.as_str() {
                 "j" => line,
                 "k" => -line,
+                "h" => return self.scroll_code(-line * 3.0),
+                "l" => return self.scroll_code(line * 3.0),
                 _ => return false,
             },
             Key::Named(NamedKey::ArrowDown) => line,
@@ -231,15 +252,25 @@ impl TextPage {
         };
         let target = self.scroll + delta;
         // Lay out ahead of the move so the clamp knows whether the end is near.
-        if let Some(key) = self.laid_for {
-            self.ensure_to(target + self.viewport_height * 2.0, key.column_width);
-        }
+        self.ensure_to(target + self.viewport_height * 2.0);
         self.scroll_to(target);
         true
     }
+
+    /// Scroll the first wide code block in view sideways. Until the cursor
+    /// exists, "focused" means topmost on screen.
+    fn scroll_code(&mut self, delta: f32) -> bool {
+        let (top, bottom) = (self.scroll, self.scroll + self.viewport_height);
+        let Some(layout) = self.layout.as_mut() else {
+            return false;
+        };
+        layout
+            .code_block_in(top, bottom)
+            .is_some_and(|block| block.scroll_code_x(delta))
+    }
 }
 
-impl Page for TextPage {
+impl Page for DocPage {
     fn title(&self) -> String {
         self.title.clone()
     }
@@ -250,50 +281,24 @@ impl Page for TextPage {
         } else {
             1.0
         };
-        self.scale = scale;
         self.viewport_height = canvas.height() as f32;
-        let (column_x, column_width) = self.column(canvas.width() as f32);
         let key = LayoutKey {
-            column_width,
+            width: canvas.width() as f32,
             scale,
         };
         if self.laid_for != Some(key) {
-            self.laid.clear();
-            self.laid_for = Some(key);
+            self.relayout(key, self.scale);
         }
-        self.ensure_to(self.scroll + self.viewport_height * 2.0, column_width);
+        self.scale = scale;
+        self.ensure_to(self.scroll + self.viewport_height * 2.0);
         self.scroll_to(self.scroll);
 
         canvas.clear(self.theme.bg);
-        let pad = self.page_padding();
-        let viewport = self.viewport_height;
-        let mut fonts = self.fonts.borrow_mut();
-        for laid in &self.laid {
-            let top = pad + laid.top - self.scroll;
-            if top > viewport {
-                break;
-            }
-            if top + laid.height < 0.0 {
-                continue;
-            }
-            match laid.kind {
-                ChunkKind::Code => {
-                    let inset = 10.0 * scale;
-                    canvas.fill_rect(
-                        Rect::new(column_x, top, column_width, laid.height),
-                        self.theme.code_bg,
-                    );
-                    canvas.draw_text(
-                        &mut fonts,
-                        &laid.block,
-                        column_x + inset,
-                        top + inset,
-                        self.theme.ink,
-                    );
-                }
-                _ => canvas.draw_text(&mut fonts, &laid.block, column_x, top, self.theme.ink),
-            }
-        }
+        let scroll = self.scroll;
+        let Some(layout) = self.layout.as_mut() else {
+            return;
+        };
+        layout.paint(canvas, &mut self.fonts.borrow_mut(), scroll);
     }
 
     fn key(&mut self, event: &KeyEvent) -> bool {
@@ -308,154 +313,28 @@ impl Page for TextPage {
     }
 }
 
-/// Split the source into blank-line separated chunks. Fenced code stays whole
-/// and each heading line is its own chunk.
-fn split_chunks(source: &str) -> Vec<Chunk> {
-    let mut chunks = Vec::new();
-    let mut start: Option<usize> = None;
-    let mut kind = ChunkKind::Plain;
-    let mut fence: Option<String> = None;
-    let mut offset = 0;
-    let flush = |chunks: &mut Vec<Chunk>, start: &mut Option<usize>, end: usize, kind| {
-        if let Some(begin) = start.take() {
-            chunks.push(Chunk {
-                range: begin..end,
-                kind,
-            });
-        }
-    };
-    for line in source.split_inclusive('\n') {
-        let line_start = offset;
-        offset += line.len();
-        let trimmed = line.trim();
-        if let Some(marker) = &fence {
-            if trimmed.starts_with(marker.as_str()) {
-                fence = None;
-                flush(&mut chunks, &mut start, offset, ChunkKind::Code);
-            }
-            continue;
-        }
-        if let Some(marker) = fence_marker(trimmed) {
-            flush(&mut chunks, &mut start, line_start, kind);
-            fence = Some(marker);
-            start = Some(line_start);
-            continue;
-        }
-        if trimmed.is_empty() {
-            flush(&mut chunks, &mut start, line_start, kind);
-            continue;
-        }
-        if let Some(level) = heading_level(trimmed) {
-            flush(&mut chunks, &mut start, line_start, kind);
-            chunks.push(Chunk {
-                range: line_start..offset,
-                kind: ChunkKind::Heading(level),
-            });
-            continue;
-        }
-        if start.is_none() {
-            start = Some(line_start);
-            kind = ChunkKind::Plain;
-        }
-    }
-    // An unclosed fence runs to the end of the file.
-    let final_kind = if fence.is_some() {
-        ChunkKind::Code
-    } else {
-        kind
-    };
-    flush(&mut chunks, &mut start, source.len(), final_kind);
-    chunks
-}
-
-fn fence_marker(trimmed: &str) -> Option<String> {
-    let character = trimmed.chars().next().filter(|c| *c == '`' || *c == '~')?;
-    let run = trimmed.chars().take_while(|c| *c == character).count();
-    (run >= 3).then(|| character.to_string().repeat(run))
-}
-
-fn heading_level(trimmed: &str) -> Option<u8> {
-    let hashes = trimmed.chars().take_while(|c| *c == '#').count();
-    if hashes == 0 || hashes > 6 {
-        return None;
-    }
-    let rest = &trimmed[hashes..];
-    (rest.is_empty() || rest.starts_with(' ')).then_some(hashes as u8)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn kinds(source: &str) -> Vec<(ChunkKind, String)> {
-        split_chunks(source)
-            .into_iter()
-            .map(|chunk| (chunk.kind, source[chunk.range].trim_end().to_owned()))
-            .collect()
-    }
-
-    fn page(source: &str) -> TextPage {
-        TextPage::from_source(
+    fn page(source: &str) -> DocPage {
+        DocPage::from_source(
             source,
             "t".into(),
-            Theme::dark(),
+            &Settings::default(),
+            Scheme::Dark,
             Rc::new(RefCell::new(Fonts::new())),
         )
     }
 
-    fn paint(page: &mut TextPage, width: u32, height: u32, scale: f32) -> Vec<u32> {
+    fn paint(page: &mut DocPage, width: u32, height: u32, scale: f32) -> Vec<u32> {
         let mut pixels = vec![0; (width * height) as usize];
         page.paint(&mut Canvas::new(&mut pixels, width, height), scale);
         pixels
     }
 
-    #[test]
-    fn should_split_paragraphs_headings_and_code_when_chunking_source() {
-        let source = "# Title\n\nfirst\nsecond\n\n```rs\nlet a = 1;\n\nlet b = 2;\n```\nafter\n";
-        let chunks = kinds(source);
-        assert_eq!(chunks.len(), 4, "{chunks:?}");
-        assert_eq!(chunks[0].0, ChunkKind::Heading(1));
-        assert_eq!(chunks[1], (ChunkKind::Plain, "first\nsecond".into()));
-        assert_eq!(chunks[2].0, ChunkKind::Code);
-        assert!(chunks[2].1.contains("let b = 2;"));
-        assert_eq!(chunks[3], (ChunkKind::Plain, "after".into()));
-    }
-
-    #[test]
-    fn should_run_code_to_the_end_when_a_fence_is_unclosed() {
-        let chunks = kinds("```\nstill code\n\nmore code");
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].0, ChunkKind::Code);
-        assert!(chunks[0].1.contains("more code"));
-    }
-
-    #[test]
-    fn should_not_treat_hashes_as_headings_when_there_is_no_space_or_too_many() {
-        for line in ["#nospace", "####### seven", "#!shebang"] {
-            let chunks = kinds(line);
-            assert_eq!(chunks[0].0, ChunkKind::Plain, "{line}");
-        }
-        assert_eq!(kinds("###### six")[0].0, ChunkKind::Heading(6));
-    }
-
-    #[test]
-    fn should_produce_no_chunks_when_source_is_blank() {
-        assert!(split_chunks("").is_empty());
-        assert!(split_chunks("\n\n  \n").is_empty());
-    }
-
-    #[test]
-    fn should_match_fence_length_when_a_longer_fence_contains_a_shorter_one() {
-        let chunks = kinds("````\n```\ninner\n```\n````\ntail");
-        assert_eq!(chunks.len(), 2, "{chunks:?}");
-        assert_eq!(chunks[0].0, ChunkKind::Code);
-    }
-
-    #[test]
-    fn should_treat_crlf_like_lf_when_chunking() {
-        let page = page("a\r\nb\r\n\r\nc\r\n");
-        assert_eq!(page.chunk_count(), 2);
-        assert!(!page.source.contains('\r'));
+    fn numbered(count: usize) -> String {
+        (0..count).map(|n| format!("line {n}\n\n")).collect()
     }
 
     #[test]
@@ -468,14 +347,10 @@ mod tests {
 
     #[test]
     fn should_scroll_by_lines_and_clamp_at_the_top_when_pressing_j_and_k() {
-        let body = (0..200)
-            .map(|n| format!("line {n}\n\n"))
-            .collect::<String>();
-        let mut page = page(&body);
+        let mut page = page(&numbered(200));
         paint(&mut page, 400, 300, 1.0);
         assert!(page.handle_key(&Key::Character("j".into()), false));
-        let after_j = page.scroll();
-        assert!(after_j > 0.0);
+        assert!(page.scroll() > 0.0);
         page.handle_key(&Key::Character("k".into()), false);
         page.handle_key(&Key::Character("k".into()), false);
         assert_eq!(page.scroll(), 0.0);
@@ -483,10 +358,7 @@ mod tests {
 
     #[test]
     fn should_scroll_half_a_viewport_when_pressing_ctrl_d_and_ctrl_u() {
-        let body = (0..200)
-            .map(|n| format!("line {n}\n\n"))
-            .collect::<String>();
-        let mut page = page(&body);
+        let mut page = page(&numbered(200));
         paint(&mut page, 400, 300, 1.0);
         assert!(page.handle_key(&Key::Character("d".into()), true));
         assert_eq!(page.scroll(), 150.0);
@@ -514,8 +386,7 @@ mod tests {
 
     #[test]
     fn should_stop_at_the_bottom_when_scrolling_far_past_a_long_document() {
-        let body = (0..60).map(|n| format!("line {n}\n\n")).collect::<String>();
-        let mut page = page(&body);
+        let mut page = page(&numbered(60));
         paint(&mut page, 400, 300, 1.0);
         for _ in 0..500 {
             page.handle_key(&Key::Character("j".into()), false);
@@ -528,20 +399,36 @@ mod tests {
 
     #[test]
     fn should_lay_out_lazily_when_the_document_is_large() {
-        let body = "paragraph of text\n\n".repeat(20_000);
-        let mut page = page(&body);
+        let mut page = page(&"paragraph of text\n\n".repeat(20_000));
         paint(&mut page, 800, 600, 1.0);
-        assert_eq!(page.chunk_count(), 20_000);
-        assert!(page.laid_out_chunks() < 200, "{}", page.laid_out_chunks());
+        assert_eq!(page.doc().blocks.len(), 20_000);
+        assert!(page.laid_out_blocks() < 200, "{}", page.laid_out_blocks());
     }
 
     #[test]
     fn should_relayout_when_the_scale_changes() {
         let mut page = page("# Title\n\nbody\n");
         paint(&mut page, 400, 300, 1.0);
-        let one = page.content_height();
+        let one = page.layout().unwrap().height;
         paint(&mut page, 800, 600, 2.0);
-        assert!(page.content_height() > one * 1.5);
+        assert!(page.layout().unwrap().height > one * 1.5);
+    }
+
+    #[test]
+    fn should_keep_the_top_block_in_place_when_the_window_is_resized() {
+        let mut page = page(&numbered(300));
+        paint(&mut page, 600, 400, 1.0);
+        page.handle_key(&Key::Character("d".into()), true);
+        page.handle_key(&Key::Character("d".into()), true);
+        paint(&mut page, 600, 400, 1.0);
+        let before = {
+            let layout = page.layout().unwrap();
+            layout.block_at(page.scroll()).unwrap()
+        };
+        paint(&mut page, 900, 400, 1.0);
+        let layout = page.layout().unwrap();
+        let after = layout.block_at(page.scroll()).unwrap();
+        assert_eq!(before, after);
     }
 
     #[test]
@@ -553,23 +440,100 @@ mod tests {
     }
 
     #[test]
+    fn should_use_the_document_title_when_it_has_one_else_the_fallback() {
+        assert_eq!(page("# My Doc\n\nbody").title(), "My Doc");
+        assert_eq!(page("no heading here").title(), "t");
+        assert_eq!(page("").title(), "t");
+    }
+
+    #[test]
     fn should_report_the_file_stem_when_opening_a_path() {
         let dir = std::env::temp_dir().join(format!("limpid-view-page-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("notes.md");
-        std::fs::write(&path, b"# hi\n\xff\xfe bad utf8\n").unwrap();
-        let page =
-            TextPage::open(&path, Theme::dark(), Rc::new(RefCell::new(Fonts::new()))).unwrap();
+        std::fs::write(&path, b"plain\n\xff\xfe bad utf8\n").unwrap();
+        let fonts = Rc::new(RefCell::new(Fonts::new()));
+        let page = DocPage::open(&path, &Settings::default(), Scheme::Dark, fonts.clone()).unwrap();
         assert_eq!(page.title(), "notes");
-        assert_eq!(page.chunk_count(), 2);
+        assert_eq!(page.doc().blocks.len(), 1);
         assert!(
-            TextPage::open(
+            DocPage::open(
                 &dir.join("missing.md"),
-                Theme::dark(),
-                Rc::new(RefCell::new(Fonts::new()))
+                &Settings::default(),
+                Scheme::Dark,
+                fonts
             )
             .is_err()
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_apply_view_settings_when_building_the_theme() {
+        let settings = Settings::parse(
+            "[view]\nfont = \"Inter\"\nmono_font = \"Hack\"\nfont_size = 20\nline_height = 1.4\n\
+             content_width = 700\nrail_width = 180\nscroll_fraction = 0.25\ntheme = \"light\"\n",
+        )
+        .unwrap();
+        let theme = theme_for(&settings, Scheme::Dark);
+        assert_eq!(theme.scheme, Scheme::Light);
+        assert_eq!(theme.font_size, 20.0);
+        assert_eq!(theme.line_height, 1.4);
+        assert_eq!(theme.content_width, 700.0);
+        assert_eq!(theme.rail_width, 180.0);
+        assert_eq!(theme.scroll_fraction, 0.25);
+        assert_eq!(theme.families.sans, "Inter");
+        assert_eq!(theme.families.mono, "Hack");
+    }
+
+    #[test]
+    fn should_follow_the_cli_scheme_when_view_theme_is_auto() {
+        let theme = theme_for(&Settings::default(), Scheme::Light);
+        assert_eq!(theme.scheme, Scheme::Light);
+    }
+
+    #[test]
+    fn should_keep_the_style_font_size_when_view_font_size_is_untouched() {
+        let settings = Settings::parse("[style]\nfont_size = 22\n").unwrap();
+        assert_eq!(theme_for(&settings, Scheme::Dark).font_size, 22.0);
+    }
+
+    #[test]
+    fn should_ignore_nonsense_view_values_when_building_the_theme() {
+        let settings = Settings::parse(
+            "[view]\nline_height = -1.0\nscroll_fraction = 0.0\nfont = \"  \"\ncontent_width = 0\n",
+        )
+        .unwrap();
+        let theme = theme_for(&settings, Scheme::Dark);
+        assert_eq!(theme.line_height, 1.65);
+        assert_eq!(theme.scroll_fraction, 0.5);
+        assert_eq!(theme.families.sans, "sans-serif");
+        assert_eq!(theme.content_width, 860.0);
+    }
+
+    #[test]
+    fn should_pass_view_layout_settings_through_when_building_options() {
+        let settings = Settings::parse("[view]\ncode_wrap = true\nrail = \"off\"\n").unwrap();
+        let options = options_for(&settings);
+        assert!(options.code_wrap);
+        assert_eq!(options.rail, limpid_core::settings::RailMode::Off);
+    }
+
+    #[test]
+    fn should_scroll_a_wide_code_block_sideways_when_pressing_l_and_h() {
+        let source = format!("```\n{}\n```\n", "w".repeat(500));
+        let mut page = page(&source);
+        paint(&mut page, 600, 400, 1.0);
+        assert!(
+            !page.handle_key(&Key::Character("h".into()), false),
+            "already at the left edge"
+        );
+        assert!(page.handle_key(&Key::Character("l".into()), false));
+        assert!(page.handle_key(&Key::Character("h".into()), false));
+        assert!(page.scroll_code(1e6));
+        assert!(
+            !page.handle_key(&Key::Character("l".into()), false),
+            "already at the right edge"
+        );
     }
 }
