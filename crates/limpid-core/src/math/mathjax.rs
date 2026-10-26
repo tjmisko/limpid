@@ -57,8 +57,9 @@ pub struct MathJaxBackend {
 }
 
 impl MathJaxBackend {
-    /// `font_size_px` is `view.font_size`; the time limit of one `render`
-    /// call is `math.timeout_seconds`.
+    /// `font_size_px` is `view.font_size`; `math.timeout_seconds` limits the
+    /// whole of one `render` call (the batch), as in the latex backend, not
+    /// each formula.
     pub fn new(font_size_px: f32, settings: &MathSettings) -> Self {
         let font_size = if font_size_px.is_finite() && font_size_px > 0.0 {
             font_size_px
@@ -434,6 +435,69 @@ mod tests {
         assert!(cache.get(&formulas[0].hash).is_some());
         assert!(cache.get(&formulas[2].hash).is_some());
         std::fs::remove_dir_all(cache_dir).unwrap();
+    }
+
+    #[test]
+    fn should_render_a_usable_size_when_a_display_formula_has_a_tag() {
+        let dir = work_dir("tag");
+        let tagged = formula("E = mc^2 \\tag{1}", true);
+        let rendered = backend().render(&[&tagged], &dir).unwrap().remove(0);
+        assert!(
+            rendered.width > 10.0 && rendered.height > 5.0,
+            "{rendered:?}"
+        );
+        let svg = std::fs::read_to_string(&rendered.svg).unwrap();
+        assert!(!svg.contains("100%"), "{svg}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_not_carry_labels_when_two_formulas_reuse_one() {
+        let dir = work_dir("labels");
+        let (first, second) = (
+            formula("\\label{foo} x", false),
+            formula("\\label{foo} y", false),
+        );
+        let results = backend().render(&[&first, &second], &dir).unwrap();
+        assert_eq!(results.len(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_render_a_labelled_formula_when_the_batch_has_a_bad_one() {
+        let cache_dir = work_dir("label-retry-cache");
+        let cache = math::cache::Cache::new(cache_dir.clone());
+        let formulas = [
+            formula("\\label{bar} z", false),
+            formula("\\left( x", false),
+        ];
+        let backend = backend();
+        let report =
+            math::render_missing_with(&cache, Some(&backend), &formulas, &MathSettings::default());
+        assert_eq!(report.rendered, 1, "{report:?}");
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert!(cache.get(&formulas[0].hash).is_some());
+        std::fs::remove_dir_all(cache_dir).unwrap();
+    }
+
+    #[test]
+    fn should_not_leak_macros_when_an_earlier_formula_defines_one() {
+        let dir = work_dir("macros");
+        let backend = backend();
+        let define = formula("\\newcommand{\\leaky}{q} \\leaky", false);
+        let user = formula("\\leaky", false);
+        backend.render(&[&define], &dir).unwrap();
+        let error = backend.render(&[&user], &dir).unwrap_err();
+        assert!(error.0.contains("leaky"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_fail_when_the_macro_is_undefined() {
+        let dir = work_dir("undefined");
+        let typo = formula("\\notamacro", false);
+        assert!(backend().render(&[&typo], &dir).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
