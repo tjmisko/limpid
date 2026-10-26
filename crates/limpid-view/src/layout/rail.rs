@@ -16,8 +16,6 @@ use limpid_core::{
 };
 use std::collections::HashMap;
 
-/// Entries beyond this many are not listed, so a huge outline stays cheap.
-pub const MAX_ENTRIES: usize = 300;
 /// Padding around the rail's content, CSS px.
 const PADDING: f32 = 14.0;
 
@@ -67,7 +65,10 @@ pub fn rail_bg(theme: &Theme) -> Color {
 }
 
 pub struct RailEntry {
-    pub text: RichText,
+    /// Shaped on first paint; an outline of thousands of headings stays cheap.
+    pub text: Option<RichText>,
+    /// Device-pixel font size of the entry.
+    font_size: f32,
     pub label: String,
     pub level: u8,
     /// Top-level block index of the heading, when it has one.
@@ -115,24 +116,16 @@ pub fn build(doc: &Doc, width: f32, theme: &Theme, scale: f32, fonts: &mut Fonts
 
     let mut top = px(20.0) + title.height() + px(10.0);
     let mut entries = Vec::new();
-    for entry in doc.toc.iter().take(MAX_ENTRIES) {
+    for entry in &doc.toc {
         let deep = entry.level >= 3;
         let size = font(if deep { 12.0 } else { 13.0 });
         let indent = px(if deep { 28.0 } else { 14.0 });
         let text_width = (width - 2.0 * px(PADDING) - indent - px(8.0)).max(1.0);
-        let style = TextStyle::sans(theme.muted);
-        let text = inline::build(
-            fonts,
-            &Flat::plain(&entry.text, style),
-            style,
-            theme,
-            size,
-            size * 1.4,
-            Some(text_width),
-        );
-        let height = text.height() + px(10.0);
+        // Every entry is one line tall so positions need no shaping.
+        let height = size * 1.4 + px(10.0);
         entries.push(RailEntry {
-            text,
+            text: None,
+            font_size: size,
             label: entry.text.clone(),
             level: entry.level,
             block_index: headings.get(entry.id.as_str()).copied(),
@@ -148,6 +141,38 @@ pub fn build(doc: &Doc, width: f32, theme: &Theme, scale: f32, fonts: &mut Fonts
         title,
         entries,
         active_text: None,
+    }
+}
+
+impl RailEntry {
+    /// Shape the label in `color` on one line, cutting it with an ellipsis
+    /// when it is too long for the rail.
+    fn shape(&self, color: Color, theme: &Theme, fonts: &mut Fonts) -> RichText {
+        let style = TextStyle::sans(color);
+        let line = self.font_size * 1.4;
+        let characters: Vec<char> = self.label.chars().collect();
+        let mut keep = characters.len();
+        loop {
+            let label: String = if keep == characters.len() {
+                self.label.clone()
+            } else {
+                let head: String = characters[..keep].iter().collect();
+                format!("{}\u{2026}", head.trim_end())
+            };
+            let text = inline::build(
+                fonts,
+                &Flat::plain(&label, style),
+                style,
+                theme,
+                self.font_size,
+                line,
+                Some(self.text_width),
+            );
+            if text.height() <= line * 1.5 || keep <= 1 {
+                return text;
+            }
+            keep = (keep * 3 / 4).min(keep - 1).max(1);
+        }
     }
 }
 
@@ -189,6 +214,18 @@ impl RailLayout {
         if let Some(index) = active {
             self.ensure_active_text(index, theme, fonts);
         }
+        for entry in &mut self.entries {
+            let top = entry.top - offset;
+            if top + entry.height < 0.0 {
+                continue;
+            }
+            if top > viewport {
+                break;
+            }
+            if entry.text.is_none() {
+                entry.text = Some(entry.shape(theme.muted, theme, fonts));
+            }
+        }
         let pad = PADDING * scale;
         inline::paint(
             canvas,
@@ -220,7 +257,10 @@ impl RailLayout {
             }
             let text = match &self.active_text {
                 Some((cached, text)) if is_active && *cached == index => text,
-                _ => &entry.text,
+                _ => match &entry.text {
+                    Some(text) => text,
+                    None => continue,
+                },
             };
             inline::paint(
                 canvas,
@@ -239,17 +279,7 @@ impl RailLayout {
     fn ensure_active_text(&mut self, index: usize, theme: &Theme, fonts: &mut Fonts) {
         let cached = matches!(&self.active_text, Some((cached, _)) if *cached == index);
         if !cached {
-            let entry = &self.entries[index];
-            let style = TextStyle::sans(theme.teal);
-            let text = inline::build(
-                fonts,
-                &Flat::plain(&entry.label, style),
-                style,
-                theme,
-                entry.text.font_size,
-                entry.text.font_size * 1.4,
-                Some(entry.text_width),
-            );
+            let text = self.entries[index].shape(theme.teal, theme, fonts);
             self.active_text = Some((index, text));
         }
     }
@@ -372,12 +402,48 @@ mod tests {
     }
 
     #[test]
-    fn should_cap_the_outline_when_there_are_many_headings() {
-        let source: String = (0..MAX_ENTRIES + 50)
-            .map(|n| format!("## H{n}\n\n"))
-            .collect();
-        let layout = layout(&source, 1600.0, RailMode::Auto);
-        assert_eq!(layout.rail.as_ref().unwrap().entries.len(), MAX_ENTRIES);
+    fn should_list_every_heading_and_follow_the_last_when_there_are_many() {
+        let count = 700;
+        let source: String = (0..count).map(|n| format!("## H{n}\n\ntext\n\n")).collect();
+        let doc = parse(&source, Mode::File, &Settings::default());
+        let mut fonts = Fonts::new();
+        let mut layout = lay_out_with(
+            &doc,
+            1600.0,
+            &Theme::dark(),
+            1.0,
+            &mut fonts,
+            LayoutOptions::default(),
+        );
+        assert_eq!(layout.rail.as_ref().unwrap().entries.len(), count);
+        layout.ensure_block(2 * count, &doc, &mut fonts);
+        assert_eq!(layout.rail_active(1e9), Some(count - 1));
+        let middle = layout.blocks[2 * 500].rect.y;
+        assert_eq!(layout.rail_active(middle), Some(500));
+    }
+
+    #[test]
+    fn should_keep_each_entry_one_line_when_a_heading_is_very_long() {
+        let source = format!("## {}\n\ntext\n\n## Short\n", "word ".repeat(80));
+        let theme = Theme::dark();
+        let doc = parse(&source, Mode::File, &Settings::default());
+        let mut fonts = Fonts::new();
+        let mut layout = lay_out_with(
+            &doc,
+            1600.0,
+            &theme,
+            1.0,
+            &mut fonts,
+            LayoutOptions::default(),
+        );
+        let mut pixels = vec![theme.bg.to_pixel(); 1600 * 400];
+        layout.paint(&mut Canvas::new(&mut pixels, 1600, 400), &mut fonts, 0.0);
+        let rail = layout.rail.as_ref().unwrap();
+        let text = rail.entries[0]
+            .text
+            .as_ref()
+            .expect("visible entry is shaped");
+        assert!(text.height() <= rail.entries[0].height);
     }
 
     #[test]
