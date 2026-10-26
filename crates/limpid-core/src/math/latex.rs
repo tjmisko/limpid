@@ -197,6 +197,25 @@ impl LatexBackend {
                     }
                     pages.push(work.join(format!("page-{page}.svg")));
                 }
+                // One page past the end must not exist, or pages and formulas
+                // would be misaligned.
+                let extra = expected + 1;
+                let mut probe = Command::new(&tools.svg_path);
+                probe.args([
+                    "-svg",
+                    "-f",
+                    &extra.to_string(),
+                    "-l",
+                    &extra.to_string(),
+                    &format!("{JOB}.pdf"),
+                    "page-extra.svg",
+                ]);
+                let probed = self.run(probe, work)?;
+                if probed.success && work.join("page-extra.svg").exists() {
+                    return Err(BackendError(format!(
+                        "the PDF has more than {expected} pages for {expected} formulas"
+                    )));
+                }
                 Ok(pages)
             }
             SvgTool::Dvisvgm => {
@@ -239,21 +258,22 @@ pub fn build_document(batch: &[&Formula]) -> String {
          \\begin{document}\n",
     );
     for (index, formula) in batch.iter().enumerate() {
-        // The newline before the closing delimiter keeps a trailing `%` comment
-        // in the formula from swallowing it.
-        if formula.display {
-            document.push_str(&format!(
-                "\\begin{{preview}}\\[{}\n\\]\\end{{preview}}\n",
-                formula.latex
-            ));
+        // Trailing whitespace is trimmed (display math from the parser ends in a
+        // newline, which would become a blank line, i.e. \par, inside math). The
+        // newline before the closing delimiter keeps a trailing `%` comment in the
+        // formula from swallowing it. Both kinds are set in a box so the page is
+        // exactly as wide as the formula, and the box gives the baseline.
+        let latex = formula.latex.trim_end();
+        let (open, close) = if formula.display {
+            ("$\\displaystyle ", "$")
         } else {
-            document.push_str(&format!(
-                "\\begin{{preview}}\\setbox\\limpidbox\\hbox{{\\({}\n\\)}}\
-                 \\typeout{{limpid-box {index} \\the\\ht\\limpidbox\\space\\the\\dp\\limpidbox\\space\\the\\wd\\limpidbox}}\
-                 \\unhbox\\limpidbox\\end{{preview}}\n",
-                formula.latex
-            ));
-        }
+            ("\\(", "\\)")
+        };
+        document.push_str(&format!(
+            "\\begin{{preview}}\\setbox\\limpidbox\\hbox{{{open}{latex}\n{close}}}\
+             \\typeout{{limpid-box {index} \\the\\ht\\limpidbox\\space\\the\\dp\\limpidbox\\space\\the\\wd\\limpidbox}}\
+             \\unhbox\\limpidbox\\end{{preview}}\n"
+        ));
     }
     document.push_str("\\end{document}\n");
     document
@@ -329,9 +349,21 @@ mod tests {
         assert!(document.contains("\\PreviewBorder=0pt"));
         assert!(document.contains("\\hbox{\\(x^2\n\\)}"));
         assert!(document.contains("limpid-box 0 "));
-        assert!(document.contains("\\[\\int_0^1 f\n\\]"));
-        assert!(!document.contains("limpid-box 1 "));
+        assert!(document.contains("\\hbox{$\\displaystyle \\int_0^1 f\n$}"));
+        assert!(document.contains("limpid-box 1 "));
+        assert!(!document.contains("\\["));
         assert!(document.ends_with("\\end{document}\n"));
+    }
+
+    #[test]
+    fn should_not_leave_blank_line_when_formula_ends_in_newline() {
+        let display = Formula::new("a\\\\\nb\n", true);
+        let inline = Formula::new("x\n\n", false);
+        let document = build_document(&[&display, &inline]);
+        assert!(!document.contains("\n\n$}"));
+        assert!(!document.contains("\n\n\\)}"));
+        assert!(document.contains("b\n$}"));
+        assert!(document.contains("x\n\\)}"));
     }
 
     #[test]
@@ -443,6 +475,26 @@ mod tests {
         assert!(
             (results[0].baseline - results[0].height).abs() < 0.5,
             "x^2 has no depth"
+        );
+        // Multi-line display math as pulldown-cmark yields it, and a wide one.
+        let multiline = Formula::new("\\sum_{n=1}^\\infty n\n", true);
+        let aligned = Formula::new(
+            "\\begin{aligned}a &= b\\\\\nc &= d\\end{aligned}\n",
+            true,
+        );
+        let terms: Vec<String> = (1..=30).map(|n| format!("a_{{{n}}}")).collect();
+        let wide = Formula::new(&terms.join("+"), true);
+        let rendered = backend.render(&[&multiline, &aligned, &wide], &out).unwrap();
+        assert_eq!(rendered.len(), 3);
+        assert!(
+            rendered[2].width > 343.7 * 96.0 / 72.27,
+            "a wide display formula must keep its natural width: {:?}",
+            rendered[2]
+        );
+        assert!(
+            rendered[0].width < 150.0,
+            "display math must be tightly bounded: {:?}",
+            rendered[0]
         );
         let broken = Formula::new("\\undefinedmacro", false);
         let error = backend.render(&[&broken], &out).unwrap_err();
