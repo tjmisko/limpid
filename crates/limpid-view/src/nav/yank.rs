@@ -165,6 +165,8 @@ pub enum Step {
 /// The state of a `y` command waiting for its motion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Operator {
+    /// A count typed before the `y`, as in `3yk`.
+    prefix_count: Option<u32>,
     count: Option<u32>,
     object: Option<bool>,
     pub started_ms: u64,
@@ -172,7 +174,14 @@ pub struct Operator {
 
 impl Operator {
     pub fn start(now_ms: u64) -> Self {
+        Self::start_with_count(now_ms, None)
+    }
+
+    /// Start with the count typed before the `y`; it multiplies any count
+    /// typed after it, as in Vim.
+    pub fn start_with_count(now_ms: u64, prefix_count: Option<u32>) -> Self {
         Self {
+            prefix_count,
             count: None,
             object: None,
             started_ms: now_ms,
@@ -185,7 +194,11 @@ impl Operator {
 
     /// Text for the status bar while the operator waits.
     pub fn pending_text(&self) -> String {
-        let mut text = String::from("y");
+        let mut text = String::new();
+        if let Some(prefix) = self.prefix_count {
+            text.push_str(&prefix.to_string());
+        }
+        text.push('y');
         if let Some(count) = self.count {
             text.push_str(&count.to_string());
         }
@@ -213,8 +226,11 @@ impl Operator {
                 _ => Step::Cancel,
             };
         }
-        let count = i64::from(self.count.unwrap_or(1).max(1));
+        let count = i64::from(self.prefix_count.unwrap_or(1).max(1))
+            .saturating_mul(i64::from(self.count.unwrap_or(1).max(1)))
+            .min(99_999);
         match (plain, chord.shift, chord.key.as_str()) {
+            (true, false, "y") if count > 1 => Step::Run(Target::Motion(count - 1)),
             (true, false, "y") => Step::Run(Target::Block),
             (true, false, "j" | "down") => Step::Run(Target::Motion(count)),
             (true, false, "k" | "up") => Step::Run(Target::Motion(-count)),
@@ -389,6 +405,34 @@ mod tests {
     }
 
     #[test]
+    fn should_yank_count_blocks_when_y_is_doubled_with_a_count() {
+        assert_eq!(
+            feed(&mut Operator::start_with_count(0, Some(3)), &["y"]),
+            Step::Run(Target::Motion(2))
+        );
+        assert_eq!(
+            feed(&mut Operator::start(0), &["3", "y"]),
+            Step::Run(Target::Motion(2))
+        );
+        assert_eq!(
+            feed(&mut Operator::start_with_count(0, Some(1)), &["y"]),
+            Step::Run(Target::Block)
+        );
+    }
+
+    #[test]
+    fn should_multiply_the_counts_when_one_comes_before_the_y_and_one_after() {
+        assert_eq!(
+            feed(&mut Operator::start_with_count(0, Some(2)), &["3", "j"]),
+            Step::Run(Target::Motion(6))
+        );
+        assert_eq!(
+            feed(&mut Operator::start_with_count(0, Some(3)), &["k"]),
+            Step::Run(Target::Motion(-3))
+        );
+    }
+
+    #[test]
     fn should_run_a_motion_with_the_count_when_the_operator_gets_j_or_k() {
         assert_eq!(
             feed(&mut Operator::start(0), &["j"]),
@@ -467,6 +511,7 @@ mod tests {
         assert_eq!(operator.pending_text(), "y");
         operator.feed(&Chord::parse("2").unwrap());
         assert_eq!(operator.pending_text(), "y2");
+        assert_eq!(Operator::start_with_count(0, Some(3)).pending_text(), "3y");
         let mut operator = Operator::start(0);
         operator.feed(&Chord::parse("i").unwrap());
         assert_eq!(operator.pending_text(), "yi");

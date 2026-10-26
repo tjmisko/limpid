@@ -707,7 +707,7 @@ mod tests {
     fn should_ignore_keys_when_they_are_not_bound() {
         let mut page = page("text");
         paint(&mut page, 200, 100, 1.0);
-        assert!(!page.handle_key(&Key::Character("Z".into()), false));
+        assert!(!page.handle_key(&Key::Character("q".into()), false));
         assert!(!page.handle_key(&Key::Character("d".into()), false));
         assert!(!page.handle_key(&Key::Named(NamedKey::Escape), false));
         assert!(!page.handle_key(&Key::Named(NamedKey::Shift), false));
@@ -1151,12 +1151,12 @@ mod tests {
         let seen = Rc::new(Cell::new(None));
         let mut page = chrome_page("text\n").with_closer(Box::new(Closed(seen, false)));
         paint(&mut page, 500, 300, 1.0);
-        press(&mut page, "q");
+        press(&mut page, "ctrl+q");
         let message = page.nav().status_view(page.now_ms()).message;
         assert!(message.contains(":qa"), "{message}");
         let mut loose = chrome_page("text\n");
         paint(&mut loose, 500, 300, 1.0);
-        press(&mut loose, "q");
+        press(&mut loose, "ctrl+q");
         assert_eq!(
             loose.nav().status_view(loose.now_ms()).message,
             "this page cannot close itself"

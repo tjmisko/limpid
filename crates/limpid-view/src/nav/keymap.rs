@@ -89,7 +89,7 @@ const TABLE: &[(Action, &str, &str)] = &[
     (Action::ZoomOut, "zoom_out", "-"),
     (Action::ZoomReset, "zoom_reset", "0"),
     (Action::Reload, "reload", "r"),
-    (Action::Quit, "quit", "q, ctrl+q, ctrl+w"),
+    (Action::Quit, "quit", "ctrl+q, ctrl+w"),
     (Action::Clear, "clear", "escape"),
 ];
 

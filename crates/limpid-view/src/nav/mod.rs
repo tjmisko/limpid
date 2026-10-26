@@ -422,7 +422,7 @@ impl Nav {
                 };
             }
             Action::Yank if self.visual_anchor.is_some() => self.yank_selection(now_ms, env, io),
-            Action::Yank => self.operator = Some(Operator::start(now_ms)),
+            Action::Yank => self.operator = Some(Operator::start_with_count(now_ms, count)),
             Action::YankPage => {
                 let text = yank::page_text(env.doc);
                 self.copy(&text, "page", now_ms, io);
@@ -1248,9 +1248,17 @@ mod tests {
         world.typed("q!");
         let outcome = world.press("enter");
         assert_eq!(outcome.requests, vec![Request::Close(CloseKind::Window)]);
-        // The q key behaves like :q.
+    }
+
+    #[test]
+    fn should_not_quit_when_plain_q_is_pressed_but_quit_on_ctrl_q_and_ctrl_w() {
+        let mut world = World::new("a\n", 600.0);
         let outcome = world.press("q");
-        assert!(outcome.requests.is_empty());
+        assert!(outcome.requests.is_empty(), "plain q is unbound");
+        let outcome = world.press("ctrl+q");
+        assert_eq!(outcome.requests, vec![Request::Close(CloseKind::Window)]);
+        let outcome = world.press("ctrl+w");
+        assert_eq!(outcome.requests, vec![Request::Close(CloseKind::Window)]);
     }
 
     #[test]
@@ -1415,6 +1423,26 @@ mod tests {
         assert_eq!(world.clipboard.copied[1], "three\n\nfour\n");
         world.keys(&["g", "g", "j", "y", "shift+g"]);
         assert_eq!(world.clipboard.copied[2], "two\n\nthree\n\nfour\n");
+    }
+
+    #[test]
+    fn should_yank_count_plus_one_blocks_when_a_count_comes_before_yk() {
+        let mut world = World::new("one\n\ntwo\n\nthree\n\nfour\n", 600.0);
+        world.keys(&["shift+g", "3", "y", "k"]);
+        assert_eq!(
+            world.clipboard.copied,
+            vec!["one\n\ntwo\n\nthree\n\nfour\n"]
+        );
+        assert_eq!(world.message(), "Yanked 4 blocks");
+    }
+
+    #[test]
+    fn should_yank_count_blocks_when_a_count_comes_before_yy() {
+        let mut world = World::new("one\n\ntwo\n\nthree\n\nfour\n", 600.0);
+        world.keys(&["3", "y", "y"]);
+        assert_eq!(world.clipboard.copied, vec!["one\n\ntwo\n\nthree\n"]);
+        world.keys(&["y", "3", "y"]);
+        assert_eq!(world.clipboard.copied[1], "one\n\ntwo\n\nthree\n");
     }
 
     #[test]
