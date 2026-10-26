@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -8,6 +9,10 @@ pub struct Settings {
     pub questions: Questions,
     pub reply: Reply,
     pub style: Style,
+    pub view: View,
+    pub editor: Editor,
+    pub math: Math,
+    pub mermaid: Mermaid,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -72,6 +77,156 @@ impl Default for Reply {
         Self {
             command: "wl-copy".into(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RailMode {
+    Auto,
+    On,
+    Off,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ViewTheme {
+    Auto,
+    Dark,
+    Light,
+}
+
+/// The native viewer's look and feel.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct View {
+    /// Family name, or `sans-serif` / `serif` / `monospace`.
+    pub font: String,
+    pub mono_font: String,
+    /// CSS px at scale 1.
+    pub font_size: u32,
+    pub line_height: f32,
+    /// Width of the page column, in px.
+    pub content_width: u32,
+    /// Width of the contents rail, in px.
+    pub rail_width: u32,
+    pub rail: RailMode,
+    /// Wrap long code lines instead of scrolling the block.
+    pub code_wrap: bool,
+    pub theme: ViewTheme,
+    /// Ctrl-d / Ctrl-u move this fraction of the viewport.
+    pub scroll_fraction: f32,
+    /// Optional key remaps: action name to key name (`j`, `ctrl+d`, `shift+g`).
+    /// The viewer owns the action names and rejects ones it does not know.
+    pub keys: BTreeMap<String, String>,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        Self {
+            font: "sans-serif".into(),
+            mono_font: "monospace".into(),
+            font_size: 17,
+            line_height: 1.65,
+            content_width: 860,
+            rail_width: 220,
+            rail: RailMode::Auto,
+            code_wrap: false,
+            theme: ViewTheme::Auto,
+            scroll_fraction: 0.5,
+            keys: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EditorInit {
+    /// Start nvim with the user's own configuration.
+    User,
+    /// Start nvim with limpid's minimal init only.
+    Clean,
+}
+
+/// The embedded editor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Editor {
+    /// Binary name or path.
+    pub command: String,
+    pub init: EditorInit,
+    /// Kill the idle editor after this long with no box open.
+    pub idle_seconds: u64,
+}
+
+impl Default for Editor {
+    fn default() -> Self {
+        Self {
+            command: "nvim".into(),
+            init: EditorInit::User,
+            idle_seconds: 300,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MathBackend {
+    Auto,
+    Latex,
+    Typst,
+    Mathjax,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LatexEngine {
+    Auto,
+    Pdflatex,
+    Latex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SvgConverter {
+    Auto,
+    Dvisvgm,
+    Pdftocairo,
+}
+
+/// How the native viewer turns math into pictures.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Math {
+    pub backend: MathBackend,
+    pub latex: LatexEngine,
+    pub svg: SvgConverter,
+    /// Typst binary name or path.
+    pub typst: String,
+}
+
+impl Default for Math {
+    fn default() -> Self {
+        Self {
+            backend: MathBackend::Auto,
+            latex: LatexEngine::Auto,
+            svg: SvgConverter::Auto,
+            typst: "typst".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Mermaid {
+    /// `false`: diagrams always show their source.
+    pub enabled: bool,
+}
+
+impl Default for Mermaid {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
@@ -180,6 +335,111 @@ mod tests {
                     || error.contains("pie"),
                 "{error}"
             );
+        }
+    }
+
+    #[test]
+    fn should_use_native_viewer_defaults_when_sections_are_absent() {
+        let settings = Settings::parse("").unwrap();
+        assert_eq!(settings.view.font, "sans-serif");
+        assert_eq!(settings.view.mono_font, "monospace");
+        assert_eq!(settings.view.font_size, 17);
+        assert_eq!(settings.view.line_height, 1.65);
+        assert_eq!(settings.view.content_width, 860);
+        assert_eq!(settings.view.rail_width, 220);
+        assert_eq!(settings.view.rail, RailMode::Auto);
+        assert!(!settings.view.code_wrap);
+        assert_eq!(settings.view.theme, ViewTheme::Auto);
+        assert_eq!(settings.view.scroll_fraction, 0.5);
+        assert!(settings.view.keys.is_empty());
+        assert_eq!(settings.editor.command, "nvim");
+        assert_eq!(settings.editor.init, EditorInit::User);
+        assert_eq!(settings.editor.idle_seconds, 300);
+        assert_eq!(settings.math.backend, MathBackend::Auto);
+        assert_eq!(settings.math.latex, LatexEngine::Auto);
+        assert_eq!(settings.math.svg, SvgConverter::Auto);
+        assert_eq!(settings.math.typst, "typst");
+        assert!(settings.mermaid.enabled);
+    }
+
+    #[test]
+    fn should_parse_every_native_viewer_key_when_all_are_set() {
+        let settings = Settings::parse(
+            "[view]\nfont = 'Inter'\nmono_font = 'Fira Code'\nfont_size = 19\nline_height = 1.4\n\
+             content_width = 700\nrail_width = 180\nrail = 'off'\ncode_wrap = true\ntheme = 'light'\n\
+             scroll_fraction = 0.25\n[view.keys]\nnext_block = 'n'\nhalf_down = 'ctrl+d'\n\
+             [editor]\ncommand = '/opt/nvim'\ninit = 'clean'\nidle_seconds = 10\n\
+             [math]\nbackend = 'typst'\nlatex = 'pdflatex'\nsvg = 'dvisvgm'\ntypst = '/bin/typst'\n\
+             [mermaid]\nenabled = false\n",
+        )
+        .unwrap();
+        assert_eq!(settings.view.font, "Inter");
+        assert_eq!(settings.view.mono_font, "Fira Code");
+        assert_eq!(settings.view.font_size, 19);
+        assert_eq!(settings.view.line_height, 1.4);
+        assert_eq!(settings.view.content_width, 700);
+        assert_eq!(settings.view.rail_width, 180);
+        assert_eq!(settings.view.rail, RailMode::Off);
+        assert!(settings.view.code_wrap);
+        assert_eq!(settings.view.theme, ViewTheme::Light);
+        assert_eq!(settings.view.scroll_fraction, 0.25);
+        assert_eq!(settings.view.keys["next_block"], "n");
+        assert_eq!(settings.view.keys["half_down"], "ctrl+d");
+        assert_eq!(settings.editor.command, "/opt/nvim");
+        assert_eq!(settings.editor.init, EditorInit::Clean);
+        assert_eq!(settings.editor.idle_seconds, 10);
+        assert_eq!(settings.math.backend, MathBackend::Typst);
+        assert_eq!(settings.math.latex, LatexEngine::Pdflatex);
+        assert_eq!(settings.math.svg, SvgConverter::Dvisvgm);
+        assert_eq!(settings.math.typst, "/bin/typst");
+        assert!(!settings.mermaid.enabled);
+    }
+
+    #[test]
+    fn should_keep_other_defaults_when_one_native_key_is_set() {
+        let settings = Settings::parse("[view]\nrail = 'on'\n").unwrap();
+        assert_eq!(settings.view.rail, RailMode::On);
+        assert_eq!(settings.view.content_width, 860);
+        assert_eq!(settings.editor.command, "nvim");
+    }
+
+    #[test]
+    fn should_name_the_key_when_a_native_section_has_an_unknown_key() {
+        for (source, name) in [
+            ("[view]\nfontt = 'x'", "fontt"),
+            ("[editor]\nidle = 1", "idle"),
+            ("[math]\nengine = 'x'", "engine"),
+            ("[mermaid]\non = true", "on"),
+        ] {
+            let error = Settings::parse(source).unwrap_err().to_string();
+            assert!(error.contains(name), "{error}");
+        }
+    }
+
+    #[test]
+    fn should_reject_unknown_enum_values_when_parsing_native_keys() {
+        for source in [
+            "[view]\nrail = 'sideways'",
+            "[view]\ntheme = 'sepia'",
+            "[editor]\ninit = 'wild'",
+            "[math]\nbackend = 'katex'",
+            "[math]\nlatex = 'xelatex'",
+            "[math]\nsvg = 'inkscape'",
+        ] {
+            assert!(Settings::parse(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn should_reject_wrong_value_types_when_parsing_native_keys() {
+        for source in [
+            "[view]\nfont_size = 'big'",
+            "[view]\nfont_size = -3",
+            "[view]\ncode_wrap = 'yes'",
+            "[view.keys]\nnext_block = 5",
+            "[mermaid]\nenabled = 'true'",
+        ] {
+            assert!(Settings::parse(source).is_err(), "{source}");
         }
     }
 }
