@@ -10,6 +10,7 @@ use limpid_view::{
     serve::{self, Request},
     snapshot::{render, write_png},
     text::Fonts,
+    watch::WatchedPage,
     window::{App, Page, PageFactory, UserEvent, WindowConfig},
 };
 use std::{
@@ -128,7 +129,8 @@ fn run_windows(args: Args, settings: Settings, fonts: SharedFonts) -> Result<(),
                 live_pages.clone(),
                 factory_proxy.clone(),
             )));
-        Ok(Box::new(page) as Box<dyn Page>)
+        let watched = WatchedPage::new(page, request.path.clone(), &settings);
+        Ok(Box::new(watched) as Box<dyn Page>)
     });
 
     let mut socket = None;
@@ -183,7 +185,7 @@ fn socket_path(args: &Args) -> Result<PathBuf, String> {
 }
 
 fn default_socket(runtime: &Path, scheme: Scheme) -> PathBuf {
-    runtime.join(format!("limpid-view-{}.sock", scheme.as_str()))
+    limpid_core::transport::view_socket_path(runtime, scheme)
 }
 
 #[cfg(test)]

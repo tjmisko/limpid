@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod editor;
 pub mod feedback;
+pub mod helpers;
 pub mod layout;
 pub mod nav;
 pub mod page;
@@ -9,4 +10,5 @@ pub mod serve;
 pub mod snapshot;
 pub mod text;
 pub mod theme;
+pub mod watch;
 pub mod window;

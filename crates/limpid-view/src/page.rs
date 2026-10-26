@@ -509,6 +509,14 @@ impl DocPage {
         self.laid_for = None;
     }
 
+    /// Math or Mermaid output for `hashes` reached the cache: draw it from the
+    /// first block that shows one. Returns whether the page needs a repaint.
+    pub fn refresh_pending(&mut self, hashes: &[String]) -> bool {
+        self.layout
+            .as_mut()
+            .is_some_and(|layout| layout.refresh_pending(hashes))
+    }
+
     /// Take in what the feedback layer did since the last look: messages,
     /// a file to read again, blocks to rebuild, a place for the cursor.
     /// Returns whether anything changed on screen.
@@ -551,7 +559,7 @@ impl DocPage {
     }
 
     /// Read the file again after a save, without announcing it.
-    fn reload_quietly(&mut self) {
+    pub fn reload_quietly(&mut self) {
         let Some(path) = self.path.clone() else {
             return;
         };
@@ -1370,6 +1378,15 @@ mod tests {
         assert_eq!(focused(&page), "line 30");
         assert_eq!(page.nav().status_view(page.now_ms()).message, "Reloaded");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_report_no_change_when_refreshing_hashes_no_block_shows() {
+        let mut page = chrome_page("plain text\n");
+        assert!(!page.refresh_pending(&["abcd".to_owned()]), "nothing laid out yet");
+        paint(&mut page, 500, 300, 1.0);
+        assert!(!page.refresh_pending(&["abcd".to_owned()]));
+        assert!(!page.refresh_pending(&[]));
     }
 
     #[test]
