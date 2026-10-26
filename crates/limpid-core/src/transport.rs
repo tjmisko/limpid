@@ -44,6 +44,11 @@ pub fn socket_path(runtime: &Path, scheme: Scheme) -> PathBuf {
     runtime.join(format!("limpid-{}.sock", scheme.as_str()))
 }
 
+/// The native viewer's socket; the WebKit host keeps [`socket_path`].
+pub fn view_socket_path(runtime: &Path, scheme: Scheme) -> PathBuf {
+    runtime.join(format!("limpid-view-{}.sock", scheme.as_str()))
+}
+
 pub fn send(socket: &Path, handoff: &Handoff) -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = UnixStream::connect(socket)?;
     serde_json::to_writer(&mut stream, handoff)?;
@@ -154,6 +159,18 @@ mod tests {
         assert_eq!(
             socket_path(Path::new("/run/user/1000"), Scheme::Light),
             PathBuf::from("/run/user/1000/limpid-light.sock")
+        );
+    }
+
+    #[test]
+    fn should_name_view_and_host_sockets_apart_when_both_use_one_runtime_directory() {
+        let runtime = Path::new("/run/user/1000");
+        for scheme in [Scheme::Dark, Scheme::Light] {
+            assert_ne!(view_socket_path(runtime, scheme), socket_path(runtime, scheme));
+        }
+        assert_eq!(
+            view_socket_path(runtime, Scheme::Dark),
+            PathBuf::from("/run/user/1000/limpid-view-dark.sock")
         );
     }
 

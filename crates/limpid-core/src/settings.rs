@@ -119,6 +119,9 @@ pub struct View {
     /// Optional key remaps: action name to key name (`j`, `ctrl+d`, `shift+g`).
     /// The viewer owns the action names and rejects ones it does not know.
     pub keys: BTreeMap<String, String>,
+    /// How often an open page checks its file for changes, in milliseconds.
+    /// `0` turns watching off.
+    pub watch_interval_ms: u64,
 }
 
 impl Default for View {
@@ -135,6 +138,7 @@ impl Default for View {
             theme: ViewTheme::Auto,
             scroll_fraction: 0.5,
             keys: BTreeMap::new(),
+            watch_interval_ms: 300,
         }
     }
 }
@@ -222,17 +226,41 @@ impl Default for Math {
 pub struct Mermaid {
     /// `false`: diagrams always show their source.
     pub enabled: bool,
+    /// How long the Mermaid helper may take for one page, in seconds.
+    pub timeout_seconds: f64,
+    /// Whether the helper may show a 1x1 window when a diagram needs layout.
+    pub helper_window: HelperWindow,
 }
 
 impl Default for Mermaid {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            timeout_seconds: 20.0,
+            helper_window: HelperWindow::Auto,
+        }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HelperWindow {
+    /// Render without a window; retry in a 1x1 window when layout did not run.
+    Auto,
+    Never,
+    Always,
 }
 
 impl Settings {
     pub fn parse(source: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str(source)
+        let settings: Self = toml::from_str(source)?;
+        let seconds = settings.mermaid.timeout_seconds;
+        if !seconds.is_finite() || seconds <= 0.0 {
+            return Err(serde::de::Error::custom(
+                "mermaid.timeout_seconds must be greater than zero",
+            ));
+        }
+        Ok(settings)
     }
 
     /// The directory holding `config.toml`, or `None` when no config root is set.
@@ -360,6 +388,9 @@ mod tests {
         assert_eq!(settings.math.svg, SvgConverter::Auto);
         assert_eq!(settings.math.typst, "typst");
         assert!(settings.mermaid.enabled);
+        assert_eq!(settings.mermaid.timeout_seconds, 20.0);
+        assert_eq!(settings.mermaid.helper_window, HelperWindow::Auto);
+        assert_eq!(settings.view.watch_interval_ms, 300);
     }
 
     #[test]
@@ -440,6 +471,25 @@ mod tests {
             "[mermaid]\nenabled = 'true'",
         ] {
             assert!(Settings::parse(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn should_accept_the_mermaid_helper_keys_the_host_reads_when_they_are_set() {
+        let settings = Settings::parse(
+            "[mermaid]\ntimeout_seconds = 7\nhelper_window = 'never'\n[view]\nwatch_interval_ms = 0\n",
+        )
+        .unwrap();
+        assert_eq!(settings.mermaid.timeout_seconds, 7.0);
+        assert_eq!(settings.mermaid.helper_window, HelperWindow::Never);
+        assert_eq!(settings.view.watch_interval_ms, 0);
+    }
+
+    #[test]
+    fn should_reject_a_mermaid_timeout_that_cannot_elapse_when_parsing() {
+        for value in ["0", "-1", "nan", "inf", "'soon'"] {
+            let source = format!("[mermaid]\ntimeout_seconds = {value}");
+            assert!(Settings::parse(&source).is_err(), "{source}");
         }
     }
 }
