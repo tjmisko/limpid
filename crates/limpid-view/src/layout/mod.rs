@@ -6,11 +6,15 @@
 //! adds the column offset and subtracts the scroll.
 
 pub mod block;
+pub mod boxes;
 pub mod code;
+pub mod image;
 pub mod inline;
 pub mod list;
 pub mod quote;
 pub mod rail;
+pub mod svg;
+pub mod table;
 
 use crate::{
     paint::{Canvas, Rect},
@@ -18,6 +22,7 @@ use crate::{
     theme::Theme,
 };
 use block::{Cx, Flow};
+use boxes::BoxEnv;
 use inline::RichText;
 use limpid_core::{doc::Doc, settings::RailMode};
 use rail::RailLayout;
@@ -59,6 +64,10 @@ pub struct PendingBox {
     pub text: RichText,
     /// Padding inside the box, device pixels.
     pub padding: f32,
+    /// The math or Mermaid hash the box waits for.
+    pub hash: Option<String>,
+    /// Background instead of `surface` (math source uses `code_bg`).
+    pub fill: Option<crate::theme::Color>,
 }
 
 /// How a list item is marked.
@@ -111,6 +120,9 @@ pub enum Content {
         children: Vec<LaidBlock>,
     },
     Pending(PendingBox),
+    Table(table::TableBox),
+    /// A pixmap: an image, SVG, typeset display math or a Mermaid diagram.
+    Media(boxes::MediaBox),
 }
 
 pub struct LaidBlock {
@@ -133,6 +145,22 @@ impl LaidBlock {
             | Content::Quote { children, .. } => children,
             _ => &[],
         }
+    }
+
+    /// Scroll a wide table sideways. Returns whether it moved.
+    pub fn scroll_table_x(&mut self, delta: f32) -> bool {
+        let rect_width = self.rect.w;
+        let Content::Table(table) = &mut self.content else {
+            return false;
+        };
+        if !table.overflow {
+            return false;
+        }
+        let max = table.max_scroll(rect_width);
+        let target = (table.scroll_x + delta).clamp(0.0, max);
+        let moved = (target - table.scroll_x).abs() > f32::EPSILON;
+        table.scroll_x = target;
+        moved
     }
 
     /// Scroll a wide code block sideways. Returns whether it moved.
@@ -172,11 +200,14 @@ struct State {
     theme: Rc<Theme>,
     scale: f32,
     options: LayoutOptions,
+    env: Rc<BoxEnv>,
     viewport_css_width: f32,
     /// Next `Doc::blocks` index to lay out.
     next: usize,
     /// Bottom margin of the last laid block, CSS px.
     prev_margin: f32,
+    /// Bottom margin of every laid top-level block, CSS px.
+    margins: Vec<f32>,
     /// Bottom edge of the last laid block.
     bottom: f32,
     complete: bool,
@@ -213,6 +244,20 @@ pub fn lay_out_with(
     fonts: &mut Fonts,
     options: LayoutOptions,
 ) -> Layout {
+    lay_out_in(doc, width, theme, scale, fonts, options, boxes::default_env())
+}
+
+/// [`lay_out_with`] with an explicit environment for images, SVG, math and
+/// Mermaid instead of the process default.
+pub fn lay_out_in(
+    doc: &Doc,
+    width: f32,
+    theme: &Theme,
+    scale: f32,
+    fonts: &mut Fonts,
+    options: LayoutOptions,
+    env: BoxEnv,
+) -> Layout {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
     } else {
@@ -238,9 +283,11 @@ pub fn lay_out_with(
             theme,
             scale,
             options,
+            env: Rc::new(env),
             viewport_css_width: width / scale,
             next: 0,
             prev_margin: 0.0,
+            margins: Vec::new(),
             bottom: top,
             complete: false,
         },
@@ -298,6 +345,7 @@ impl Layout {
         let theme = self.state.theme.clone();
         let scale = self.state.scale;
         let options = self.state.options;
+        let env = self.state.env.clone();
         let flow = Flow {
             x: 0.0,
             width: self.column_width,
@@ -317,6 +365,7 @@ impl Layout {
             theme: &theme,
             scale,
             options: &options,
+            boxes: &env,
             source: &doc.source,
             fonts,
             viewport_css_width: self.state.viewport_css_width,
@@ -330,6 +379,7 @@ impl Layout {
         );
         self.state.bottom = laid.rect.bottom();
         self.state.prev_margin = margin_bottom;
+        self.state.margins.push(margin_bottom);
         self.state.next += 1;
         self.blocks.push(laid);
         self.height = self.state.bottom;
@@ -366,6 +416,45 @@ impl Layout {
             .iter_mut()
             .take_while(|block| block.rect.y <= bottom)
             .find(|block| matches!(block.content, Content::Code { overflow: true, .. }))
+    }
+
+    /// The first top-level table that overlaps `top..bottom` and scrolls.
+    pub fn table_block_in(&mut self, top: f32, bottom: f32) -> Option<&mut LaidBlock> {
+        let start = self
+            .blocks
+            .partition_point(|block| block.rect.bottom() < top);
+        self.blocks[start..]
+            .iter_mut()
+            .take_while(|block| block.rect.y <= bottom)
+            .find(|block| matches!(block.content, Content::Table(ref table) if table.overflow))
+    }
+
+    /// Math or Mermaid output for `hashes` has reached the cache: forget the
+    /// layout from the first block that shows one of them, so that
+    /// [`Layout::ensure_to`] draws it again. Returns whether anything changed;
+    /// the caller then calls `ensure_to` and repaints.
+    pub fn refresh_pending(&mut self, hashes: &[String]) -> bool {
+        if hashes.is_empty() {
+            return false;
+        }
+        let Some(first) = self
+            .blocks
+            .iter()
+            .position(|block| boxes::mentions(block, hashes))
+        else {
+            return false;
+        };
+        self.blocks.truncate(first);
+        self.state.margins.truncate(first);
+        self.state.next = first;
+        self.state.bottom = match first.checked_sub(1) {
+            Some(before) => self.blocks[before].rect.bottom(),
+            None => PAGE_TOP_PAD * self.state.scale,
+        };
+        self.state.prev_margin = self.state.margins.last().copied().unwrap_or(0.0);
+        self.state.complete = false;
+        self.height = self.state.bottom;
+        true
     }
 
     /// Index of the rail entry that follows document y.
@@ -500,6 +589,8 @@ pub fn paint_block(paint: &PaintCx, canvas: &mut Canvas, fonts: &mut Fonts, bloc
         Content::Item { .. } => list::paint_item(paint, canvas, fonts, block),
         Content::Quote { .. } => quote::paint(paint, canvas, fonts, block),
         Content::Pending(pending) => block::paint_pending(paint, canvas, fonts, area, pending),
+        Content::Table(_) => table::paint(paint, canvas, fonts, block),
+        Content::Media(media) => boxes::paint_media(paint, canvas, area, media),
     }
 }
 

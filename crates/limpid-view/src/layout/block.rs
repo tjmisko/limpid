@@ -1,9 +1,11 @@
 //! Single blocks and the vertical stacking shared by every container.
 
 use super::{
-    Content, LaidBlock, LayoutOptions, PaintCx, PendingBox, PendingKind, code,
+    Content, LaidBlock, LayoutOptions, PaintCx, PendingBox, PendingKind,
+    boxes::{self, BoxEnv},
+    code, image,
     inline::{self, Flat, RichText},
-    list, quote,
+    list, quote, table,
 };
 use crate::{
     paint::{Canvas, Rect},
@@ -17,6 +19,8 @@ pub struct Cx<'a> {
     pub theme: &'a Theme,
     pub scale: f32,
     pub options: &'a LayoutOptions,
+    /// What the image, SVG, math and Mermaid boxes read from outside.
+    pub boxes: &'a BoxEnv,
     /// The document Markdown, for source fallbacks.
     pub source: &'a str,
     pub fonts: &'a mut Fonts,
@@ -198,44 +202,24 @@ pub fn lay_block(cx: &mut Cx, block: &Block, index: usize, y: f32, flow: Flow) -
             make(Content::Rule, height)
         }
         BlockKind::Html(html) => {
-            let style = TextStyle::mono(cx.theme.muted);
-            let flat = Flat::plain(html.trim_end(), style);
-            let text = inline::build(
-                cx.fonts,
-                &flat,
-                style,
-                cx.theme,
-                cx.font_px(13.0),
-                cx.font_px(13.0) * 1.6,
-                Some(flow.width),
-            );
-            let height = text.height();
-            make(Content::Text(text), height)
+            let (content, height) = html_source(cx, html, flow);
+            make(content, height)
         }
         BlockKind::FootnoteDef { label, blocks } => {
             let (content, height) = list::lay_footnote(cx, label, blocks, y, flow);
             make(content, height)
         }
-        BlockKind::Math { latex, .. } => {
-            pending(cx, block, flow, y, index, stop, PendingKind::Math, latex)
+        BlockKind::Math { latex, hash } => {
+            boxes::lay_math(cx, block, flow, y, index, stop, latex, hash)
         }
-        BlockKind::Mermaid { source, .. } => pending(
-            cx,
-            block,
-            flow,
-            y,
-            index,
-            stop,
-            PendingKind::Mermaid,
-            source,
-        ),
-        BlockKind::Table { .. } => {
-            let slice = source_slice(cx.source, &block.src);
-            pending(cx, block, flow, y, index, stop, PendingKind::Table, slice)
+        BlockKind::Mermaid { source, hash } => {
+            boxes::lay_mermaid(cx, block, flow, y, index, stop, source, hash)
         }
-        BlockKind::Image { .. } => {
-            let slice = source_slice(cx.source, &block.src);
-            pending(cx, block, flow, y, index, stop, PendingKind::Image, slice)
+        BlockKind::Table { align, head, rows } => {
+            table::lay(cx, block, flow, y, index, stop, align, head, rows)
+        }
+        BlockKind::Image { src, alt, .. } => {
+            image::lay(cx, block, flow, y, index, stop, src, alt)
         }
         BlockKind::Field { .. } => {
             let slice = source_slice(cx.source, &block.src);
@@ -252,6 +236,23 @@ pub fn lay_block(cx: &mut Cx, block: &Block, index: usize, y: f32, flow: Flow) -
             text,
         ),
     }
+}
+
+/// Raw HTML shown as muted source.
+fn html_source(cx: &mut Cx, html: &str, flow: Flow) -> (Content, f32) {
+    let style = TextStyle::mono(cx.theme.muted);
+    let flat = Flat::plain(html.trim_end(), style);
+    let text = inline::build(
+        cx.fonts,
+        &flat,
+        style,
+        cx.theme,
+        cx.font_px(13.0),
+        cx.font_px(13.0) * 1.6,
+        Some(flow.width),
+    );
+    let height = text.height();
+    (Content::Text(text), height)
 }
 
 /// The Markdown under `range`, or nothing when the range is not valid text.
@@ -324,6 +325,24 @@ fn pending(
     kind: PendingKind,
     source: &str,
 ) -> LaidBlock {
+    pending_with(cx, block, flow, y, index, stop, kind, source, None, None)
+}
+
+/// A box of source text. `hash` names the math or Mermaid entry it waits for;
+/// `fill` replaces the `surface` background.
+#[allow(clippy::too_many_arguments)]
+pub fn pending_with(
+    cx: &mut Cx,
+    block: &Block,
+    flow: Flow,
+    y: f32,
+    index: usize,
+    stop: bool,
+    kind: PendingKind,
+    source: &str,
+    hash: Option<String>,
+    fill: Option<Color>,
+) -> LaidBlock {
     let padding = cx.px(12.0);
     let border = cx.px(1.0).round().max(1.0);
     let inner = (flow.width - 2.0 * (padding + border)).max(1.0);
@@ -349,6 +368,8 @@ fn pending(
             kind,
             text,
             padding,
+            hash,
+            fill,
         }),
         depth: flow.depth,
     }
@@ -363,7 +384,7 @@ pub fn paint_pending(
 ) {
     let theme = paint.theme;
     let border = paint.scale.round().max(1.0);
-    canvas.fill_rect(area, theme.surface);
+    canvas.fill_rect(area, pending.fill.unwrap_or(theme.surface));
     canvas.stroke_rect(area, border, theme.rule);
     inline::paint(
         canvas,
@@ -434,20 +455,18 @@ mod tests {
     }
 
     #[test]
-    fn should_show_source_in_a_pending_box_when_the_block_is_a_table() {
+    fn should_lay_a_table_out_as_a_table_box_when_the_block_is_a_table() {
         let layout = layout("| a | b |\n|---|---|\n| 1 | 2 |\n");
-        let Content::Pending(pending) = &layout.blocks[0].content else {
-            panic!("table is not pending");
-        };
-        assert_eq!(pending.kind, PendingKind::Table);
+        assert!(matches!(layout.blocks[0].content, Content::Table(_)));
         assert!(layout.blocks[0].stop);
         assert!(layout.blocks[0].rect.h > 40.0);
     }
 
     #[test]
-    fn should_make_every_deferred_kind_a_pending_box_when_laying_out_mixed_content() {
-        let layout =
-            layout("$$\nx^2\n$$\n\n```mermaid\ngraph TD; A-->B\n```\n\n![alt](missing.png)\n");
+    fn should_show_source_boxes_when_math_mermaid_and_image_are_not_available() {
+        let layout = layout(
+            "$$\n\\unseenMacroQ7 + x\n$$\n\n```mermaid\ngraph TD; ZZ9QQ-->B7\n```\n\n![alt](missing-unseen-q7.png)\n",
+        );
         let kinds: Vec<_> = layout
             .blocks
             .iter()

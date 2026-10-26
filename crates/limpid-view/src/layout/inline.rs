@@ -463,11 +463,14 @@ pub fn paint(
 ) {
     let size = text.font_size;
     let line = scale.max(1.0).round();
+    // Typeset formulas replace the box drawn for their reserved space.
+    let typeset = crate::layout::boxes::typeset_math(text);
     for deco in &text.decorations {
         if !matches!(
             deco.kind,
             DecorationKind::CodeSpan | DecorationKind::Placeholder
-        ) {
+        ) || crate::layout::boxes::skip_placeholder_box(&typeset, deco)
+        {
             continue;
         }
         let rect = Rect::new(
@@ -480,6 +483,7 @@ pub fn paint(
         canvas.stroke_rect(rect, line, theme.rule);
     }
     canvas.draw_text(fonts, &text.block, x, y, theme.ink);
+    crate::layout::boxes::paint_typeset_math(canvas, text, x, y, &typeset);
     for deco in &text.decorations {
         if deco.kind != DecorationKind::Strike {
             continue;
