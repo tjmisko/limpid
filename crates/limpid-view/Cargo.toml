@@ -1,0 +1,23 @@
+[package]
+name = "limpid-view"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "limpid_view"
+path = "src/lib.rs"
+
+[[bin]]
+name = "limpid-view"
+path = "src/main.rs"
+
+[dependencies]
+cosmic-text = "0.12"
+libc = "0.2"
+limpid-core = { path = "../limpid-core" }
+png = "0.17"
+serde_json.workspace = true
+softbuffer = "0.4"
+tiny-skia = "0.11"
+winit = "0.30"

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/limpid-core", "crates/limpid", "crates/limpid-host"]
+members = ["crates/limpid-core", "crates/limpid", "crates/limpid-host", "crates/limpid-view"]
 resolver = "2"
 
 [workspace.package]
