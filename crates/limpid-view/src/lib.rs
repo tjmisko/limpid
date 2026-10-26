@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod editor;
+pub mod feedback;
 pub mod layout;
 pub mod nav;
 pub mod page;
