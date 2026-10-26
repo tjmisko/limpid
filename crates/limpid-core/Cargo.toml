@@ -9,6 +9,7 @@ ammonia = "4.1.2"
 blake3 = "1.8.7"
 libc = "0.2"
 libloading = "0.8.9"
+mitex = "0.2.4"
 pulldown-cmark.workspace = true
 pulldown-latex = "0.8.0"
 serde.workspace = true

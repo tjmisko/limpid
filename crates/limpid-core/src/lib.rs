@@ -5,6 +5,7 @@ pub mod doc;
 pub mod grammars;
 pub mod highlight;
 pub mod html;
+pub mod math;
 pub mod pi;
 pub mod render;
 pub mod replies;
