@@ -11,7 +11,7 @@ pkg-config --exists gtk4 webkitgtk-6.0 || {
   exit 1
 }
 
-for crate in limpid-core limpid-host limpid; do
+for crate in limpid-core limpid-host limpid-view limpid; do
   cargo install --path "$root/crates/$crate" --root "$prefix" --locked --force
 done
 
