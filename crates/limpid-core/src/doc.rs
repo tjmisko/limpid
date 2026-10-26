@@ -243,6 +243,8 @@ pub fn parse(markdown: &str, mode: Mode, settings: &Settings) -> Doc {
         question_number: 0,
         questions_level: None,
         list_depth: 0,
+        block_depth: 0,
+        inline_depth: 0,
         highlighter: None,
         toc: Vec::new(),
         title: None,
@@ -285,6 +287,10 @@ fn collect_fields(blocks: &[Block]) -> Vec<FieldRef> {
     out
 }
 
+/// Deepest container nesting the builder recurses into. Deeper containers are
+/// flattened to plain text so hostile input cannot overflow the stack.
+pub const MAX_NESTING_DEPTH: usize = 48;
+
 type Item<'a> = (Event<'a>, Range<usize>);
 
 struct Builder<'a> {
@@ -296,6 +302,8 @@ struct Builder<'a> {
     question_number: usize,
     questions_level: Option<u8>,
     list_depth: usize,
+    block_depth: usize,
+    inline_depth: usize,
     highlighter: Option<crate::highlight::PageHighlighter>,
     toc: Vec<TocEntry>,
     title: Option<String>,
@@ -325,6 +333,58 @@ impl<'a> Builder<'a> {
 
     /// Blocks up to and including the end of the enclosing container.
     fn blocks(&mut self) -> Vec<Block> {
+        if self.block_depth >= MAX_NESTING_DEPTH {
+            return self.flatten_container();
+        }
+        self.block_depth += 1;
+        let blocks = self.blocks_unbounded();
+        self.block_depth -= 1;
+        blocks
+    }
+
+    /// Consume events through the end of the container just opened and keep
+    /// only their text, without recursing.
+    fn flatten_container_text(&mut self) -> (String, usize) {
+        let mut text = String::new();
+        let mut level = 1usize;
+        let mut end = self.events.get(self.position).map_or(0, |(_, r)| r.start);
+        while let Some((event, range)) = self.peek().cloned() {
+            self.position += 1;
+            end = range.end;
+            match event {
+                Event::Start(_) => level += 1,
+                Event::End(_) => {
+                    level -= 1;
+                    if level == 0 {
+                        break;
+                    }
+                    if !text.is_empty() && !text.ends_with(' ') {
+                        text.push(' ');
+                    }
+                }
+                Event::Text(part) | Event::Code(part) => text.push_str(&part),
+                Event::InlineMath(part) | Event::DisplayMath(part) => text.push_str(&part),
+                Event::SoftBreak | Event::HardBreak => text.push(' '),
+                _ => {}
+            }
+        }
+        (text.trim().to_owned(), end)
+    }
+
+    fn flatten_container(&mut self) -> Vec<Block> {
+        let start = self.events.get(self.position).map_or(0, |(_, r)| r.start);
+        let (text, end) = self.flatten_container_text();
+        if text.is_empty() {
+            return Vec::new();
+        }
+        vec![Block {
+            kind: BlockKind::Paragraph(vec![Inline::Text(text)]),
+            src: start..end.max(start),
+            id: None,
+        }]
+    }
+
+    fn blocks_unbounded(&mut self) -> Vec<Block> {
         let mut blocks: Vec<Block> = Vec::new();
         while let Some((event, range)) = self.peek().cloned() {
             if matches!(event, Event::End(_)) {
@@ -827,7 +887,17 @@ impl<'a> Builder<'a> {
     /// The inlines of the container started at the current position.
     fn inline_container(&mut self) -> Vec<Inline> {
         self.position += 1;
+        if self.inline_depth >= MAX_NESTING_DEPTH {
+            let (text, _) = self.flatten_container_text();
+            return if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![Inline::Text(text)]
+            };
+        }
+        self.inline_depth += 1;
         let inner = self.inlines();
+        self.inline_depth -= 1;
         self.skip_end();
         inner
     }
@@ -1425,6 +1495,61 @@ mod tests {
         for block in &doc.blocks {
             assert!(block.src.end <= source.len());
         }
+    }
+
+    fn parse_on_small_stack(markdown: String) -> Doc {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || {
+                let doc = file(&markdown);
+                // Dropping and walking the result must also be safe.
+                let _ = doc.fields.len();
+                doc
+            })
+            .unwrap()
+            .join()
+            .expect("parse must not overflow the stack")
+    }
+
+    #[test]
+    fn should_not_overflow_when_blockquotes_are_nested_deeply() {
+        let doc = parse_on_small_stack("> ".repeat(20000) + "deep text");
+        assert!(!doc.blocks.is_empty());
+    }
+
+    #[test]
+    fn should_not_overflow_when_lists_are_nested_deeply() {
+        let mut source = String::new();
+        for level in 0..3000 {
+            source.push_str(&"  ".repeat(level));
+            source.push_str("- item\n");
+        }
+        let doc = parse_on_small_stack(source);
+        assert!(!doc.blocks.is_empty());
+    }
+
+    #[test]
+    fn should_not_overflow_when_emphasis_is_nested_deeply() {
+        let source = format!("{}word{}", "*".repeat(20000), "*".repeat(20000));
+        let doc = parse_on_small_stack(source);
+        assert!(!doc.blocks.is_empty());
+    }
+
+    #[test]
+    fn should_keep_text_when_nesting_exceeds_the_cap() {
+        let doc = parse_on_small_stack("> ".repeat(200) + "kept words");
+        let mut text = String::new();
+        fn gather(blocks: &[Block], out: &mut String) {
+            for block in blocks {
+                match &block.kind {
+                    BlockKind::Quote { blocks, .. } => gather(blocks, out),
+                    BlockKind::Paragraph(inlines) => out.push_str(&plain_text(inlines)),
+                    _ => {}
+                }
+            }
+        }
+        gather(&doc.blocks, &mut text);
+        assert!(text.contains("kept words"), "got {text:?}");
     }
 
     #[test]
