@@ -4,18 +4,19 @@ use limpid_core::{
 };
 use limpid_view::{
     cli::{self, Args, Snapshot},
-    page::{DocPage, SharedFonts},
+    nav::CloseKind,
+    page::{Closer, DocPage, SharedFonts},
     serve::{self, Request},
     snapshot::{render, write_png},
     text::Fonts,
     window::{App, Page, PageFactory, UserEvent, WindowConfig},
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::{Path, PathBuf},
     rc::Rc,
 };
-use winit::event_loop::EventLoop;
+use winit::event_loop::{EventLoop, EventLoopProxy};
 
 fn main() {
     if let Err(error) = run() {
@@ -35,6 +36,11 @@ fn run() -> Result<(), String> {
     run_windows(args, settings, fonts)
 }
 
+/// Set to anything to paint the focus band and status bar into snapshots.
+/// Snapshots are of the document by default, so they compare with other
+/// renderers.
+const SNAPSHOT_CHROME_VARIABLE: &str = "LIMPID_SNAPSHOT_CHROME";
+
 fn run_snapshot(
     args: &Args,
     snapshot: &Snapshot,
@@ -45,7 +51,8 @@ fn run_snapshot(
         .target
         .as_deref()
         .ok_or("--snapshot needs a TARGET file")?;
-    let mut page = DocPage::open(target, settings, args.scheme, fonts.clone())?;
+    let chrome = std::env::var_os(SNAPSHOT_CHROME_VARIABLE).is_some();
+    let mut page = DocPage::open(target, settings, args.scheme, fonts.clone())?.with_chrome(chrome);
     let image = render(&mut page, snapshot.width, snapshot.height, snapshot.scale)?;
     write_png(&snapshot.out, &image)
 }
@@ -61,6 +68,36 @@ fn handoff_for(target: &Path, scheme: Scheme) -> Handoff {
     }
 }
 
+/// Lets one page ask the event loop to close windows. The loop can only end
+/// every window at once, so closing just this one works only while it is the
+/// last; `live` counts the pages that still exist.
+struct WindowCloser {
+    live: Rc<Cell<usize>>,
+    proxy: EventLoopProxy<UserEvent>,
+}
+
+impl WindowCloser {
+    fn new(live: Rc<Cell<usize>>, proxy: EventLoopProxy<UserEvent>) -> Self {
+        live.set(live.get() + 1);
+        Self { live, proxy }
+    }
+}
+
+impl Drop for WindowCloser {
+    fn drop(&mut self) {
+        self.live.set(self.live.get().saturating_sub(1));
+    }
+}
+
+impl Closer for WindowCloser {
+    fn close(&self, kind: CloseKind) -> bool {
+        if kind == CloseKind::Window && self.live.get() > 1 {
+            return false;
+        }
+        self.proxy.send_event(UserEvent::CloseAll).is_ok()
+    }
+}
+
 fn run_windows(args: Args, settings: Settings, fonts: SharedFonts) -> Result<(), String> {
     // Tests set a window class so a compositor rule can keep their windows off
     // the live desktop; the same variable switches on the test-only close request.
@@ -73,14 +110,19 @@ fn run_windows(args: Args, settings: Settings, fonts: SharedFonts) -> Result<(),
             .unwrap_or_else(|| WindowConfig::default().class),
         ..WindowConfig::default()
     };
-    let factory: PageFactory = Box::new(move |request: &Handoff| {
-        let page = DocPage::open(&request.path, &settings, request.theme, fonts.clone())?;
-        Ok(Box::new(page) as Box<dyn Page>)
-    });
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .map_err(|error| error.to_string())?;
     let proxy = event_loop.create_proxy();
+    let live_pages = Rc::new(Cell::new(0));
+    let factory_proxy = proxy.clone();
+    let factory: PageFactory = Box::new(move |request: &Handoff| {
+        let page =
+            DocPage::open(&request.path, &settings, request.theme, fonts.clone())?.with_closer(
+                Box::new(WindowCloser::new(live_pages.clone(), factory_proxy.clone())),
+            );
+        Ok(Box::new(page) as Box<dyn Page>)
+    });
 
     let mut socket = None;
     if args.separate {
