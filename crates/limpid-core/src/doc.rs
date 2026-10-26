@@ -460,7 +460,7 @@ impl<'a> Builder<'a> {
             self.questions_level = Some(level);
         }
         let id = render::unique_heading_id(&text, &mut self.used);
-        if self.title.is_none() {
+        if self.title.as_deref().is_none_or(str::is_empty) && !text.is_empty() {
             self.title = Some(text.clone());
         }
         if level <= 3 {
@@ -971,7 +971,10 @@ pub(crate) fn parse_highlighted(html: &str) -> (String, Vec<HlSpan>) {
             rest = tail;
             continue;
         }
-        let next = rest[1..].find('<').map_or(rest.len(), |at| at + 1);
+        let first_width = rest.chars().next().map_or(1, char::len_utf8);
+        let next = rest[first_width..]
+            .find('<')
+            .map_or(rest.len(), |at| at + first_width);
         text.push_str(&unescape_html(&rest[..next]));
         rest = &rest[next..];
     }
@@ -1328,6 +1331,25 @@ mod tests {
             .find(|b| b.id.as_deref() == Some("same-2"))
             .unwrap();
         assert!(matches!(heading.kind, BlockKind::Heading { level: 2, .. }));
+    }
+
+    #[test]
+    fn should_not_panic_when_highlighted_code_starts_with_multibyte_character() {
+        let doc = file("```python\né = 1\n```\n");
+        assert!(!doc.blocks.is_empty());
+        let doc = file("```rust\nlet 日本 = \"é\";\n```\n");
+        assert!(!doc.blocks.is_empty());
+    }
+
+    #[test]
+    fn should_use_later_heading_as_title_when_first_heading_is_empty() {
+        let markdown = "#\n\n# Real\n";
+        let doc = file(markdown);
+        assert_eq!(doc.title.as_deref(), Some("Real"));
+        let rendered = render::render_markdown(markdown);
+        assert_eq!(rendered.title, "Real");
+        let emitted = crate::html::emit_rendered(&doc, &crate::html::EmitOptions::default());
+        assert_eq!(emitted.title, rendered.title);
     }
 
     #[test]
