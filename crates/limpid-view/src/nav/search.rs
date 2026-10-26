@@ -403,7 +403,31 @@ pub fn leaves<'a>(block: &'a LaidBlock, scale: f32, out: &mut Vec<Leaf<'a>>) {
                 leaves(child, scale, out);
             }
         }
-        Content::Rule => {}
+        Content::Table(table) => {
+            let origin_x = rect.x + table.border;
+            let origin_y = rect.y + table.border;
+            let shift = if table.overflow { table.scroll_x } else { 0.0 };
+            let clip = Rect::new(
+                origin_x,
+                origin_y,
+                rect.w - 2.0 * table.border,
+                rect.h - 2.0 * table.border,
+            );
+            for row in &table.rows {
+                let mut column_x = origin_x - shift;
+                for (column, cell) in row.cells.iter().enumerate() {
+                    let width = table.widths[column];
+                    out.push(Leaf {
+                        text: &cell.text,
+                        x: column_x + table.pad_x,
+                        y: origin_y + row.top + table.pad_y,
+                        clip,
+                    });
+                    column_x += width;
+                }
+            }
+        }
+        Content::Rule | Content::Media(_) => {}
     }
 }
 
