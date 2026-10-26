@@ -9,3 +9,7 @@ gtk4 = { version = "0.11.5", features = ["v4_20"] }
 webkit6 = "0.6.1"
 limpid-core = { path = "../limpid-core" }
 serde_json.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+usvg = "0.45"

@@ -16,6 +16,7 @@ use std::{
 use webkit6::prelude::*;
 
 mod keys;
+mod mermaid;
 
 // Ctrl-Up/Down: jump to the previous/next section. Sections are the targets of
 // the page's table of contents (in-page links inside <nav>) when it has one,
@@ -58,6 +59,10 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if arguments.first().map(String::as_str) == Some("--render-mermaid") {
+        return mermaid::run_cli(&arguments[1..]);
+    }
     let mut scheme = Scheme::Dark;
     let mut separate = false;
     for arg in std::env::args().skip(1) {
@@ -900,10 +905,7 @@ fn compose_pending(
     ))
 }
 
-fn save_pending(
-    request: &mut Handoff,
-    value: &serde_json::Value,
-) -> Result<bool, Box<dyn Error>> {
+fn save_pending(request: &mut Handoff, value: &serde_json::Value) -> Result<bool, Box<dyn Error>> {
     let replies = replies_from_value(value)?;
     let comments = value
         .get("comments")
@@ -1353,7 +1355,11 @@ mod tests {
             ],
         });
         assert!(save_pending(&mut request, &value).unwrap());
-        assert!(fs::read_to_string(&page).unwrap().contains("question-field"));
+        assert!(
+            fs::read_to_string(&page)
+                .unwrap()
+                .contains("question-field")
+        );
         let saved = fs::read_to_string(&source).unwrap();
         let parsed = limpid_core::replies::from_file_annotations(&saved);
         assert_eq!(parsed.replies["q1"], "SQLite");
