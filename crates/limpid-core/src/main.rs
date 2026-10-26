@@ -54,13 +54,65 @@ fn run() -> Result<(), Box<dyn Error>> {
             stdin_agent("pi", args.get(1).and_then(|arg| arg.to_str()).unwrap_or(""))?
         }
         Some("grammars") => grammars(&args[1..])?,
+        Some("math") => math(&args[1..])?,
         _ => {
             return Err(
-                "usage: limpid-core render FILE.md | claude [spec] | codex [spec] | pi [spec] | feedback [--json] [--session ID [--spec S]] [PAGE] | grammars list|sync | instructions | send".into(),
+                "usage: limpid-core render FILE.md | math FILE.md [--json] | claude [spec] | codex [spec] | pi [spec] | feedback [--json] [--session ID [--spec S]] [PAGE] | grammars list|sync | instructions | send".into(),
             );
         }
     }
     Ok(())
+}
+
+fn math(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
+    let mut json = false;
+    let mut file = None;
+    for arg in args {
+        match arg.to_str() {
+            Some("--json") => json = true,
+            Some(option) if option.starts_with("--") => {
+                return Err(format!("unknown option: {option}").into());
+            }
+            _ if file.is_some() => return Err("only one file is allowed".into()),
+            _ => file = Some(PathBuf::from(arg)),
+        }
+    }
+    let file = file.ok_or("usage: limpid-core math FILE.md [--json]")?;
+    let source = std::fs::read_to_string(&file)?;
+    let settings = load_math_settings()?;
+    settings.validate()?;
+    let formulas = limpid_core::math::collect(&source);
+    let report = limpid_core::math::render_missing(&formulas, &settings);
+    if json {
+        println!("{}", serde_json::to_string(&report)?);
+    } else {
+        println!(
+            "{} formulas: {} rendered, {} cached, {} failed",
+            formulas.len(),
+            report.rendered,
+            report.cached,
+            report.failed.len()
+        );
+        for (hash, reason) in &report.failed {
+            eprintln!("{hash}: {reason}");
+        }
+    }
+    if report.failed.is_empty() {
+        return Ok(());
+    }
+    std::process::exit(2);
+}
+
+fn load_math_settings() -> Result<limpid_core::math::MathSettings, Box<dyn Error>> {
+    let dir = limpid_core::settings::Settings::config_dir()
+        .ok_or("HOME or XDG_CONFIG_HOME is required")?;
+    match std::fs::read_to_string(dir.join("config.toml")) {
+        Ok(source) => Ok(limpid_core::math::MathSettings::from_config_source(
+            &source,
+        )?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(error) => Err(Box::new(error)),
+    }
 }
 
 fn grammars(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
