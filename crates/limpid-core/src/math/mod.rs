@@ -8,6 +8,7 @@
 
 pub mod cache;
 pub mod latex;
+pub mod mathjax;
 pub mod svgmeta;
 pub mod typst;
 
@@ -227,7 +228,7 @@ pub trait Backend {
 }
 
 /// Pick the backend named by `settings.backend`; `auto` tries latex, then
-/// typst (MathJax joins in a later unit). `None` when nothing usable exists.
+/// typst, then MathJax (always available). `None` for `none`.
 pub fn select(settings: &MathSettings) -> Option<Box<dyn Backend>> {
     select_with_path(settings, None)
 }
@@ -246,15 +247,27 @@ pub fn select_with_path(settings: &MathSettings, path: Option<&OsStr>) -> Option
             path.map(OsString::from),
         ))
     };
+    let mathjax = || -> Box<dyn Backend> {
+        Box::new(mathjax::MathJaxBackend::new(view_font_size(), settings))
+    };
     let candidates: Vec<Box<dyn Backend>> = match settings.backend.as_str() {
-        "auto" => vec![latex(), typst()],
+        "auto" => vec![latex(), typst(), mathjax()],
         "latex" => vec![latex()],
         "typst" => vec![typst()],
+        "mathjax" => vec![mathjax()],
         _ => return None,
     };
     candidates
         .into_iter()
         .find(|backend| backend.available(settings))
+}
+
+/// `view.font_size` from the settings file, which sets the size of an `ex` for
+/// MathJax; the default when the file is absent or unreadable.
+fn view_font_size() -> f32 {
+    crate::settings::Settings::load_default()
+        .map(|settings| settings.view.font_size as f32)
+        .unwrap_or(mathjax::DEFAULT_FONT_SIZE_PX)
 }
 
 /// What a run did. `failed` pairs a formula hash with the reason.
@@ -650,18 +663,24 @@ mod tests {
     }
 
     #[test]
-    fn should_select_nothing_when_no_tool_is_on_path() {
+    fn should_select_only_mathjax_when_no_tool_is_on_path() {
         let settings = MathSettings::default();
-        assert!(select_with_path(&settings, Some(OsStr::new(""))).is_none());
-        for backend in ["latex", "typst", "mathjax", "none"] {
+        let empty = Some(OsStr::new(""));
+        let chosen = select_with_path(&settings, empty).map(|backend| backend.name().to_owned());
+        assert_eq!(chosen.as_deref(), Some("mathjax"));
+        for (backend, expected) in [
+            ("latex", None),
+            ("typst", None),
+            ("mathjax", Some("mathjax")),
+            ("none", None),
+        ] {
             let settings = MathSettings {
                 backend: backend.into(),
                 ..MathSettings::default()
             };
-            assert!(
-                select_with_path(&settings, Some(OsStr::new(""))).is_none(),
-                "{backend}"
-            );
+            let chosen =
+                select_with_path(&settings, empty).map(|backend| backend.name().to_owned());
+            assert_eq!(chosen.as_deref(), expected, "{backend}");
         }
     }
 

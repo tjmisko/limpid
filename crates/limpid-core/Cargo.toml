@@ -12,6 +12,7 @@ libloading = "0.8.9"
 mitex = "0.2.4"
 pulldown-cmark.workspace = true
 pulldown-latex = "0.8.0"
+rquickjs = "0.14.0"
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
