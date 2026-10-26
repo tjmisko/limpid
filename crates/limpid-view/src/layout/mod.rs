@@ -8,6 +8,7 @@
 pub mod block;
 pub mod boxes;
 pub mod code;
+pub mod field;
 pub mod image;
 pub mod inline;
 pub mod list;
@@ -244,7 +245,15 @@ pub fn lay_out_with(
     fonts: &mut Fonts,
     options: LayoutOptions,
 ) -> Layout {
-    lay_out_in(doc, width, theme, scale, fonts, options, boxes::default_env())
+    lay_out_in(
+        doc,
+        width,
+        theme,
+        scale,
+        fonts,
+        options,
+        boxes::default_env(),
+    )
 }
 
 /// [`lay_out_with`] with an explicit environment for images, SVG, math and

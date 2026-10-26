@@ -3,7 +3,7 @@
 use super::{
     Content, LaidBlock, LayoutOptions, PaintCx, PendingBox, PendingKind,
     boxes::{self, BoxEnv},
-    code, image,
+    code, field, image,
     inline::{self, Flat, RichText},
     list, quote, table,
 };
@@ -218,23 +218,13 @@ pub fn lay_block(cx: &mut Cx, block: &Block, index: usize, y: f32, flow: Flow) -
         BlockKind::Table { align, head, rows } => {
             table::lay(cx, block, flow, y, index, stop, align, head, rows)
         }
-        BlockKind::Image { src, alt, .. } => {
-            image::lay(cx, block, flow, y, index, stop, src, alt)
+        BlockKind::Image { src, alt, .. } => image::lay(cx, block, flow, y, index, stop, src, alt),
+        BlockKind::Field {
+            prompt, options, ..
+        } => field::lay_field(cx, block, flow, y, index, stop, prompt, options),
+        BlockKind::Annotation { kind, text, .. } => {
+            field::lay_annotation(cx, block, flow, y, index, stop, *kind, text)
         }
-        BlockKind::Field { .. } => {
-            let slice = source_slice(cx.source, &block.src);
-            pending(cx, block, flow, y, index, stop, PendingKind::Field, slice)
-        }
-        BlockKind::Annotation { text, .. } => pending(
-            cx,
-            block,
-            flow,
-            y,
-            index,
-            stop,
-            PendingKind::Annotation,
-            text,
-        ),
     }
 }
 
@@ -312,20 +302,6 @@ fn heading(
         },
         height,
     )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn pending(
-    cx: &mut Cx,
-    block: &Block,
-    flow: Flow,
-    y: f32,
-    index: usize,
-    stop: bool,
-    kind: PendingKind,
-    source: &str,
-) -> LaidBlock {
-    pending_with(cx, block, flow, y, index, stop, kind, source, None, None)
 }
 
 /// A box of source text. `hash` names the math or Mermaid entry it waits for;
