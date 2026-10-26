@@ -13,6 +13,11 @@ use std::ops::Range;
 /// Deepest inline nesting followed; anything deeper is dropped.
 const MAX_INLINE_DEPTH: usize = 64;
 
+/// Reserves the horizontal padding of an inline code box inside the text
+/// advance: a narrow no-break space (about 0.2em wide, never a wrap point)
+/// on either side of the code, set in the surrounding style.
+const CODE_PAD: &str = "\u{202f}";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecorationKind {
     /// Inline code and inline math source: a tinted, outlined box behind text.
@@ -119,9 +124,7 @@ impl Flattener<'_> {
                         color: self.theme.blue,
                         ..style
                     };
-                    self.decorated(DecorationKind::CodeSpan, code_style, |this| {
-                        this.text(code, code_style)
-                    });
+                    self.code_span(style, code_style, code);
                 }
                 Inline::SoftBreak => self.text(" ", style),
                 Inline::HardBreak => self.flat.push("\n", style),
@@ -155,9 +158,7 @@ impl Flattener<'_> {
                         color: self.theme.purple,
                         ..style
                     };
-                    self.decorated(DecorationKind::CodeSpan, math_style, |this| {
-                        this.text(latex, math_style)
-                    });
+                    self.code_span(style, math_style, latex);
                 }
                 Inline::FootnoteRef(label) => {
                     let muted = TextStyle {
@@ -169,6 +170,19 @@ impl Flattener<'_> {
                 Inline::Html(_) => {}
             }
         }
+    }
+
+    /// A boxed span: `body` in `code_style`, between two padding characters
+    /// in `outer` that sit inside the box so it never overlaps neighbours.
+    fn code_span(&mut self, outer: TextStyle, code_style: TextStyle, body: &str) {
+        if body.is_empty() {
+            return;
+        }
+        self.decorated(DecorationKind::CodeSpan, code_style, |this| {
+            this.flat.push(CODE_PAD, outer);
+            this.text(body, code_style);
+            this.flat.push(CODE_PAD, outer);
+        });
     }
 
     fn decorated(&mut self, kind: DecorationKind, style: TextStyle, body: impl FnOnce(&mut Self)) {
@@ -370,9 +384,9 @@ pub fn paint(
             continue;
         }
         let rect = Rect::new(
-            x + deco.x - size * 0.2,
+            x + deco.x,
             y + deco.baseline - size * 0.98,
-            deco.width + size * 0.4,
+            deco.width,
             size * 1.3,
         );
         canvas.fill_rect(rect, raised(theme));
@@ -434,13 +448,54 @@ mod tests {
             &theme(),
             false,
         );
-        let (range, style) = &flat.runs[1];
+        let (range, style) = flat.runs.iter().find(|(_, s)| s.mono).unwrap();
         assert_eq!(&flat.text[range.clone()], "y");
         assert!(style.mono);
         assert_eq!(style.color, theme().blue);
         assert_eq!(flat.decorations.len(), 1);
         assert_eq!(flat.decorations[0].kind, DecorationKind::CodeSpan);
-        assert_eq!(flat.decorations[0].range, 2..3);
+        let boxed = &flat.text[flat.decorations[0].range.clone()];
+        assert_eq!(boxed.trim_matches(CODE_PAD.chars().next().unwrap()), "y");
+    }
+
+    #[test]
+    fn should_keep_the_code_box_clear_of_neighbours_when_text_touches_the_code() {
+        let theme = theme();
+        let inlines = vec![text("word"), Inline::Code("x".into()), text("word")];
+        let rich = build_inlines(
+            &mut Fonts::new(),
+            &inlines,
+            base(),
+            &theme,
+            34.0,
+            48.0,
+            None,
+            false,
+        );
+        let flat = flatten(&inlines, base(), &theme, false);
+        let boxed = flat.decorations[0].range.clone();
+        let before = flat.text[..boxed.start].len();
+        let rect = rich
+            .decorations
+            .iter()
+            .find(|d| d.kind == DecorationKind::CodeSpan)
+            .unwrap();
+        let glyphs: Vec<_> = rich.block.glyphs().collect();
+        let last_before = glyphs.iter().rfind(|g| g.start < before).unwrap();
+        let first_after = glyphs.iter().find(|g| g.start >= boxed.end).unwrap();
+        assert!(rect.x >= last_before.x + last_before.width - 0.5);
+        assert!(rect.x + rect.width <= first_after.x + 0.5);
+        assert!(
+            rect.width > 34.0 * 0.2 * 2.0,
+            "padding reserved inside the box"
+        );
+    }
+
+    #[test]
+    fn should_not_box_anything_when_the_code_is_empty() {
+        let flat = flatten(&[Inline::Code(String::new())], base(), &theme(), false);
+        assert!(flat.decorations.is_empty());
+        assert!(flat.text.is_empty());
     }
 
     #[test]
