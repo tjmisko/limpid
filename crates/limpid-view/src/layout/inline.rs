@@ -2,13 +2,17 @@
 //! styled byte ranges, shaped by cosmic-text, plus the rectangles for the
 //! decorations cosmic-text does not draw (inline code backgrounds, strikes).
 
+use crate::layout::PendingKind;
 use crate::{
     paint::{Canvas, Rect},
     text::{Fonts, Span, TextBlock, TextStyle},
     theme::{Color, Theme},
 };
-use limpid_core::doc::Inline;
+use limpid_core::{doc::Inline, math::Rendered};
 use std::ops::Range;
+
+/// CSS pixels per em the math cache sizes are measured against.
+pub const MATH_REFERENCE_EM: f32 = 16.0;
 
 /// Deepest inline nesting followed; anything deeper is dropped.
 const MAX_INLINE_DEPTH: usize = 64;
@@ -24,6 +28,22 @@ pub enum DecorationKind {
     CodeSpan,
     /// A line through the middle of the text.
     Strike,
+    /// A typed hole in the line (see [`InlinePlaceholder`]), drawn as a box.
+    Placeholder,
+}
+
+/// A hole in an inline run that a later renderer fills: inline math today.
+/// The text under `range` is the monospace source when `size` is `None`, or
+/// non-breaking spaces as wide as the typeset formula when it is known.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InlinePlaceholder {
+    pub kind: PendingKind,
+    /// Byte range into [`Flat::text`], padding included.
+    pub range: Range<usize>,
+    pub hash: String,
+    pub source: String,
+    /// Typeset `(width, height, baseline)` in CSS px, from the math cache.
+    pub size: Option<(f32, f32, f32)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,6 +60,7 @@ pub struct Flat {
     pub text: String,
     pub runs: Vec<(Range<usize>, TextStyle)>,
     pub decorations: Vec<Decoration>,
+    pub placeholders: Vec<InlinePlaceholder>,
 }
 
 impl Flat {
@@ -87,9 +108,38 @@ impl Flat {
 
 /// Flatten `inlines`. `upper` upper-cases the text (the `h4` style).
 pub fn flatten(inlines: &[Inline], base: TextStyle, theme: &Theme, upper: bool) -> Flat {
+    flatten_with(inlines, base, theme, upper, &MathSizing::default())
+}
+
+/// How inline math is looked up and sized.
+pub struct MathSizing<'a> {
+    /// The cache entry for a formula hash.
+    pub lookup: &'a dyn Fn(&str) -> Option<Rendered>,
+    /// Advance of the reserved space as a fraction of the em.
+    pub advance_em: f32,
+}
+
+impl Default for MathSizing<'_> {
+    fn default() -> Self {
+        Self {
+            lookup: &limpid_core::math::cached,
+            advance_em: 0.6,
+        }
+    }
+}
+
+/// [`flatten`] with explicit math sizing.
+pub fn flatten_with(
+    inlines: &[Inline],
+    base: TextStyle,
+    theme: &Theme,
+    upper: bool,
+    math: &MathSizing<'_>,
+) -> Flat {
     let mut flattener = Flattener {
         theme,
         upper,
+        math,
         flat: Flat::default(),
     };
     flattener.walk(inlines, base, 0);
@@ -99,6 +149,7 @@ pub fn flatten(inlines: &[Inline], base: TextStyle, theme: &Theme, upper: bool) 
 struct Flattener<'a> {
     theme: &'a Theme,
     upper: bool,
+    math: &'a MathSizing<'a>,
     flat: Flat,
 }
 
@@ -150,16 +201,7 @@ impl Flattener<'_> {
                     };
                     self.text(&format!("[{label}]"), muted);
                 }
-                Inline::Math { latex, .. } => {
-                    // Typeset boxes arrive with the pending-box work; until
-                    // the cache has an image the source shows as code.
-                    let math_style = TextStyle {
-                        mono: true,
-                        color: self.theme.purple,
-                        ..style
-                    };
-                    self.code_span(style, math_style, latex);
-                }
+                Inline::Math { latex, hash } => self.math(style, latex, hash),
                 Inline::FootnoteRef(label) => {
                     let muted = TextStyle {
                         color: self.theme.teal,
@@ -172,13 +214,51 @@ impl Flattener<'_> {
         }
     }
 
+    /// Inline math: a placeholder sized from the cache when the formula is
+    /// typeset, else its source in monospace.
+    fn math(&mut self, style: TextStyle, latex: &str, hash: &str) {
+        let math_style = TextStyle {
+            mono: true,
+            color: self.theme.purple,
+            ..style
+        };
+        let size = (self.math.lookup)(hash)
+            .filter(|rendered| rendered.width.is_finite() && rendered.width > 0.0)
+            .map(|rendered| (rendered.width, rendered.height, rendered.baseline));
+        let start = self.flat.text.len();
+        match size {
+            Some((width, ..)) => {
+                let advance = (self.math.advance_em * MATH_REFERENCE_EM).max(1.0);
+                let count = (width / advance).ceil().clamp(1.0, 400.0) as usize;
+                let reserved = "\u{a0}".repeat(count);
+                self.boxed(DecorationKind::Placeholder, style, math_style, &reserved);
+            }
+            None => self.boxed(DecorationKind::Placeholder, style, math_style, latex),
+        }
+        let end = self.flat.text.len();
+        if end == start {
+            return;
+        }
+        self.flat.placeholders.push(InlinePlaceholder {
+            kind: PendingKind::Math,
+            range: start..end,
+            hash: hash.to_owned(),
+            source: latex.to_owned(),
+            size,
+        });
+    }
+
     /// A boxed span: `body` in `code_style`, between two padding characters
     /// in `outer` that sit inside the box so it never overlaps neighbours.
     fn code_span(&mut self, outer: TextStyle, code_style: TextStyle, body: &str) {
+        self.boxed(DecorationKind::CodeSpan, outer, code_style, body);
+    }
+
+    fn boxed(&mut self, kind: DecorationKind, outer: TextStyle, code_style: TextStyle, body: &str) {
         if body.is_empty() {
             return;
         }
-        self.decorated(DecorationKind::CodeSpan, code_style, |this| {
+        self.decorated(kind, code_style, |this| {
             this.flat.push(CODE_PAD, outer);
             this.text(body, code_style);
             this.flat.push(CODE_PAD, outer);
@@ -213,6 +293,9 @@ pub struct DecoRect {
 pub struct RichText {
     pub block: TextBlock,
     pub decorations: Vec<DecoRect>,
+    /// Holes in the text for a later renderer, in text order; the boxes
+    /// are the `Placeholder` entries of `decorations` (one per wrapped line).
+    pub placeholders: Vec<InlinePlaceholder>,
     /// Device pixels.
     pub font_size: f32,
 }
@@ -257,6 +340,7 @@ pub fn build(
     RichText {
         block,
         decorations,
+        placeholders: flat.placeholders.clone(),
         font_size,
     }
 }
@@ -380,7 +464,10 @@ pub fn paint(
     let size = text.font_size;
     let line = scale.max(1.0).round();
     for deco in &text.decorations {
-        if deco.kind != DecorationKind::CodeSpan {
+        if !matches!(
+            deco.kind,
+            DecorationKind::CodeSpan | DecorationKind::Placeholder
+        ) {
             continue;
         }
         let rect = Rect::new(
@@ -642,5 +729,99 @@ mod tests {
             Some(0.0),
         );
         assert!(rich.height() >= 0.0);
+    }
+
+    fn math(latex: &str) -> Inline {
+        Inline::Math {
+            latex: latex.to_owned(),
+            hash: format!("hash-{latex}"),
+        }
+    }
+
+    fn rendered(width: f32) -> Rendered {
+        Rendered {
+            svg: "x.svg".into(),
+            width,
+            height: 20.0,
+            baseline: 15.0,
+            backend: "test".into(),
+        }
+    }
+
+    #[test]
+    fn should_show_monospace_source_in_a_math_placeholder_when_cache_misses() {
+        let sizing = MathSizing {
+            lookup: &|_| None,
+            ..MathSizing::default()
+        };
+        let flat = flatten_with(&[math("x^2")], base(), &theme(), false, &sizing);
+        assert!(flat.text.contains("x^2"));
+        assert_eq!(flat.placeholders.len(), 1);
+        let hole = &flat.placeholders[0];
+        assert_eq!(hole.kind, PendingKind::Math);
+        assert_eq!(hole.size, None);
+        assert_eq!(hole.source, "x^2");
+        assert_eq!(hole.hash, "hash-x^2");
+        assert_eq!(
+            &flat.text[hole.range.clone()].trim_matches('\u{202f}'),
+            &"x^2"
+        );
+    }
+
+    #[test]
+    fn should_reserve_width_from_the_cache_when_math_is_typeset() {
+        let sizing = MathSizing {
+            lookup: &|_| Some(rendered(96.0)),
+            ..MathSizing::default()
+        };
+        let flat = flatten_with(&[math("x^2")], base(), &theme(), false, &sizing);
+        assert!(!flat.text.contains("x^2"));
+        let hole = &flat.placeholders[0];
+        assert_eq!(hole.size, Some((96.0, 20.0, 15.0)));
+        let reserved = flat.text[hole.range.clone()].matches('\u{a0}').count();
+        assert_eq!(reserved, 10);
+    }
+
+    #[test]
+    fn should_fall_back_to_source_when_cached_width_is_unusable() {
+        for width in [0.0, -5.0, f32::NAN, f32::INFINITY] {
+            let sizing = MathSizing {
+                lookup: &move |_| Some(rendered(width)),
+                ..MathSizing::default()
+            };
+            let flat = flatten_with(&[math("y")], base(), &theme(), false, &sizing);
+            assert_eq!(flat.placeholders[0].size, None, "width {width}");
+            assert!(flat.text.contains('y'));
+        }
+    }
+
+    #[test]
+    fn should_cap_the_reserved_width_when_the_formula_is_huge() {
+        let sizing = MathSizing {
+            lookup: &|_| Some(rendered(1.0e9)),
+            ..MathSizing::default()
+        };
+        let flat = flatten_with(&[math("z")], base(), &theme(), false, &sizing);
+        assert!(flat.text.chars().count() <= 410);
+    }
+
+    #[test]
+    fn should_carry_math_placeholders_into_shaped_text_when_built() {
+        let rich = build_inlines(
+            &mut Fonts::new(),
+            &[text("a "), math("q")],
+            base(),
+            &theme(),
+            17.0,
+            26.0,
+            Some(400.0),
+            false,
+        );
+        assert_eq!(rich.placeholders.len(), 1);
+        assert!(
+            rich.decorations
+                .iter()
+                .any(|deco| deco.kind == DecorationKind::Placeholder)
+        );
     }
 }
