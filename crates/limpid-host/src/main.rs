@@ -99,6 +99,12 @@ fn run() -> Result<(), Box<dyn Error>> {
     };
     let receiver = Rc::new(RefCell::new(receiver));
 
+    // Tests and benchmarks set a window class so a compositor rule can keep
+    // their windows off the live desktop. GTK derives the Wayland app id from
+    // the program name.
+    if let Ok(class) = std::env::var("LIMPID_WINDOW_CLASS") {
+        glib::set_prgname(Some(&class));
+    }
     let app = gtk4::Application::builder()
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();

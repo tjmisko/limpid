@@ -59,6 +59,9 @@ impl Host {
         let child = Command::new(env!("CARGO_BIN_EXE_limpid-host"))
             .arg(scheme)
             .env("XDG_RUNTIME_DIR", runtime)
+            // Keeps test windows on a hidden workspace under a compositor
+            // rule that matches this class (see bench/NOTES.md).
+            .env("LIMPID_WINDOW_CLASS", "limpid-test")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
