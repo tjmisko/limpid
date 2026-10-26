@@ -4,12 +4,12 @@
 use crate::paint::Canvas;
 use limpid_core::transport::Handoff;
 use softbuffer::{Context, Surface};
-use std::{collections::HashMap, num::NonZeroU32, rc::Rc};
+use std::{collections::HashMap, num::NonZeroU32, rc::Rc, time::Duration};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
     event::{KeyEvent, WindowEvent},
-    event_loop::{ActiveEventLoop, OwnedDisplayHandle},
+    event_loop::{ActiveEventLoop, ControlFlow, OwnedDisplayHandle},
     keyboard::ModifiersState,
     platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11},
     window::{Window, WindowId},
@@ -24,7 +24,20 @@ pub trait Page {
     /// repaint.
     fn key(&mut self, event: &KeyEvent) -> bool;
     fn modifiers_changed(&mut self, _modifiers: ModifiersState) {}
+    /// Whether the page needs [`Page::tick`] calls (an embedded editor is
+    /// running); the event loop then wakes up every [`TICK_INTERVAL`].
+    fn wants_ticks(&self) -> bool {
+        false
+    }
+    /// Called while [`Page::wants_ticks`] is true. Returns true when the page
+    /// changed and needs a repaint.
+    fn tick(&mut self) -> bool {
+        false
+    }
 }
+
+/// How often a page that wants ticks is woken.
+pub const TICK_INTERVAL: Duration = Duration::from_millis(16);
 
 pub type PageFactory = Box<dyn FnMut(&Handoff) -> Result<Box<dyn Page>, String>>;
 
@@ -180,6 +193,25 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let mut ticking = false;
+        for open in self.windows.values_mut() {
+            if !open.page.wants_ticks() {
+                continue;
+            }
+            ticking = true;
+            if open.page.tick() {
+                open.request_redraw();
+            }
+        }
+        let flow = if ticking {
+            ControlFlow::WaitUntil(std::time::Instant::now() + TICK_INTERVAL)
+        } else {
+            ControlFlow::Wait
+        };
+        event_loop.set_control_flow(flow);
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let Some(open) = self.windows.get_mut(&id) else {
             return;
@@ -210,6 +242,26 @@ impl ApplicationHandler<UserEvent> for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Still;
+
+    impl Page for Still {
+        fn title(&self) -> String {
+            "still".into()
+        }
+        fn paint(&mut self, _canvas: &mut Canvas, _scale: f32) {}
+        fn key(&mut self, _event: &KeyEvent) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn should_not_ask_for_ticks_when_a_page_has_no_editor() {
+        let mut page = Still;
+        assert!(!page.wants_ticks());
+        assert!(!page.tick());
+        assert!(TICK_INTERVAL < Duration::from_millis(100));
+    }
 
     #[test]
     fn should_default_to_the_limpid_class_when_no_class_is_configured() {
