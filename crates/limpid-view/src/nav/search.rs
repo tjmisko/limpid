@@ -248,6 +248,49 @@ impl Search {
         entry.checked_sub(1).map(|at| self.totals[at] - 1)
     }
 
+    /// Number of matches held by top-level blocks before `block`.
+    pub fn matches_before(&self, block: usize) -> usize {
+        let entry = self.counts.partition_point(|&(held, _)| held < block);
+        if entry == 0 {
+            0
+        } else {
+            self.totals[entry - 1]
+        }
+    }
+
+    /// Make the match with global index `index` current (wrapping to the first
+    /// when it is past the end). Returns the hit and whether it wrapped.
+    pub fn start_at(&mut self, index: usize) -> Option<(Hit, bool)> {
+        if self.is_empty() {
+            return None;
+        }
+        let (index, wrapped) = if index < self.len() {
+            (index, false)
+        } else {
+            (0, true)
+        };
+        self.current = Some(index);
+        Some((self.hit_at(index)?, wrapped))
+    }
+
+    /// Step with no current match: `before` is the number of matches that lie
+    /// before the cursor. Forward takes the first match at or after it,
+    /// backward the last one before it.
+    pub fn step_from_cursor(&mut self, forward: bool, before: usize) -> Option<(Hit, bool)> {
+        if forward {
+            return self.start_at(before);
+        }
+        if self.is_empty() {
+            return None;
+        }
+        let (index, wrapped) = match before.checked_sub(1) {
+            Some(index) => (index.min(self.len() - 1), false),
+            None => (self.len() - 1, true),
+        };
+        self.current = Some(index);
+        Some((self.hit_at(index)?, wrapped))
+    }
+
     /// Make the first match at or after `block` current (wrapping to the
     /// first). Returns the hit and whether it wrapped.
     pub fn start_from(&mut self, block: usize) -> Option<(Hit, bool)> {
@@ -389,12 +432,18 @@ pub fn match_segments(text: &RichText, query: &Query) -> Vec<Vec<Segment>> {
     if found.is_empty() {
         return Vec::new();
     }
-    let glyphs: Vec<_> = text.block.glyphs().collect();
+    let mut by_line: Vec<Vec<_>> = Vec::new();
+    for glyph in text.block.glyphs() {
+        if by_line.len() <= glyph.line {
+            by_line.resize_with(glyph.line + 1, Vec::new);
+        }
+        by_line[glyph.line].push(glyph);
+    }
     found
         .into_iter()
         .map(|(line, range)| {
             let mut segments: Vec<Segment> = Vec::new();
-            for glyph in glyphs.iter().filter(|glyph| glyph.line == line) {
+            for glyph in by_line.get(line).into_iter().flatten() {
                 if glyph.end <= range.start || glyph.start >= range.end {
                     continue;
                 }
@@ -416,6 +465,37 @@ pub fn match_segments(text: &RichText, query: &Query) -> Vec<Vec<Segment>> {
             segments
         })
         .collect()
+}
+
+/// Document y of the baseline of the first row of every match in top-level
+/// block `block`, in order. A match without a laid-out row reports the top of
+/// the block.
+pub fn block_match_baselines(layout: &Layout, query: &Query, block: usize) -> Vec<f32> {
+    let Some(laid) = layout.blocks.get(block) else {
+        return Vec::new();
+    };
+    let mut all = Vec::new();
+    leaves(laid, layout.scale(), &mut all);
+    let mut out = Vec::new();
+    for leaf in &all {
+        for rows in match_segments(leaf.text, query) {
+            out.push(
+                rows.first()
+                    .map_or(laid.rect.y, |row| leaf.y + row.baseline),
+            );
+        }
+    }
+    out
+}
+
+/// Document y of the baseline of the first row of the match.
+pub fn locate_baseline(layout: &Layout, query: &Query, hit: Hit) -> Option<f32> {
+    let baselines = block_match_baselines(layout, query, hit.block);
+    baselines
+        .get(hit.nth)
+        .or(baselines.last())
+        .copied()
+        .or_else(|| layout.blocks.get(hit.block).map(|block| block.rect.y))
 }
 
 /// Document y of the first row of the match, for centring it.
@@ -858,5 +938,19 @@ mod tests {
         let y = locate_y(env.layout, &q, Hit { block: 80, nth: 0 }).unwrap();
         let middle = y - *env.scroll;
         assert!((middle - 150.0).abs() < 20.0, "{middle}");
+    }
+
+    #[test]
+    fn should_start_at_a_match_index_and_wrap_when_it_is_past_the_end() {
+        let (_, mut search) = searched("x a\n\nb x\n", "x");
+        assert_eq!(search.matches_before(1), 1);
+        let (hit, wrapped) = search.start_at(1).unwrap();
+        assert_eq!((hit.block, wrapped), (1, false));
+        let (hit, wrapped) = search.start_at(2).unwrap();
+        assert_eq!((hit.block, wrapped), (0, true));
+        let (hit, wrapped) = search.step_from_cursor(false, 0).unwrap();
+        assert_eq!((hit.block, wrapped), (1, true));
+        let (hit, wrapped) = search.step_from_cursor(false, 2).unwrap();
+        assert_eq!((hit.block, wrapped), (1, false));
     }
 }

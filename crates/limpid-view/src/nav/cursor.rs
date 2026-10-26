@@ -355,6 +355,24 @@ impl Cursor {
         scrolled || moved
     }
 
+    /// Put the cursor on the innermost stop of top-level block `block` that
+    /// holds document y `y`, without scrolling. Falls back to the first stop
+    /// at or after the block.
+    pub fn go_to_row(&mut self, env: &mut Env, block: usize, y: f32) -> bool {
+        env.lay_out_through(block);
+        let slack = 0.5;
+        let holder = collect_stops(env.layout)
+            .into_iter()
+            .filter(|stop| stop.top == block)
+            .rfind(|stop| stop.rect.y - slack <= y && y <= stop.rect.bottom() + slack);
+        let Some(stop) = holder else {
+            return self.go_to_block(env, block);
+        };
+        let moved = self.src.as_ref() != Some(&stop.src);
+        self.set(&stop);
+        moved
+    }
+
     /// Put the cursor on the first stop at or after top-level block `block`,
     /// without scrolling.
     pub fn go_to_block(&mut self, env: &mut Env, block: usize) -> bool {

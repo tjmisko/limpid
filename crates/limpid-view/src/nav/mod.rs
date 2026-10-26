@@ -596,9 +596,9 @@ impl Nav {
         };
         self.search.run(env.doc, query);
         self.show_search = true;
-        let from = self.cursor_block(env);
-        match self.search.start_from(from) {
-            Some((hit, wrapped)) => self.land(hit, wrapped, now_ms, env),
+        let before = self.matches_before_cursor(env);
+        match self.search.start_at(before) {
+            Some((hit, wrapped)) => self.land(hit, wrapped, true, now_ms, env),
             None => {
                 let pattern = self
                     .search
@@ -617,9 +617,14 @@ impl Nav {
             return;
         }
         self.show_search = true;
-        let from = self.cursor_block(env);
-        match self.search.step(forward, from) {
-            Some((hit, wrapped)) => self.land(hit, wrapped, now_ms, env),
+        let stepped = if self.search.position().is_some() {
+            self.search.step(forward, 0)
+        } else {
+            let before = self.matches_before_cursor(env);
+            self.search.step_from_cursor(forward, before)
+        };
+        match stepped {
+            Some((hit, wrapped)) => self.land(hit, wrapped, forward, now_ms, env),
             None => {
                 let pattern = self
                     .search
@@ -632,14 +637,38 @@ impl Nav {
         }
     }
 
-    /// Show a match: centre it and put the cursor on its block.
-    fn land(&mut self, hit: Hit, wrapped: bool, now_ms: u64, env: &mut Env) {
+    /// How many matches lie before the focused stop: those in earlier
+    /// top-level blocks plus those on rows above the stop inside its block.
+    fn matches_before_cursor(&self, env: &mut Env) -> usize {
+        let Some(query) = self.search.query.clone() else {
+            return 0;
+        };
+        let stops = collect_stops(env.layout);
+        let Some(stop) = self.cursor.locate(&stops).map(|at| &stops[at]) else {
+            return 0;
+        };
+        let earlier = self.search.matches_before(stop.top);
+        let above = search::block_match_baselines(env.layout, &query, stop.top)
+            .into_iter()
+            .filter(|baseline| *baseline < stop.rect.y - 0.5)
+            .count();
+        earlier + above
+    }
+
+    /// Show a match: centre it and put the cursor on the stop that holds it.
+    /// `forward` is the direction of travel, which names the wrap flash.
+    fn land(&mut self, hit: Hit, wrapped: bool, forward: bool, now_ms: u64, env: &mut Env) {
         if let Some(query) = self.search.query.clone() {
             search::centre_on(env, &query, hit);
+            match search::locate_baseline(env.layout, &query, hit) {
+                Some(y) => self.cursor.go_to_row(env, hit.block, y),
+                None => self.cursor.go_to_block(env, hit.block),
+            };
+        } else {
+            self.cursor.go_to_block(env, hit.block);
         }
-        self.cursor.go_to_block(env, hit.block);
         if wrapped {
-            let message = if self.search.position().is_some_and(|(at, _)| at == 1) {
+            let message = if forward {
                 "search hit BOTTOM, continuing at TOP"
             } else {
                 "search hit TOP, continuing at BOTTOM"
@@ -1028,6 +1057,47 @@ mod tests {
         assert!(world.message().contains("TOP"), "{}", world.message());
         world.press("shift+n");
         assert_eq!(world.focused(), "a needle");
+    }
+
+    const LIST: &str = "intro para\n\n- alpha\n- beta\n- gamma target\n- delta\n";
+
+    #[test]
+    fn should_focus_the_list_item_holding_the_match_when_submitting_a_search() {
+        let mut world = World::new(LIST, 600.0);
+        world.press("/");
+        world.typed("target");
+        world.press("enter");
+        assert_eq!(world.focused(), "gamma target");
+    }
+
+    #[test]
+    fn should_search_from_the_focused_item_when_the_cursor_is_inside_a_list() {
+        let mut world = World::new(LIST, 600.0);
+        world.press("/");
+        world.typed("alpha");
+        world.press("enter");
+        assert_eq!(world.focused(), "alpha");
+        for _ in 0..3 {
+            world.press("j");
+        }
+        assert_eq!(world.focused(), "delta");
+        world.press("/");
+        world.typed("alpha");
+        world.press("enter");
+        assert_eq!(world.focused(), "alpha");
+        assert!(world.message().contains("BOTTOM"), "{}", world.message());
+    }
+
+    #[test]
+    fn should_report_the_bottom_wrap_when_the_only_match_is_stepped_backward_and_forward() {
+        let mut world = World::new("one\n\nsole needle\n\nthree\n", 600.0);
+        world.press("/");
+        world.typed("needle");
+        world.press("enter");
+        world.press("n");
+        assert!(world.message().contains("BOTTOM"), "{}", world.message());
+        world.press("shift+n");
+        assert!(world.message().contains("TOP"), "{}", world.message());
     }
 
     #[test]
