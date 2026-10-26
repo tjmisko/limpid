@@ -256,6 +256,11 @@ fn write_agent_page(
         &destination,
         render::externalize_assets(&page.html, &cache)?,
     )?;
+    // The native viewer opens this; its replies sidecar is keyed by the same
+    // page stem as the HTML page's.
+    let mut markdown_path = destination.clone();
+    markdown_path.set_extension("md");
+    std::fs::write(&markdown_path, &page.markdown)?;
     let mut meta_path = destination.clone();
     meta_path.set_extension("meta.json");
     std::fs::write(
@@ -311,10 +316,12 @@ fn prune_agent_pages(cache: &Path, preserve: &Path) -> Result<(), Box<dyn Error>
             continue;
         }
         std::fs::remove_file(&page)?;
-        let mut associated = page.clone();
-        associated.set_extension("meta.json");
-        if associated.exists() {
-            std::fs::remove_file(associated)?;
+        for extension in ["meta.json", "md"] {
+            let mut associated = page.clone();
+            associated.set_extension(extension);
+            if associated.exists() {
+                std::fs::remove_file(associated)?;
+            }
         }
     }
     Ok(())
@@ -532,6 +539,32 @@ mod tests {
         assert_ne!(name, page_filename("pi", Some("s1"), "1", "abc"));
         assert_ne!(name, page_filename("pi", Some("s1"), "0", "def"));
         assert_ne!(name, page_filename("claude", Some("s1"), "0", "abc"));
+    }
+
+    #[test]
+    fn should_remove_the_markdown_sidecar_when_pruning_an_old_page() {
+        use std::fs::{File, FileTimes};
+        let cache = std::env::temp_dir().join(format!("limpid-prune-md-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        std::fs::create_dir_all(&cache).unwrap();
+        let base = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        for index in 0..(KEEP_AGENT_PAGES as u64 + 1) {
+            let page = cache.join(format!("pi-{index:03}.html"));
+            File::create(&page).unwrap();
+            File::create(page.with_extension("md")).unwrap();
+            File::open(&page)
+                .unwrap()
+                .set_times(
+                    FileTimes::new().set_modified(base + std::time::Duration::from_secs(index)),
+                )
+                .unwrap();
+        }
+        let newest = cache.join(format!("pi-{:03}.html", KEEP_AGENT_PAGES));
+        prune_agent_pages(&cache, &newest).unwrap();
+        assert!(!cache.join("pi-000.html").exists());
+        assert!(!cache.join("pi-000.md").exists(), "the sidecar goes with its page");
+        assert!(cache.join(format!("pi-{:03}.md", KEEP_AGENT_PAGES)).exists());
+        std::fs::remove_dir_all(cache).unwrap();
     }
 
     #[test]

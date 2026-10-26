@@ -90,6 +90,8 @@ fn claude_read_uses_latest_completed_turn_and_ignores_read_invocation() {
     assert!(html.contains("final answer"));
     assert!(!html.contains("first answer"));
     assert!(!html.contains("<command-name>/read"));
+    let markdown = fs::read_to_string(page.with_extension("md")).unwrap();
+    assert_eq!(markdown, "final answer");
     let mut meta_path = page;
     meta_path.set_extension("meta.json");
     let meta: serde_json::Value = serde_json::from_slice(&fs::read(meta_path).unwrap()).unwrap();

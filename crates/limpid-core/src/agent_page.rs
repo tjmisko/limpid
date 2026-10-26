@@ -11,6 +11,32 @@ pub struct AgentPage {
     pub context: String,
     pub title: String,
     pub content_hash: String,
+    /// The Markdown the page was rendered from, for the native viewer.
+    pub markdown: String,
+}
+
+/// One turn per `# Turn N` section, oldest first, the prompt quoted above
+/// the response; a single turn is just its response.
+fn markdown_for(kind: &str, turns: &[(usize, &Turn)]) -> String {
+    if kind == "single" {
+        return turns
+            .first()
+            .map(|(_, turn)| turn.response.clone())
+            .unwrap_or_default();
+    }
+    let mut markdown = String::new();
+    for (index, turn) in turns {
+        markdown.push_str(&format!("# Turn {index}\n\n"));
+        if !turn.prompt.trim().is_empty() {
+            for line in turn.prompt.trim().lines() {
+                markdown.push_str(&format!("> {line}\n"));
+            }
+            markdown.push('\n');
+        }
+        markdown.push_str(turn.response.trim_end());
+        markdown.push_str("\n\n");
+    }
+    markdown
 }
 
 fn first_line(source: &str) -> String {
@@ -109,7 +135,13 @@ pub fn build(
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(" · ");
+    let chosen: Vec<(usize, &Turn)> = indices
+        .iter()
+        .rev()
+        .map(|index| (*index, kept[kept.len() - 1 - index]))
+        .collect();
     Ok(AgentPage {
+        markdown: markdown_for(kind, &chosen),
         html: render::page_with_meta(&rendered, &meta),
         context,
         title,
@@ -138,6 +170,35 @@ mod tests {
         assert!(page.html.contains("id=\"plan\""));
         assert!(page.html.contains("id=\"plan-2\""));
         assert!(page.html.contains("model · turns 0–1"));
+    }
+
+    #[test]
+    fn should_use_the_response_as_markdown_when_one_turn_is_selected() {
+        let turns = [Turn {
+            prompt: "p".into(),
+            response: "## Plan\n\n- a\n".into(),
+        }];
+        let page = build(&turns, "", None, &[]).unwrap();
+        assert_eq!(page.markdown, "## Plan\n\n- a\n");
+    }
+
+    #[test]
+    fn should_write_turn_sections_oldest_first_when_several_turns_are_selected() {
+        let turn = |prompt: &str, response: &str| Turn {
+            prompt: prompt.into(),
+            response: response.into(),
+        };
+        let page = build(
+            &[turn("first\nask", "one"), turn("", "two")],
+            "0..2",
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            page.markdown,
+            "# Turn 1\n\n> first\n> ask\n\none\n\n# Turn 0\n\ntwo\n\n"
+        );
     }
 
     #[test]
