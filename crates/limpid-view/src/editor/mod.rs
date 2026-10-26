@@ -53,6 +53,9 @@ pub struct EditorConfig {
     pub init: InitMode,
     pub cols: u16,
     pub rows: u16,
+    /// Extra environment for the nvim child (tests point it at a scratch
+    /// `XDG_CONFIG_HOME`); empty in normal use.
+    pub env: Vec<(String, String)>,
 }
 
 impl EditorConfig {
@@ -62,6 +65,7 @@ impl EditorConfig {
             init: settings.init.into(),
             cols,
             rows,
+            env: Vec::new(),
         }
     }
 }
@@ -334,6 +338,7 @@ impl Editor {
 fn start_process(config: &EditorConfig) -> Result<Process, EditorError> {
     let mut command = Command::new(&config.command);
     command.arg("--embed").arg("-n");
+    command.envs(config.env.iter().map(|(k, v)| (k, v)));
     if config.init == InitMode::Clean {
         command.arg("--clean");
     }
@@ -413,6 +418,7 @@ mod tests {
             init: InitMode::Clean,
             cols: 40,
             rows: 8,
+            env: Vec::new(),
         }
     }
 
@@ -664,5 +670,67 @@ mod tests {
         assert_eq!(config.command, "/opt/nvim");
         assert_eq!(config.init, InitMode::Clean);
         assert_eq!((config.cols, config.rows), (30, 5));
+    }
+
+    #[test]
+    fn should_report_quit_when_the_whole_editor_is_quit_with_qa() {
+        let Some(mut editor) = started() else { return };
+        editor.open("x", BoxKind::Reply).unwrap();
+        editor.input(":qa<CR>");
+        let events = collect_until(&mut editor, |_, seen| {
+            seen.iter().any(|e| matches!(e, EditorEvent::Quit { .. }))
+        });
+        assert!(events.contains(&EditorEvent::Quit { discard: false }));
+        assert!(
+            !events.iter().any(|e| matches!(e, EditorEvent::Error(_))),
+            "a reported quit must suppress the exit error: {events:?}"
+        );
+    }
+
+    fn user_mode_with_border(name: &str) -> Option<Editor> {
+        if !nvim_available() {
+            eprintln!("skipping: nvim is not installed");
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("limpid-editor-{name}-{}", std::process::id()));
+        let nvim_dir = dir.join("nvim");
+        std::fs::create_dir_all(&nvim_dir).unwrap();
+        std::fs::write(nvim_dir.join("init.lua"), "vim.opt.winborder = 'rounded'\n").unwrap();
+        let mut config = clean_config();
+        config.init = InitMode::User;
+        config.cols = 20;
+        config.rows = 6;
+        config.env = vec![
+            ("XDG_CONFIG_HOME".into(), dir.to_string_lossy().into_owned()),
+            ("XDG_DATA_HOME".into(), dir.to_string_lossy().into_owned()),
+            ("XDG_STATE_HOME".into(), dir.to_string_lossy().into_owned()),
+        ];
+        Some(Editor::spawn(&config).expect("spawn"))
+    }
+
+    #[test]
+    fn should_draw_no_border_when_the_user_config_sets_winborder() {
+        let Some(mut editor) = user_mode_with_border("border") else {
+            return;
+        };
+        editor.open("hello", BoxKind::Reply).unwrap();
+        collect_until(&mut editor, |editor, _| {
+            editor.grid().row_text(0).starts_with("hello")
+        });
+        let top = editor.grid().row_text(0);
+        assert!(!top.contains('\u{256d}'), "border leaked: {top:?}");
+        assert!(!editor.grid().row_text(1).starts_with('\u{2502}'));
+    }
+
+    #[test]
+    fn should_stay_in_normal_mode_when_opening_text_in_user_mode() {
+        let Some(mut editor) = user_mode_with_border("mode") else {
+            return;
+        };
+        editor.open("hello", BoxKind::Reply).unwrap();
+        editor.input("A world<Esc>:w<CR>");
+        collect_until(&mut editor, |_, seen| {
+            seen.contains(&EditorEvent::Save("hello world".into()))
+        });
     }
 }

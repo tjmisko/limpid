@@ -40,6 +40,8 @@ local function float_config()
     width = math.max(1, vim.o.columns),
     height = math.max(1, vim.o.lines - vim.o.cmdheight),
     style = "minimal",
+    -- limpid draws the box chrome; never inherit the user's winborder.
+    border = "none",
     zindex = 50,
   }
 end
@@ -105,10 +107,27 @@ function limpid.open(text, kind)
   if text == "" then
     vim.cmd("startinsert")
   else
+    vim.cmd("stopinsert")
     vim.cmd("normal! G$")
   end
   return true
 end
+
+-- :qa, :wqa, :xa and friends end nvim without closing the float first, so
+-- report the quit from VimLeavePre too (once; the WinClosed path clears
+-- limpid.win when it has already reported).
+vim.api.nvim_create_autocmd("VimLeavePre", {
+  callback = function()
+    local win = limpid.win
+    if not win then
+      return
+    end
+    limpid.win = nil
+    local buf = limpid.buf
+    local discard = buf and vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].modified
+    vim.rpcnotify(chan, "limpid", "quit", discard and true or false)
+  end,
+})
 
 -- Keep the box covering the whole grid when the UI is resized.
 vim.api.nvim_create_autocmd("VimResized", {
