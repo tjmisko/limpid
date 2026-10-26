@@ -40,7 +40,7 @@ pub fn escape_html(text: &str) -> String {
     result
 }
 
-fn slug(text: &str) -> String {
+pub(crate) fn slug(text: &str) -> String {
     let mut out = String::new();
     let mut dash = false;
     for ch in text.chars() {
@@ -59,6 +59,19 @@ fn slug(text: &str) -> String {
     } else {
         out.chars().take(60).collect()
     }
+}
+
+/// A slug for `text` that no earlier heading in `used` already took.
+pub(crate) fn unique_heading_id(text: &str, used: &mut HashMap<String, usize>) -> String {
+    let base = slug(text);
+    let mut id = base.clone();
+    let mut suffix = 2;
+    while used.contains_key(&id) {
+        id = format!("{base}-{suffix}");
+        suffix += 1;
+    }
+    used.insert(id.clone(), 1);
+    id
 }
 
 fn heading_text(events: &[(Event<'_>, std::ops::Range<usize>)], from: usize) -> String {
@@ -104,6 +117,21 @@ fn cached_mermaid(source: &str) -> Option<String> {
     svg.trim_start().starts_with("<svg").then_some(svg)
 }
 
+/// A saved annotation comment: the reply's question id (`None` for a plain
+/// comment) and its text, with the `-->` escape undone.
+pub(crate) fn parse_saved_annotation(raw: &str) -> Option<(Option<String>, String)> {
+    let value = raw.trim();
+    if let Some(rest) = value.strip_prefix("<!-- limpid reply ") {
+        let (field, body) = rest.split_once('\n')?;
+        if !crate::replies::valid_question_id(field) {
+            return None;
+        }
+        return Some((Some(field.to_owned()), annotation_body(body)?));
+    }
+    let body = annotation_body(value.strip_prefix("<!-- limpid comment\n")?)?;
+    Some((None, body))
+}
+
 fn saved_annotation(raw: &str, start: usize, end: usize) -> Option<String> {
     let value = raw.trim();
     if let Some(rest) = value.strip_prefix("<!-- limpid reply ") {
@@ -134,7 +162,7 @@ fn annotation_body(body: &str) -> Option<String> {
     )
 }
 
-fn safe_url(url: &str) -> bool {
+pub(crate) fn safe_url(url: &str) -> bool {
     let prefix = url.split(['/', '#', '?']).next().unwrap_or("");
     let Some((scheme, _)) = prefix.split_once(':') else {
         return true;
@@ -179,7 +207,7 @@ pub fn render_with_questions(
     )
 }
 
-fn add_source_lines(body: &str, source: &str) -> String {
+pub(crate) fn add_source_lines(body: &str, source: &str) -> String {
     let breaks = source
         .match_indices('\n')
         .map(|(byte, _)| byte)
@@ -210,7 +238,7 @@ fn add_source_lines(body: &str, source: &str) -> String {
 
 // Insert Markdown escapes only in ordinary text. Keep a boundary map so all
 // source attributes and copy operations continue to address the original bytes.
-fn protect_prose(source: &str, options: Options) -> (String, Vec<usize>) {
+pub(crate) fn protect_prose(source: &str, options: Options) -> (String, Vec<usize>) {
     let mut insert = vec![false; source.len()];
     let plain = options - Options::ENABLE_MATH - Options::ENABLE_STRIKETHROUGH;
     for (event, range) in Parser::new_ext(source, plain).into_offset_iter() {
@@ -270,6 +298,20 @@ fn protect_prose(source: &str, options: Options) -> (String, Vec<usize>) {
 }
 
 pub(crate) fn render_with_state(
+    source: &str,
+    mode: RenderMode,
+    question_headings: &[String],
+    used: &mut HashMap<String, usize>,
+    question_number: &mut usize,
+) -> Rendered {
+    let mut rendered =
+        render_raw_with_state(source, mode, question_headings, used, question_number);
+    rendered.body = add_source_lines(&rendered.body, source);
+    rendered
+}
+
+/// Like [`render_with_state`] but without the `data-line-*` attributes.
+pub(crate) fn render_raw_with_state(
     source: &str,
     mode: RenderMode,
     question_headings: &[String],
@@ -347,14 +389,7 @@ pub(crate) fn render_with_state(
                 {
                     questions_level = Some(depth);
                 }
-                let base = slug(&text);
-                let mut id = base.clone();
-                let mut suffix = 2;
-                while used.contains_key(&id) {
-                    id = format!("{base}-{suffix}");
-                    suffix += 1;
-                }
-                used.insert(id.clone(), 1);
+                let id = unique_heading_id(&text, used);
                 if title.is_empty() {
                     title = text.clone();
                 }
@@ -553,7 +588,7 @@ pub(crate) fn render_with_state(
     }
     Rendered {
         title,
-        body: add_source_lines(&body, source),
+        body,
         toc,
         sources: HashMap::from([(String::new(), source.to_owned())]),
     }
