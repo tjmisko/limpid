@@ -1,8 +1,10 @@
 pub mod agent_page;
 pub mod claude;
 pub mod codex;
+pub mod doc;
 pub mod grammars;
 pub mod highlight;
+pub mod html;
 pub mod pi;
 pub mod render;
 pub mod replies;
