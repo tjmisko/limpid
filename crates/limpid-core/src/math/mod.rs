@@ -21,6 +21,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
@@ -41,6 +42,9 @@ pub struct MathSettings {
     pub batch_size: usize,
     /// Wall-clock limit for one external tool run.
     pub timeout_seconds: u64,
+    /// Typst backend fallback: share of an inline formula's height below the
+    /// baseline, used only when the baseline marker cannot be read back.
+    pub typst_depth_fraction: f32,
 }
 
 impl Default for MathSettings {
@@ -52,6 +56,7 @@ impl Default for MathSettings {
             typst: "typst".into(),
             batch_size: 100,
             timeout_seconds: 60,
+            typst_depth_fraction: 0.22,
         }
     }
 }
@@ -74,6 +79,9 @@ impl MathSettings {
         )?;
         check("latex", &self.latex, &["auto", "pdflatex", "latex"])?;
         check("svg", &self.svg, &["auto", "dvisvgm", "pdftocairo"])?;
+        if !(0.0..=1.0).contains(&self.typst_depth_fraction) {
+            return Err("math.typst_depth_fraction must be between 0 and 1".into());
+        }
         if self.batch_size == 0 {
             return Err("math.batch_size must be at least 1".into());
         }
@@ -311,7 +319,7 @@ pub fn render_missing_with(
             .extend(missing.iter().map(|f| (f.hash.clone(), reason.to_owned())));
         return report;
     };
-    let work = cache.root().join(format!(".work-{}", std::process::id()));
+    let work = unique_work_dir(cache.root());
     for chunk in missing.chunks(settings.batch_size.max(1)) {
         let _ = std::fs::remove_dir_all(&work);
         if let Err(error) = std::fs::create_dir_all(&work) {
@@ -325,6 +333,15 @@ pub fn render_missing_with(
     }
     let _ = std::fs::remove_dir_all(&work);
     report
+}
+
+static WORK_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A scratch directory name no other call in this process or another one
+/// shares: process id plus a per-process counter.
+fn unique_work_dir(root: &Path) -> PathBuf {
+    let serial = WORK_COUNTER.fetch_add(1, Ordering::Relaxed);
+    root.join(format!(".work-{}-{serial}", std::process::id()))
 }
 
 fn render_chunk(
@@ -692,6 +709,51 @@ mod tests {
         }
     }
 
+    /// Writes a marker into its work directory, waits, and fails if another
+    /// call removed the marker in the meantime.
+    struct SlowBackend;
+
+    impl Backend for SlowBackend {
+        fn name(&self) -> &str {
+            "slow"
+        }
+        fn available(&self, _: &MathSettings) -> bool {
+            true
+        }
+        fn render(&self, batch: &[&Formula], out: &Path) -> Result<Vec<Rendered>, BackendError> {
+            let marker = out.join("marker");
+            std::fs::write(&marker, "x")?;
+            std::thread::sleep(Duration::from_millis(150));
+            if !marker.exists() {
+                return Err(BackendError("work directory was removed".into()));
+            }
+            FakeBackend {
+                calls: RefCell::new(vec![]),
+            }
+            .render(batch, out)
+        }
+    }
+
+    #[test]
+    fn should_not_share_work_directory_when_renders_run_concurrently() {
+        let dir = scratch("concurrent");
+        let cache = Cache::new(dir.join("cache"));
+        let settings = MathSettings::default();
+        let first = collect("$a$ $b$");
+        let second = collect("$c$ $d$");
+        let (one, two) = std::thread::scope(|scope| {
+            let one =
+                scope.spawn(|| render_missing_with(&cache, Some(&SlowBackend), &first, &settings));
+            let two =
+                scope.spawn(|| render_missing_with(&cache, Some(&SlowBackend), &second, &settings));
+            (one.join().unwrap(), two.join().unwrap())
+        });
+        assert!(one.failed.is_empty(), "{:?}", one.failed);
+        assert!(two.failed.is_empty(), "{:?}", two.failed);
+        assert_eq!(one.rendered + two.rendered, 4);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn should_render_then_report_cached_when_run_twice() {
         let dir = scratch("twice");
@@ -718,12 +780,12 @@ mod tests {
         );
         let entry = cache.get(&formulas[0].hash).unwrap();
         assert_eq!(entry.backend, "fake");
-        assert!(
-            !cache
-                .root()
-                .join(format!(".work-{}", std::process::id()))
-                .exists()
-        );
+        let leftovers = std::fs::read_dir(cache.root())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".work-"))
+            .count();
+        assert_eq!(leftovers, 0);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
