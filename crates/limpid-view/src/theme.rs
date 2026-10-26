@@ -255,24 +255,41 @@ mod tests {
     #[test]
     fn should_override_font_size_when_settings_set_it() {
         let settings = Settings::parse("[style]\nfont_size = 22\n").unwrap();
-        assert_eq!(Theme::from_settings(&settings, Scheme::Dark).font_size, 22.0);
+        assert_eq!(
+            Theme::from_settings(&settings, Scheme::Dark).font_size,
+            22.0
+        );
     }
 
     #[test]
     fn should_keep_default_font_size_when_setting_is_zero() {
         let settings = Settings::parse("[style]\nfont_size = 0\n").unwrap();
-        assert_eq!(Theme::from_settings(&settings, Scheme::Dark).font_size, 17.0);
+        assert_eq!(
+            Theme::from_settings(&settings, Scheme::Dark).font_size,
+            17.0
+        );
     }
 
     #[test]
     fn should_parse_hex_colours_when_well_formed() {
         assert_eq!(Color::from_hex("#7cdec7"), Some(Color::rgb(124, 222, 199)));
-        assert_eq!(Color::from_hex("#7cdec780"), Some(Color::rgba(124, 222, 199, 128)));
+        assert_eq!(
+            Color::from_hex("#7cdec780"),
+            Some(Color::rgba(124, 222, 199, 128))
+        );
     }
 
     #[test]
     fn should_reject_hex_colours_when_malformed() {
-        for text in ["", "#", "7cdec7", "#7cdec", "#7cdecg", "#7cdec7801", "#é7cdec"] {
+        for text in [
+            "",
+            "#",
+            "7cdec7",
+            "#7cdec",
+            "#7cdecg",
+            "#7cdec7801",
+            "#é7cdec",
+        ] {
             assert_eq!(Color::from_hex(text), None, "{text:?}");
         }
     }
@@ -286,8 +303,14 @@ mod tests {
     fn should_map_highlight_classes_to_palette_entries_when_known() {
         let palette = Theme::dark().hl;
         assert_eq!(palette.for_class("hl-keyword"), Some(palette.keyword));
-        assert_eq!(palette.for_class("hl-keyword-control"), Some(palette.keyword));
-        assert_eq!(palette.for_class("hl-variable-parameter"), Some(palette.parameter));
+        assert_eq!(
+            palette.for_class("hl-keyword-control"),
+            Some(palette.keyword)
+        );
+        assert_eq!(
+            palette.for_class("hl-variable-parameter"),
+            Some(palette.parameter)
+        );
         assert_eq!(palette.for_class("boolean"), Some(palette.number));
         assert_eq!(palette.for_class("hl-constructor"), Some(palette.type_));
     }
