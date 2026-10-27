@@ -113,6 +113,9 @@ impl From<RpcError> for EditorError {
     }
 }
 
+/// What a refused `:q` on a changed box says in place of nvim's E37.
+const UNSAVED_CHANGES: &str = "unsaved changes: :wq to save, :q! to discard";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorEvent {
     /// The grid changed and is consistent; repaint.
@@ -292,6 +295,10 @@ impl Editor {
             None => {}
         }
         for (kind, text) in effects.messages {
+            if text.starts_with("E37") {
+                events.push(EditorEvent::Message(UNSAVED_CHANGES.to_string()));
+                continue;
+            }
             let is_error = matches!(
                 kind.as_str(),
                 "emsg" | "echoerr" | "lua_error" | "rpc_error"
@@ -531,10 +538,36 @@ mod tests {
         editor.open("x", BoxKind::Reply).unwrap();
         editor.input("Ay<Esc>:q<CR>");
         let events = collect_until(&mut editor, |_, seen| {
-            seen.iter().any(|e| matches!(e, EditorEvent::Error(_)))
+            seen.iter().any(|e| matches!(e, EditorEvent::Message(_)))
         });
         assert!(!events.iter().any(|e| matches!(e, EditorEvent::Quit { .. })));
         assert!(editor.is_running());
+    }
+
+    #[test]
+    fn should_explain_the_refusal_in_the_box_when_quitting_a_changed_box() {
+        let Some(mut editor) = started() else { return };
+        editor.open("x", BoxKind::Reply).unwrap();
+        editor.input("Ay<Esc>:q<CR>");
+        let events = collect_until(&mut editor, |_, seen| {
+            seen.iter().any(|e| matches!(e, EditorEvent::Message(_)))
+        });
+        assert!(events.contains(&EditorEvent::Message(UNSAVED_CHANGES.to_string())));
+        assert!(!events.iter().any(|e| matches!(e, EditorEvent::Error(_))));
+    }
+
+    #[test]
+    fn should_save_and_close_when_wq_or_x_runs_on_a_changed_box() {
+        for command in [":wq<CR>", ":x<CR>"] {
+            let Some(mut editor) = started() else { return };
+            editor.open("x", BoxKind::Reply).unwrap();
+            editor.input(&format!("Ay<Esc>{command}"));
+            let events = collect_until(&mut editor, |_, seen| {
+                seen.iter().any(|e| matches!(e, EditorEvent::Quit { .. }))
+            });
+            assert!(events.contains(&EditorEvent::Save("xy".into())), "{command}");
+            assert!(events.contains(&EditorEvent::Quit { discard: false }));
+        }
     }
 
     #[test]
