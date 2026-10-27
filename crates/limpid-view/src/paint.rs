@@ -248,6 +248,100 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// A filled rectangle with corners of `radius` pixels, edges antialiased.
+    pub fn fill_round_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+        let Some((rect, radius)) = snap_round(rect, radius) else {
+            return;
+        };
+        if radius < 1.0 {
+            self.fill_rect(rect, color);
+            return;
+        }
+        self.fill_rect(
+            Rect::new(rect.x, rect.y + radius, rect.w, rect.h - 2.0 * radius),
+            color,
+        );
+        let side = rect.w - 2.0 * radius;
+        self.fill_rect(Rect::new(rect.x + radius, rect.y, side, radius), color);
+        self.fill_rect(
+            Rect::new(rect.x + radius, rect.bottom() - radius, side, radius),
+            color,
+        );
+        for (square, centre) in corners(rect, radius) {
+            self.corner_pixels(square, |x, y| {
+                let cover = coverage(radius, distance(centre, x, y));
+                (cover > 0.0).then_some((color, cover))
+            });
+        }
+    }
+
+    /// An outline of `thickness` pixels drawn inside `rect`, with rounded
+    /// corners of `radius` pixels.
+    pub fn stroke_round_rect(&mut self, rect: Rect, radius: f32, thickness: f32, color: Color) {
+        let Some((rect, radius)) = snap_round(rect, radius) else {
+            return;
+        };
+        let t = thickness.min(rect.w / 2.0).min(rect.h / 2.0);
+        if t <= 0.0 {
+            return;
+        }
+        if radius < 1.0 {
+            self.stroke_rect(rect, t, color);
+            return;
+        }
+        let side = rect.w - 2.0 * radius;
+        self.fill_rect(Rect::new(rect.x + radius, rect.y, side, t), color);
+        self.fill_rect(
+            Rect::new(rect.x + radius, rect.bottom() - t, side, t),
+            color,
+        );
+        let tall = rect.h - 2.0 * radius;
+        self.fill_rect(Rect::new(rect.x, rect.y + radius, t, tall), color);
+        self.fill_rect(
+            Rect::new(rect.right() - t, rect.y + radius, t, tall),
+            color,
+        );
+        for (square, centre) in corners(rect, radius) {
+            self.corner_pixels(square, |x, y| {
+                let d = distance(centre, x, y);
+                let ring = coverage(radius, d) - coverage((radius - t).max(0.0), d);
+                (ring > 0.0).then_some((color, ring))
+            });
+        }
+    }
+
+    /// Paint over the four corners of `rect` that lie outside a rounding of
+    /// `radius` pixels with `color`, to cut a square block's corners.
+    pub fn cut_corners(&mut self, rect: Rect, radius: f32, color: Color) {
+        let Some((rect, radius)) = snap_round(rect, radius) else {
+            return;
+        };
+        if radius < 1.0 {
+            return;
+        }
+        for (square, centre) in corners(rect, radius) {
+            self.corner_pixels(square, |x, y| {
+                let outside = 1.0 - coverage(radius, distance(centre, x, y));
+                (outside > 0.0).then_some((color, outside))
+            });
+        }
+    }
+
+    /// Blend what `shade` returns for the centre of each pixel in `square`.
+    fn corner_pixels(&mut self, square: Rect, shade: impl Fn(f32, f32) -> Option<(Color, f32)>) {
+        let (x0, y0) = (square.x as i32, square.y as i32);
+        let (x1, y1) = (square.right() as i32, square.bottom() as i32);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let Some((color, cover)) = shade(x as f32 + 0.5, y as f32 + 0.5) else {
+                    continue;
+                };
+                let alpha = (f32::from(color.a) * cover).round() as u8;
+                self.blend_at(x, y, color.r, color.g, color.b, alpha);
+            }
+        }
+    }
+
     fn clip(&self, rect: Rect) -> Option<(i32, i32, i32, i32)> {
         if !(rect.x.is_finite() && rect.y.is_finite() && rect.w.is_finite() && rect.h.is_finite()) {
             return None;
@@ -280,6 +374,58 @@ impl<'a> Canvas<'a> {
         };
         self.pixels[index] = (mix(r, 16) << 16) | (mix(g, 8) << 8) | mix(b, 0);
     }
+}
+
+/// `rect` snapped to whole pixels, and `radius` limited to half its sides.
+/// `None` when the rectangle is empty or not finite.
+fn snap_round(rect: Rect, radius: f32) -> Option<(Rect, f32)> {
+    if !(rect.x.is_finite() && rect.y.is_finite() && rect.w.is_finite() && rect.h.is_finite()) {
+        return None;
+    }
+    let (x0, y0) = (rect.x.round(), rect.y.round());
+    let snapped = Rect::new(
+        x0,
+        y0,
+        rect.right().round() - x0,
+        rect.bottom().round() - y0,
+    );
+    if snapped.w < 1.0 || snapped.h < 1.0 {
+        return None;
+    }
+    let radius = radius.round().min(snapped.w / 2.0).min(snapped.h / 2.0);
+    Some((snapped, radius.max(0.0)))
+}
+
+/// The four `radius` squares at the corners of `rect` with their circle
+/// centres.
+fn corners(rect: Rect, radius: f32) -> [(Rect, (f32, f32)); 4] {
+    let (left, top) = (rect.x, rect.y);
+    let (right, bottom) = (rect.right() - radius, rect.bottom() - radius);
+    [
+        (
+            Rect::new(left, top, radius, radius),
+            (left + radius, top + radius),
+        ),
+        (
+            Rect::new(right, top, radius, radius),
+            (right, top + radius),
+        ),
+        (
+            Rect::new(left, bottom, radius, radius),
+            (left + radius, bottom),
+        ),
+        (Rect::new(right, bottom, radius, radius), (right, bottom)),
+    ]
+}
+
+fn distance(centre: (f32, f32), x: f32, y: f32) -> f32 {
+    (x - centre.0).hypot(y - centre.1)
+}
+
+/// How much of a pixel at `distance` from the centre of a circle of `radius`
+/// lies inside it.
+fn coverage(radius: f32, distance: f32) -> f32 {
+    (radius - distance + 0.5).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -476,5 +622,59 @@ mod tests {
         canvas.fill_rounded_rect(Rect::new(-20.0, -20.0, 100.0, 100.0), 6.0, RED);
         canvas.stroke_rounded_rect(Rect::new(-3.0, -3.0, 30.0, 30.0), 6.0, 2.0, RED);
         canvas.fill_rounded_rect(Rect::new(2.0, 2.0, 1.0, 1.0), 6.0, RED);
+    }
+
+    #[test]
+    fn should_leave_the_corner_empty_and_the_middle_filled_when_filling_a_round_rect() {
+        let mut pixels = buffer(20, 20);
+        let mut canvas = Canvas::new(&mut pixels, 20, 20);
+        canvas.fill_round_rect(Rect::new(0.0, 0.0, 20.0, 20.0), 6.0, RED);
+        assert_eq!(canvas.pixel(0, 0), Some(0));
+        assert_eq!(canvas.pixel(19, 19), Some(0));
+        assert_eq!(canvas.pixel(10, 10), Some(0xff0000));
+        assert_eq!(canvas.pixel(10, 0), Some(0xff0000));
+        assert_eq!(canvas.pixel(0, 10), Some(0xff0000));
+    }
+
+    #[test]
+    fn should_match_a_plain_rect_when_the_radius_is_zero() {
+        let mut round = buffer(8, 8);
+        let mut plain = buffer(8, 8);
+        Canvas::new(&mut round, 8, 8).fill_round_rect(Rect::new(1.0, 1.0, 6.0, 6.0), 0.0, RED);
+        Canvas::new(&mut plain, 8, 8).fill_rect(Rect::new(1.0, 1.0, 6.0, 6.0), RED);
+        assert_eq!(round, plain);
+    }
+
+    #[test]
+    fn should_keep_the_middle_empty_and_the_edges_drawn_when_stroking_a_round_rect() {
+        let mut pixels = buffer(20, 20);
+        let mut canvas = Canvas::new(&mut pixels, 20, 20);
+        canvas.stroke_round_rect(Rect::new(0.0, 0.0, 20.0, 20.0), 6.0, 1.0, RED);
+        assert_eq!(canvas.pixel(0, 0), Some(0));
+        assert_eq!(canvas.pixel(10, 0), Some(0xff0000));
+        assert_eq!(canvas.pixel(0, 10), Some(0xff0000));
+        assert_eq!(canvas.pixel(10, 10), Some(0));
+        assert_ne!(canvas.pixel(2, 2), Some(0), "the arc passes near (2, 2)");
+    }
+
+    #[test]
+    fn should_paint_only_the_corners_when_cutting_a_filled_rect() {
+        let mut pixels = vec![0xff0000; 400];
+        let mut canvas = Canvas::new(&mut pixels, 20, 20);
+        canvas.cut_corners(Rect::new(0.0, 0.0, 20.0, 20.0), 6.0, Color::rgb(0, 0, 255));
+        assert_eq!(canvas.pixel(0, 0), Some(0x0000ff));
+        assert_eq!(canvas.pixel(19, 0), Some(0x0000ff));
+        assert_eq!(canvas.pixel(10, 10), Some(0xff0000));
+        assert_eq!(canvas.pixel(10, 0), Some(0xff0000));
+    }
+
+    #[test]
+    fn should_not_panic_when_a_round_rect_is_tiny_or_off_canvas() {
+        let mut pixels = buffer(6, 6);
+        let mut canvas = Canvas::new(&mut pixels, 6, 6);
+        canvas.fill_round_rect(Rect::new(-4.0, -4.0, 9.0, 3.0), 10.0, RED);
+        canvas.stroke_round_rect(Rect::new(4.0, 4.0, 1.0, 1.0), 10.0, 3.0, RED);
+        canvas.cut_corners(Rect::new(1.0, 1.0, 0.0, 0.0), 4.0, RED);
+        canvas.fill_round_rect(Rect::new(f32::NAN, 0.0, 4.0, 4.0), 2.0, RED);
     }
 }
