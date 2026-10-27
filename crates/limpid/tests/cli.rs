@@ -372,6 +372,18 @@ fn sibling_view() -> Option<std::path::PathBuf> {
     view.exists().then_some(view)
 }
 
+/// Asks a test view to exit when dropped, so a failed assertion does not
+/// leave a window and a process behind. Harmless once the socket is gone.
+struct CloseViewOnDrop(std::path::PathBuf);
+
+impl Drop for CloseViewOnDrop {
+    fn drop(&mut self) {
+        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&self.0) {
+            let _ = stream.write_all(b"{\"close\":true}\n");
+        }
+    }
+}
+
 #[test]
 fn opening_markdown_starts_the_view_and_its_socket_when_a_display_exists() {
     if !display_available() || sibling_view().is_none() {
@@ -388,6 +400,7 @@ fn opening_markdown_starts_the_view_and_its_socket_when_a_display_exists() {
     }
     let source = runtime.join("small.md");
     fs::write(&source, "# Small\n\nA paragraph.\n").unwrap();
+    let _guard = CloseViewOnDrop(view_socket_path(&runtime, Scheme::Dark));
     let output = Command::new(env!("CARGO_BIN_EXE_limpid"))
         .arg(&source)
         .env("XDG_RUNTIME_DIR", &runtime)
