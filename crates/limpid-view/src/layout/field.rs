@@ -298,6 +298,7 @@ mod tests {
                     target: 0..end,
                     kind: AnnotationKind::Comment,
                     text: box_text(rows),
+                    field: None,
                 },
                 src: end..end,
                 id: None,

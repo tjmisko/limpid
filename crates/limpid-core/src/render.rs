@@ -323,7 +323,7 @@ pub(crate) fn render_raw_with_state(
     } else {
         Default::default()
     };
-    let mut highlighter = crate::highlight::PageHighlighter::new();
+    let mut highlighter = crate::highlight::Highlighter::new();
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_STRIKETHROUGH

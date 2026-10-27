@@ -34,10 +34,33 @@ pub struct Doc {
     pub toc: Vec<TocEntry>,
     /// Question fields in document order.
     pub fields: Vec<FieldRef>,
-    /// The page body as rendered from `source`, without `data-line-*`
-    /// attributes. `html::emit` serves it so the output stays byte-identical
-    /// to the renderer.
-    pub(crate) body: String,
+    /// How `source` was parsed; `html::emit` renders it the same way.
+    pub(crate) mode: Mode,
+    /// The question headings in force when `source` was parsed.
+    pub(crate) question_headings: Vec<String>,
+}
+
+impl Doc {
+    /// The number of fenced or indented code blocks anywhere in the document
+    /// (Mermaid fences are not code blocks).
+    pub fn code_block_count(&self) -> usize {
+        fn count(blocks: &[Block]) -> usize {
+            blocks
+                .iter()
+                .map(|block| match &block.kind {
+                    BlockKind::Code { .. } => 1,
+                    BlockKind::Quote { blocks, .. } | BlockKind::FootnoteDef { blocks, .. } => {
+                        count(blocks)
+                    }
+                    BlockKind::List { items, .. } => {
+                        items.iter().map(|item| count(&item.blocks)).sum()
+                    }
+                    _ => 0,
+                })
+                .sum()
+        }
+        count(&self.blocks)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +139,8 @@ pub enum BlockKind {
         id: String,
     },
     Paragraph(Vec<Inline>),
+    /// `spans` is empty after [`parse`]; fill it on demand with
+    /// [`crate::highlight::highlight_spans`] over `text`.
     Code {
         lang: Option<String>,
         text: String,
@@ -150,7 +175,9 @@ pub enum BlockKind {
         alt: String,
         title: Option<String>,
     },
-    /// Sanitized in file mode, escaped in agent mode.
+    /// Sanitized by ammonia in file mode. In agent mode the raw text exactly as
+    /// written (not HTML-escaped): the viewer shows it as text and `html::emit`
+    /// escapes it.
     Html(String),
     /// A question under a questions heading: the prompt and its suggested
     /// answers. Replaces the numbered list item it came from.
@@ -160,11 +187,13 @@ pub enum BlockKind {
         options: Vec<Vec<Inline>>,
     },
     /// A saved reply or comment. `target` is the byte range of the block it
-    /// follows (its own range when nothing precedes it).
+    /// follows (its own range when nothing precedes it). `field` is the
+    /// question id a reply belongs to; `None` for comments.
     Annotation {
         target: Range<usize>,
         kind: AnnotationKind,
         text: String,
+        field: Option<String>,
     },
     FootnoteDef {
         label: String,
@@ -195,6 +224,8 @@ pub enum Inline {
         hash: String,
     },
     FootnoteRef(String),
+    /// Sanitized by ammonia in file mode; the raw text, not HTML-escaped, in
+    /// agent mode.
     Html(String),
 }
 
@@ -212,16 +243,6 @@ pub fn math_hash(latex: &str, display: bool) -> String {
 /// closest readable structure.
 pub fn parse(markdown: &str, mode: Mode, settings: &Settings) -> Doc {
     let headings = &settings.questions.headings;
-    let mut used = HashMap::new();
-    let mut question_number = 0;
-    let rendered = render::render_raw_with_state(
-        markdown,
-        mode.into(),
-        headings,
-        &mut used,
-        &mut question_number,
-    );
-
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_STRIKETHROUGH
@@ -245,7 +266,6 @@ pub fn parse(markdown: &str, mode: Mode, settings: &Settings) -> Doc {
         list_depth: 0,
         block_depth: 0,
         inline_depth: 0,
-        highlighter: None,
         toc: Vec::new(),
         title: None,
     };
@@ -257,7 +277,8 @@ pub fn parse(markdown: &str, mode: Mode, settings: &Settings) -> Doc {
         blocks,
         toc: builder.toc,
         fields,
-        body: rendered.body,
+        mode,
+        question_headings: headings.clone(),
     }
 }
 
@@ -304,7 +325,6 @@ struct Builder<'a> {
     list_depth: usize,
     block_depth: usize,
     inline_depth: usize,
-    highlighter: Option<crate::highlight::PageHighlighter>,
     toc: Vec<TocEntry>,
     title: Option<String>,
 }
@@ -611,19 +631,11 @@ impl<'a> Builder<'a> {
             });
             return;
         }
-        let spans = if lang.is_empty() {
-            Vec::new()
-        } else {
-            let highlighter = self
-                .highlighter
-                .get_or_insert_with(crate::highlight::PageHighlighter::new);
-            parse_highlighted(&highlighter.render(&lang, &text)).1
-        };
         blocks.push(Block {
             kind: BlockKind::Code {
                 lang: (!lang.is_empty()).then_some(lang),
                 text,
-                spans,
+                spans: Vec::new(),
             },
             src,
             id: None,
@@ -783,12 +795,13 @@ impl<'a> Builder<'a> {
 
     fn push_html(&mut self, raw: String, range: Range<usize>, blocks: &mut Vec<Block>) {
         let kind = match self.mode {
-            Mode::Agent => BlockKind::Html(render::escape_html(&raw)),
+            Mode::Agent => BlockKind::Html(raw),
             Mode::File => match render::parse_saved_annotation(&raw) {
                 Some((field, text)) => BlockKind::Annotation {
                     target: blocks
                         .last()
                         .map_or(range.clone(), |block| block.src.clone()),
+                    field: field.clone(),
                     kind: if field.is_some() {
                         AnnotationKind::Reply
                     } else {
@@ -853,7 +866,7 @@ impl<'a> Builder<'a> {
                 Event::InlineHtml(raw) => {
                     self.position += 1;
                     Inline::Html(match self.mode {
-                        Mode::Agent => render::escape_html(&raw),
+                        Mode::Agent => raw.to_string(),
                         Mode::File => ammonia::clean(&raw),
                     })
                 }
@@ -1005,51 +1018,6 @@ fn field_from_item(id: String, blocks: Vec<Block>, src: Range<usize>) -> Block {
         src,
         id: Some(id),
     }
-}
-
-fn unescape_html(text: &str) -> String {
-    text.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&")
-}
-
-/// Undo the highlighter's HTML: the plain text and the spans over it.
-pub(crate) fn parse_highlighted(html: &str) -> (String, Vec<HlSpan>) {
-    const OPEN: &str = "<span class=\"hl-";
-    let mut text = String::new();
-    let mut spans: Vec<HlSpan> = Vec::new();
-    let mut open: Vec<usize> = Vec::new();
-    let mut rest = html;
-    while !rest.is_empty() {
-        if let Some(after) = rest.strip_prefix(OPEN)
-            && let Some((class, tail)) = after.split_once("\">")
-        {
-            open.push(spans.len());
-            spans.push(HlSpan {
-                range: text.len()..text.len(),
-                class: class.to_owned(),
-            });
-            rest = tail;
-            continue;
-        }
-        if let Some(tail) = rest.strip_prefix("</span>") {
-            if let Some(index) = open.pop() {
-                spans[index].range.end = text.len();
-            }
-            rest = tail;
-            continue;
-        }
-        let first_width = rest.chars().next().map_or(1, char::len_utf8);
-        let next = rest[first_width..]
-            .find('<')
-            .map_or(rest.len(), |at| at + first_width);
-        text.push_str(&unescape_html(&rest[..next]));
-        rest = &rest[next..];
-    }
-    spans.retain(|span| !span.range.is_empty());
-    (text, spans)
 }
 
 #[cfg(test)]
@@ -1288,10 +1256,17 @@ mod tests {
             .iter()
             .find(|block| matches!(block.kind, BlockKind::Annotation { .. }))
             .expect("annotation block");
-        let BlockKind::Annotation { target, kind, text } = &annotation.kind else {
+        let BlockKind::Annotation {
+            target,
+            kind,
+            text,
+            field,
+        } = &annotation.kind
+        else {
             unreachable!();
         };
         assert_eq!(*kind, AnnotationKind::Reply);
+        assert_eq!(field.as_deref(), Some("q1"));
         assert_eq!(text, "A --> B");
         let field = doc
             .blocks
@@ -1319,13 +1294,42 @@ mod tests {
         let BlockKind::Html(html) = &doc.blocks[0].kind else {
             panic!("{:?}", doc.blocks);
         };
-        assert!(html.contains("&lt;script&gt;"), "{html}");
+        assert_eq!(html, "<script>alert(1)</script>\n");
         let doc = file(source);
         let BlockKind::Html(html) = &doc.blocks[0].kind else {
             panic!("{:?}", doc.blocks);
         };
         assert!(!html.contains("<script"), "{html}");
         assert!(!html.contains("alert"), "{html}");
+    }
+
+    #[test]
+    fn should_keep_inline_html_raw_when_mode_is_agent() {
+        let doc = agent("a <b>bold</b> & c\n");
+        let BlockKind::Paragraph(inlines) = &doc.blocks[0].kind else {
+            panic!("{:?}", doc.blocks);
+        };
+        assert!(inlines.contains(&Inline::Html("<b>".into())), "{inlines:?}");
+        let doc = file("a <b onclick=\"x()\">bold</b>\n");
+        let BlockKind::Paragraph(inlines) = &doc.blocks[0].kind else {
+            panic!();
+        };
+        assert!(
+            inlines.contains(&Inline::Html("<b></b>".into()))
+                || inlines
+                    .iter()
+                    .any(|i| matches!(i, Inline::Html(h) if !h.contains("onclick"))),
+            "{inlines:?}"
+        );
+    }
+
+    #[test]
+    fn should_leave_the_field_empty_when_annotation_is_a_comment() {
+        let doc = file("Body.\n\n<!-- limpid comment\nNote -->\n");
+        let BlockKind::Annotation { field, .. } = &doc.blocks[1].kind else {
+            panic!("{:?}", doc.blocks);
+        };
+        assert_eq!(*field, None);
     }
 
     #[test]
@@ -1585,39 +1589,5 @@ mod tests {
                 .all(|inline| !matches!(inline, Inline::Math { .. }))
         );
         assert_eq!(plain_text(inlines), "It costs $5 and $6 total.");
-    }
-
-    #[test]
-    fn should_extract_spans_when_highlighted_html_is_nested_and_escaped() {
-        let (text, spans) = parse_highlighted(
-            "<span class=\"hl-keyword\">fn</span> a&lt;b&gt;<span class=\"hl-outer\">x<span class=\"hl-inner\">&amp;</span></span>",
-        );
-        assert_eq!(text, "fn a<b>x&");
-        assert_eq!(
-            spans,
-            vec![
-                HlSpan {
-                    range: 0..2,
-                    class: "keyword".into()
-                },
-                HlSpan {
-                    range: 7..9,
-                    class: "outer".into()
-                },
-                HlSpan {
-                    range: 8..9,
-                    class: "inner".into()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn should_return_plain_text_when_highlighted_html_has_no_spans() {
-        assert_eq!(
-            parse_highlighted("a &lt; b"),
-            ("a < b".to_owned(), Vec::new())
-        );
-        assert_eq!(parse_highlighted(""), (String::new(), Vec::new()));
     }
 }

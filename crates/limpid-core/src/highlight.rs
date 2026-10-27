@@ -1,12 +1,16 @@
-use crate::{grammars, render::escape_html};
+use crate::{doc::HlSpan, grammars, render::escape_html};
 use libloading::Library;
 use std::{
     collections::{BTreeSet, HashMap},
     fs,
+    ops::Range,
     path::PathBuf,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 use tree_sitter::Language;
-use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
+use tree_sitter_highlight::{
+    HighlightConfiguration, HighlightEvent, Highlighter as TreeSitterHighlighter,
+};
 use tree_sitter_language::LanguageFn;
 
 struct Grammar {
@@ -16,7 +20,11 @@ struct Grammar {
     _library: Library,
 }
 
-pub struct PageHighlighter {
+static CONSTRUCTED: AtomicUsize = AtomicUsize::new(0);
+
+/// Compiled grammars, cached per language for the life of the value. Parse
+/// trees are dropped after each call. Build one per process and reuse it.
+pub struct Highlighter {
     directory: Option<PathBuf>,
     aliases: HashMap<String, String>,
     enabled: Option<BTreeSet<String>>,
@@ -25,14 +33,35 @@ pub struct PageHighlighter {
     configured_count: usize,
 }
 
-impl Default for PageHighlighter {
+/// One step of a highlight run over the source.
+enum Step {
+    Source(Range<usize>),
+    Open(usize),
+    Close,
+}
+
+impl Default for Highlighter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl PageHighlighter {
+/// The spans of `source` in `language`, as byte ranges plus the class name
+/// without the `hl-` prefix. Spans nest: an inner span follows its outer one.
+/// An unknown, disabled or broken grammar yields no spans.
+pub fn highlight_spans(language: &str, source: &str, highlighter: &mut Highlighter) -> Vec<HlSpan> {
+    highlighter.spans(language, source)
+}
+
+impl Highlighter {
+    /// How many highlighters this process has built. Tests use it to prove a
+    /// code path never reaches for one.
+    pub fn constructed_count() -> usize {
+        CONSTRUCTED.load(Ordering::SeqCst)
+    }
+
     pub fn new() -> Self {
+        CONSTRUCTED.fetch_add(1, Ordering::SeqCst);
         let aliases: HashMap<String, String> = grammars::catalog()
             .map(|catalog| {
                 catalog
@@ -73,16 +102,62 @@ impl PageHighlighter {
     }
 
     pub fn render(&mut self, language: &str, source: &str) -> String {
-        let Some(name) = self.aliases.get(&language.to_ascii_lowercase()) else {
+        let Some(steps) = self.run(language, source) else {
             return escape_html(source);
         };
-        let name = name.clone();
+        let mut html = String::new();
+        for step in steps {
+            match step {
+                Step::Source(range) => html.push_str(&escape_html(&source[range])),
+                Step::Open(class) => {
+                    html.push_str("<span class=\"hl-");
+                    html.push_str(&self.classes[class]);
+                    html.push_str("\">");
+                }
+                Step::Close => html.push_str("</span>"),
+            }
+        }
+        html
+    }
+
+    /// See [`highlight_spans`].
+    pub fn spans(&mut self, language: &str, source: &str) -> Vec<HlSpan> {
+        let Some(steps) = self.run(language, source) else {
+            return Vec::new();
+        };
+        let mut spans: Vec<HlSpan> = Vec::new();
+        let mut open: Vec<usize> = Vec::new();
+        let mut position = 0;
+        for step in steps {
+            match step {
+                Step::Source(range) => position = range.end,
+                Step::Open(class) => {
+                    open.push(spans.len());
+                    spans.push(HlSpan {
+                        range: position..position,
+                        class: self.classes[class].clone(),
+                    });
+                }
+                Step::Close => {
+                    if let Some(index) = open.pop() {
+                        spans[index].range.end = position;
+                    }
+                }
+            }
+        }
+        spans.retain(|span| !span.range.is_empty());
+        spans
+    }
+
+    /// Highlight `source`, or `None` when the language has no usable grammar.
+    fn run(&mut self, language: &str, source: &str) -> Option<Vec<Step>> {
+        let name = self.aliases.get(&language.to_ascii_lowercase())?.clone();
         if self
             .enabled
             .as_ref()
             .is_some_and(|enabled| !enabled.contains(&name))
         {
-            return escape_html(source);
+            return None;
         }
         if !self.loaded.contains_key(&name) {
             self.loaded.insert(name.clone(), self.load(&name).ok());
@@ -129,37 +204,26 @@ impl PageHighlighter {
             }
         }
         self.configure_loaded();
-        let Some(grammar) = self.loaded.get(&name).and_then(Option::as_ref) else {
-            return escape_html(source);
-        };
-        let mut highlighter = Highlighter::new();
-        let Ok(events) =
-            highlighter.highlight(&grammar.config, source.as_bytes(), None, |injected| {
+        let grammar = self.loaded.get(&name).and_then(Option::as_ref)?;
+        let mut tree_sitter = TreeSitterHighlighter::new();
+        let events = tree_sitter
+            .highlight(&grammar.config, source.as_bytes(), None, |injected| {
                 self.aliases
                     .get(&injected.to_ascii_lowercase())
                     .and_then(|canonical| self.loaded.get(canonical))
                     .and_then(Option::as_ref)
                     .map(|loaded| &loaded.config)
             })
-        else {
-            return escape_html(source);
-        };
-        let mut html = String::new();
+            .ok()?;
+        let mut steps = Vec::new();
         for event in events {
-            match event {
-                Ok(HighlightEvent::Source { start, end }) => {
-                    html.push_str(&escape_html(&source[start..end]));
-                }
-                Ok(HighlightEvent::HighlightStart(highlight)) => {
-                    html.push_str("<span class=\"hl-");
-                    html.push_str(&self.classes[highlight.0]);
-                    html.push_str("\">");
-                }
-                Ok(HighlightEvent::HighlightEnd) => html.push_str("</span>"),
-                Err(_) => return escape_html(source),
-            }
+            steps.push(match event.ok()? {
+                HighlightEvent::Source { start, end } => Step::Source(start..end),
+                HighlightEvent::HighlightStart(highlight) => Step::Open(highlight.0),
+                HighlightEvent::HighlightEnd => Step::Close,
+            });
         }
-        html
+        Some(steps)
     }
 
     fn configure_loaded(&mut self) {
@@ -218,7 +282,7 @@ mod tests {
 
     #[test]
     fn missing_grammar_and_unknown_fence_are_escaped() {
-        let mut highlighter = PageHighlighter::new();
+        let mut highlighter = Highlighter::new();
         assert_eq!(
             highlighter.render("unknown-language", "<script>"),
             "&lt;script&gt;"
@@ -232,7 +296,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("limpid-bad-grammar-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("rust.so"), b"not a shared object").unwrap();
-        let mut highlighter = PageHighlighter::new();
+        let mut highlighter = Highlighter::new();
         highlighter.directory = Some(root.clone());
         assert_eq!(highlighter.render("rust", "<script>"), "&lt;script&gt;");
         fs::remove_dir_all(root).unwrap();
@@ -240,7 +304,7 @@ mod tests {
 
     #[test]
     fn configured_grammar_list_disables_other_languages() {
-        let mut highlighter = PageHighlighter::new();
+        let mut highlighter = Highlighter::new();
         highlighter.enabled = Some(BTreeSet::from(["rust".to_owned()]));
         if highlighter
             .directory
@@ -254,7 +318,7 @@ mod tests {
 
     #[test]
     fn installed_rust_grammar_highlights_without_losing_source() {
-        let mut highlighter = PageHighlighter::new();
+        let mut highlighter = Highlighter::new();
         let installed = highlighter
             .directory
             .as_ref()
@@ -268,7 +332,7 @@ mod tests {
 
     #[test]
     fn installed_default_queries_compile() {
-        let highlighter = PageHighlighter::new();
+        let highlighter = Highlighter::new();
         let Some(directory) = &highlighter.directory else {
             return;
         };
@@ -286,7 +350,7 @@ mod tests {
 
     #[test]
     fn rust_macro_body_is_highlighted_when_installed() {
-        let mut highlighter = PageHighlighter::new();
+        let mut highlighter = Highlighter::new();
         if !highlighter
             .directory
             .as_ref()
@@ -303,7 +367,7 @@ mod tests {
 
     #[test]
     fn markdown_fence_injects_its_installed_language() {
-        let mut highlighter = PageHighlighter::new();
+        let mut highlighter = Highlighter::new();
         if !highlighter
             .directory
             .as_ref()

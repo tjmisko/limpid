@@ -1,7 +1,7 @@
 //! HTML output for a [`Doc`].
 
 use crate::doc::Doc;
-use crate::render::{Rendered, TocItem, add_source_lines};
+use crate::render::{Rendered, TocItem, add_source_lines, render_raw_with_state};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,11 +18,23 @@ impl Default for EmitOptions {
 
 /// The page body for `doc`, byte-identical to what [`crate::render::render`]
 /// produces for the same Markdown and mode.
+///
+/// The page is rendered from `doc.source` in the mode the document was parsed
+/// with, highlighting code eagerly; `doc` itself is not read for blocks.
 pub fn emit(doc: &Doc, options: &EmitOptions) -> String {
+    let mut used = HashMap::new();
+    let mut question_number = 0;
+    let rendered = render_raw_with_state(
+        &doc.source,
+        doc.mode.into(),
+        &doc.question_headings,
+        &mut used,
+        &mut question_number,
+    );
     if options.source_lines {
-        add_source_lines(&doc.body, &doc.source)
+        add_source_lines(&rendered.body, &doc.source)
     } else {
-        doc.body.clone()
+        rendered.body
     }
 }
 

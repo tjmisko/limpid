@@ -1151,10 +1151,13 @@ mod tests {
 
     #[test]
     fn should_ignore_nonsense_view_values_when_building_the_theme() {
-        let settings = Settings::parse(
-            "[view]\nline_height = -1.0\nscroll_fraction = 0.0\nfont = \"  \"\ncontent_width = 0\n",
-        )
-        .unwrap();
+        // `Settings::parse` rejects these; the theme must still cope with a
+        // hand-built `Settings`.
+        let mut settings = Settings::default();
+        settings.view.line_height = -1.0;
+        settings.view.scroll_fraction = 0.0;
+        settings.view.font = "  ".into();
+        settings.view.content_width = 0;
         let theme = theme_for(&settings, Scheme::Dark);
         assert_eq!(theme.line_height, 1.65);
         assert_eq!(theme.scroll_fraction, 0.5);
@@ -1383,7 +1386,10 @@ mod tests {
     #[test]
     fn should_report_no_change_when_refreshing_hashes_no_block_shows() {
         let mut page = chrome_page("plain text\n");
-        assert!(!page.refresh_pending(&["abcd".to_owned()]), "nothing laid out yet");
+        assert!(
+            !page.refresh_pending(&["abcd".to_owned()]),
+            "nothing laid out yet"
+        );
         paint(&mut page, 500, 300, 1.0);
         assert!(!page.refresh_pending(&["abcd".to_owned()]));
         assert!(!page.refresh_pending(&[]));

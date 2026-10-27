@@ -307,6 +307,7 @@ mod tests {
                 target: 0..end,
                 kind: AnnotationKind::Comment,
                 text: box_text(5),
+                field: None,
             },
             src: end..end,
             id: None,

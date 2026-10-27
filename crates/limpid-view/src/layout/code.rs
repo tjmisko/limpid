@@ -387,12 +387,25 @@ mod tests {
 
     #[test]
     fn should_draw_highlight_colours_inside_the_block_when_painting() {
-        let (_, mut layout) = layout_with(
+        // `parse` leaves spans empty; the viewer fills them on demand.
+        let mut doc = parse(
             "```rust\nfn main() {}\n```\n",
+            Mode::File,
+            &Settings::default(),
+        );
+        let mut highlighter = limpid_core::highlight::Highlighter::new();
+        if let limpid_core::doc::BlockKind::Code { text, spans, .. } = &mut doc.blocks[0].kind {
+            *spans = limpid_core::highlight::highlight_spans("rust", text, &mut highlighter);
+        }
+        let mut fonts = Fonts::new();
+        let mut layout = lay_out_with(
+            &doc,
             700.0,
+            &Theme::dark(),
+            1.0,
+            &mut fonts,
             LayoutOptions::default(),
         );
-        let mut fonts = Fonts::new();
         let mut pixels = vec![0u32; 700 * 200];
         layout.paint(&mut Canvas::new(&mut pixels, 700, 200), &mut fonts, 0.0);
         let theme = Theme::dark();

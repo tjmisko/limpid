@@ -95,7 +95,9 @@ impl DocIndex {
                     src: block.src.clone(),
                     options: options.iter().map(|option| inlines_text(option)).collect(),
                 }),
-                BlockKind::Annotation { target, kind, text } => index.notes.push(SavedNote {
+                BlockKind::Annotation {
+                    target, kind, text, ..
+                } => index.notes.push(SavedNote {
                     src: block.src.clone(),
                     target: target.clone(),
                     kind: *kind,
@@ -440,6 +442,7 @@ impl Splicer<'_> {
                 target: anchor.clone(),
                 kind,
                 text,
+                field: None,
             },
             src,
             id: None,
