@@ -352,7 +352,7 @@ impl DocPage {
         self.clock.elapsed().as_millis() as u64
     }
 
-    fn flash(&mut self, text: impl Into<String>) {
+    pub fn flash(&mut self, text: impl Into<String>) {
         let now = self.now_ms();
         self.nav.flash(text, now);
     }

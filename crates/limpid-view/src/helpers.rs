@@ -16,15 +16,24 @@ use limpid_core::{
 use std::{
     collections::HashSet,
     ffi::OsString,
+    io::Read,
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::mpsc::{Receiver, channel},
+    thread,
     time::{Duration, Instant},
 };
 
-/// A math run that takes longer than this is killed. Typesetting a page is
-/// seconds of work; this only bounds a wedged TeX.
-pub const MATH_TIME_LIMIT: Duration = Duration::from_secs(120);
+/// How much of a helper's stderr is kept to find its first error line.
+const STDERR_CAPTURE_BYTES: u64 = 16 * 1024;
+
+/// How long to wait for the stderr reader after a child has exited. A
+/// grandchild that kept the pipe open must not stall the page.
+const STDERR_DRAIN_WAIT: Duration = Duration::from_millis(200);
+
+/// Longest status line a helper failure puts on the page.
+const FLASH_LIMIT_CHARS: usize = 120;
 
 /// Added to `mermaid.timeout_seconds` before the viewer gives up on the host
 /// helper, which enforces the timeout itself.
@@ -67,9 +76,18 @@ pub fn locate_installed(name: &str) -> Option<PathBuf> {
     sibling.or_else(|| math::find_binary(name, None))
 }
 
+/// A duration of `seconds` that never panics: a negative or NaN value is
+/// zero, and one too large to represent saturates at [`Duration::MAX`].
+pub fn duration_from_seconds(seconds: f64) -> Duration {
+    if seconds.is_nan() || seconds <= 0.0 {
+        return Duration::ZERO;
+    }
+    Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX)
+}
+
 /// The Mermaid fences of `source`, as `(hash)`, in document order.
-pub fn mermaid_hashes(source: &str, settings: &Settings) -> Vec<String> {
-    let doc = parse(source, Mode::File, settings);
+pub fn mermaid_hashes(source: &str, mode: Mode, settings: &Settings) -> Vec<String> {
+    let doc = parse(source, mode, settings);
     let mut seen = HashSet::new();
     let mut hashes = Vec::new();
     collect_mermaid(&doc.blocks, &mut seen, &mut hashes);
@@ -112,6 +130,7 @@ pub fn is_cached(kind: HelperKind, hash: &str) -> bool {
 /// its program is not installed, so the page keeps showing source.
 pub fn plan(
     source: &str,
+    mode: Mode,
     file: &Path,
     settings: &Settings,
     attempted: &HashSet<String>,
@@ -135,13 +154,13 @@ pub fn plan(
                 program,
                 args: vec!["math".into(), file.into()],
                 hashes,
-                time_limit: MATH_TIME_LIMIT,
+                time_limit: duration_from_seconds(settings.math.timeout_seconds),
             });
         }
     }
 
     if settings.mermaid.enabled {
-        let hashes: Vec<String> = mermaid_hashes(source, settings)
+        let hashes: Vec<String> = mermaid_hashes(source, mode, settings)
             .into_iter()
             .filter(|hash| wanted(HelperKind::Mermaid, hash))
             .collect();
@@ -153,8 +172,8 @@ pub fn plan(
                 program,
                 args: vec!["--render-mermaid".into(), file.into()],
                 hashes,
-                time_limit: Duration::from_secs_f64(settings.mermaid.timeout_seconds)
-                    + MERMAID_GRACE,
+                time_limit: duration_from_seconds(settings.mermaid.timeout_seconds)
+                    .saturating_add(MERMAID_GRACE),
             });
         }
     }
@@ -165,6 +184,37 @@ struct Running {
     job: HelperJob,
     child: Child,
     started: Instant,
+    stderr: Receiver<String>,
+}
+
+/// A helper that exited non-zero or ran out of time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelperFailure {
+    pub kind: HelperKind,
+    /// The first error line the helper printed, or a description of how it
+    /// ended when it printed none.
+    pub message: String,
+}
+
+impl HelperFailure {
+    /// The text for the page status line.
+    pub fn flash_text(&self) -> String {
+        let name = match self.kind {
+            HelperKind::Math => "math",
+            HelperKind::Mermaid => "mermaid",
+        };
+        let text = format!("{name}: {}", self.message);
+        if text.chars().count() <= FLASH_LIMIT_CHARS {
+            return text;
+        }
+        let clipped: String = text.chars().take(FLASH_LIMIT_CHARS - 1).collect();
+        format!("{clipped}\u{2026}")
+    }
+}
+
+/// The first line of `stderr` that says anything.
+pub fn first_error_line(stderr: &str) -> Option<&str> {
+    stderr.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
 impl Running {
@@ -184,6 +234,7 @@ impl Running {
 #[derive(Default)]
 pub struct Helpers {
     running: Vec<Running>,
+    failures: Vec<HelperFailure>,
 }
 
 impl Helpers {
@@ -197,10 +248,11 @@ impl Helpers {
                 continue;
             }
             match spawn(&job) {
-                Ok(child) => self.running.push(Running {
+                Ok((child, stderr)) => self.running.push(Running {
                     job,
                     child,
                     started: Instant::now(),
+                    stderr,
                 }),
                 Err(error) => eprintln!("limpid-view: {}: {error}", job.program.display()),
             }
@@ -219,7 +271,8 @@ impl Helpers {
         let mut index = 0;
         while index < self.running.len() {
             let run = &mut self.running[index];
-            let exited = matches!(run.child.try_wait(), Ok(Some(_)) | Err(_));
+            let status = run.child.try_wait();
+            let exited = matches!(status, Ok(Some(_)) | Err(_));
             let expired = now.saturating_duration_since(run.started) > run.job.time_limit;
             if !exited && !expired {
                 index += 1;
@@ -230,10 +283,37 @@ impl Helpers {
                 run.kill();
             }
             let kind = run.job.kind;
+            let failed = !exited || matches!(status, Ok(Some(status)) if !status.success());
+            if failed {
+                let message = failure_message(&run, exited);
+                eprintln!("limpid-view: {kind:?} helper failed: {message}");
+                self.failures.push(HelperFailure { kind, message });
+            }
             ready.extend(run.job.hashes.into_iter().filter(|hash| cached(kind, hash)));
         }
         ready
     }
+}
+
+impl Helpers {
+    /// The failures seen since the last call, for the page status.
+    pub fn take_failures(&mut self) -> Vec<HelperFailure> {
+        std::mem::take(&mut self.failures)
+    }
+}
+
+fn failure_message(run: &Running, exited: bool) -> String {
+    let stderr = run
+        .stderr
+        .recv_timeout(STDERR_DRAIN_WAIT)
+        .unwrap_or_default();
+    if let Some(line) = first_error_line(&stderr) {
+        return line.to_owned();
+    }
+    if !exited {
+        return "timed out".into();
+    }
+    "failed without output".into()
 }
 
 impl Drop for Helpers {
@@ -244,14 +324,27 @@ impl Drop for Helpers {
     }
 }
 
-fn spawn(job: &HelperJob) -> std::io::Result<Child> {
-    Command::new(&job.program)
+fn spawn(job: &HelperJob) -> std::io::Result<(Child, Receiver<String>)> {
+    let mut child = Command::new(&job.program)
         .args(&job.args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .process_group(0)
-        .spawn()
+        .spawn()?;
+    let (sender, receiver) = channel();
+    if let Some(mut pipe) = child.stderr.take() {
+        thread::spawn(move || {
+            let mut kept = Vec::new();
+            let _ = (&mut pipe)
+                .take(STDERR_CAPTURE_BYTES)
+                .read_to_end(&mut kept);
+            let _ = sender.send(String::from_utf8_lossy(&kept).into_owned());
+            // Keep draining so a chatty child never blocks on a full pipe.
+            let _ = std::io::copy(&mut pipe, &mut std::io::sink());
+        });
+    }
+    Ok((child, receiver))
 }
 
 #[cfg(test)]
@@ -282,6 +375,7 @@ mod tests {
     ) -> Vec<HelperJob> {
         plan(
             source,
+            Mode::File,
             Path::new("/n/a.md"),
             settings,
             attempted,
@@ -430,14 +524,14 @@ mod tests {
     #[test]
     fn should_find_diagrams_inside_lists_and_quotes_when_collecting() {
         let source = "- item\n\n  ```mermaid\n  graph LR; A-->B\n  ```\n\n> ```mermaid\n> graph LR; C-->D\n> ```\n";
-        let hashes = mermaid_hashes(source, &Settings::default());
+        let hashes = mermaid_hashes(source, Mode::File, &Settings::default());
         assert_eq!(hashes.len(), 2, "{hashes:?}");
     }
 
     #[test]
     fn should_list_a_repeated_diagram_once_when_collecting() {
         let fence = "```mermaid\ngraph LR; A-->B\n```\n\n";
-        let hashes = mermaid_hashes(&format!("{fence}{fence}"), &Settings::default());
+        let hashes = mermaid_hashes(&format!("{fence}{fence}"), Mode::File, &Settings::default());
         assert_eq!(hashes.len(), 1);
     }
 
@@ -611,5 +705,142 @@ mod tests {
         }]);
         assert!(deferred.is_empty());
         assert!(!helpers.busy());
+    }
+
+    #[test]
+    fn should_not_panic_when_building_durations_at_the_extremes() {
+        assert_eq!(duration_from_seconds(f64::MAX), Duration::MAX);
+        assert_eq!(duration_from_seconds(f64::INFINITY), Duration::MAX);
+        assert_eq!(duration_from_seconds(f64::NAN), Duration::ZERO);
+        assert_eq!(duration_from_seconds(-5.0), Duration::ZERO);
+        assert_eq!(duration_from_seconds(0.0), Duration::ZERO);
+        assert_eq!(duration_from_seconds(1.5), Duration::from_millis(1500));
+    }
+
+    #[test]
+    fn should_saturate_the_mermaid_limit_when_the_timeout_is_enormous() {
+        let mut huge = Settings::default();
+        huge.mermaid.timeout_seconds = f64::MAX;
+        let jobs = plan_for(
+            PAGE,
+            &huge,
+            &HashSet::new(),
+            &everything_installed,
+            &nothing_cached,
+        );
+        assert_eq!(jobs[1].time_limit, Duration::MAX);
+    }
+
+    #[test]
+    fn should_use_the_math_timeout_setting_when_planning() {
+        let jobs = plan_for(
+            PAGE,
+            &settings("[math]\ntimeout_seconds = 7\n"),
+            &HashSet::new(),
+            &everything_installed,
+            &nothing_cached,
+        );
+        assert_eq!(jobs[0].time_limit, Duration::from_secs(7));
+    }
+
+    #[test]
+    fn should_find_diagrams_in_agent_mode_when_planning() {
+        let jobs = plan(
+            PAGE,
+            Mode::Agent,
+            Path::new("/n/a.md"),
+            &Settings::default(),
+            &HashSet::new(),
+            &everything_installed,
+            &nothing_cached,
+        );
+        assert_eq!(jobs.len(), 2);
+    }
+
+    fn wait_for_failures(helpers: &mut Helpers) -> Vec<HelperFailure> {
+        wait_for(helpers, &|_, _| false);
+        helpers.take_failures()
+    }
+
+    #[test]
+    fn should_report_the_first_error_line_when_a_helper_exits_nonzero() {
+        let mut helpers = Helpers::default();
+        helpers.launch(vec![shell_job(
+            HelperKind::Math,
+            "printf '\\n  \\nlatex: bad formula\\nsecond line\\n' >&2; exit 1",
+            &["aa"],
+            Duration::from_secs(30),
+        )]);
+        let failures = wait_for_failures(&mut helpers);
+        assert_eq!(
+            failures,
+            [HelperFailure {
+                kind: HelperKind::Math,
+                message: "latex: bad formula".into()
+            }]
+        );
+        assert_eq!(failures[0].flash_text(), "math: latex: bad formula");
+        assert!(helpers.take_failures().is_empty(), "failures are drained");
+    }
+
+    #[test]
+    fn should_say_it_failed_without_output_when_a_helper_exits_nonzero_silently() {
+        let mut helpers = Helpers::default();
+        helpers.launch(vec![shell_job(
+            HelperKind::Mermaid,
+            "exit 2",
+            &["aa"],
+            Duration::from_secs(30),
+        )]);
+        let failures = wait_for_failures(&mut helpers);
+        assert_eq!(failures[0].message, "failed without output");
+    }
+
+    #[test]
+    fn should_report_no_failure_when_a_helper_exits_zero_with_stderr_noise() {
+        let mut helpers = Helpers::default();
+        helpers.launch(vec![shell_job(
+            HelperKind::Math,
+            "echo warning >&2; exit 0",
+            &["aa"],
+            Duration::from_secs(30),
+        )]);
+        assert!(wait_for_failures(&mut helpers).is_empty());
+    }
+
+    #[test]
+    fn should_report_a_timeout_when_a_helper_is_killed_for_running_long() {
+        let mut helpers = Helpers::default();
+        helpers.launch(vec![shell_job(
+            HelperKind::Math,
+            "sleep 30",
+            &["aa"],
+            Duration::from_millis(1),
+        )]);
+        std::thread::sleep(Duration::from_millis(20));
+        let failures = wait_for_failures(&mut helpers);
+        assert_eq!(failures[0].message, "timed out");
+    }
+
+    #[test]
+    fn should_not_block_when_a_helper_floods_stderr() {
+        let mut helpers = Helpers::default();
+        helpers.launch(vec![shell_job(
+            HelperKind::Math,
+            "yes 'noise noise noise' | head -c 400000 >&2; exit 1",
+            &["aa"],
+            Duration::from_secs(30),
+        )]);
+        let failures = wait_for_failures(&mut helpers);
+        assert_eq!(failures[0].message, "noise noise noise");
+    }
+
+    #[test]
+    fn should_clip_a_long_message_when_building_the_flash() {
+        let failure = HelperFailure {
+            kind: HelperKind::Mermaid,
+            message: "x".repeat(500),
+        };
+        assert_eq!(failure.flash_text().chars().count(), FLASH_LIMIT_CHARS);
     }
 }

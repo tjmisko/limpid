@@ -11,7 +11,7 @@ use crate::{
     paint::Canvas,
     window::{Page, TICK_INTERVAL},
 };
-use limpid_core::settings::Settings;
+use limpid_core::{doc::Mode, settings::Settings};
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -92,6 +92,8 @@ pub struct WatchedPage {
     deferred: Vec<HelperJob>,
     /// The source changed (or the page just opened): plan helpers again.
     replan: bool,
+    /// How the page was parsed; helpers must see the same blocks.
+    mode: Mode,
     locate: Box<dyn Locate>,
     cached: CacheProbe,
 }
@@ -108,9 +110,16 @@ impl WatchedPage {
             attempted: HashSet::new(),
             deferred: Vec::new(),
             replan: true,
+            mode: Mode::File,
             locate: Box::new(helpers::locate_installed),
             cached: Box::new(helpers::is_cached),
         }
+    }
+
+    /// The mode the page was parsed in (agent pages use [`Mode::Agent`]).
+    pub fn with_mode(mut self, mode: Mode) -> Self {
+        self.mode = mode;
+        self
     }
 
     /// Where helper programs are found; tests point this at fakes.
@@ -145,6 +154,10 @@ impl WatchedPage {
             self.deferred = self.helpers.launch(std::mem::take(&mut self.deferred));
         }
         let ready = self.helpers.poll(now, &*self.cached);
+        for failure in self.helpers.take_failures() {
+            self.page.flash(failure.flash_text());
+            changed = true;
+        }
         if !ready.is_empty() {
             changed |= self.page.refresh_pending(&ready);
         }
@@ -169,6 +182,7 @@ impl WatchedPage {
         self.replan = false;
         let jobs = helpers::plan(
             &self.page.doc().source,
+            self.mode,
             &self.file,
             &self.settings,
             &self.attempted,
@@ -555,6 +569,32 @@ mod tests {
         );
         let args = std::fs::read_to_string(&ran).unwrap();
         assert_eq!(args.trim(), format!("math {}", path.display()));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_flash_the_first_error_line_when_a_helper_fails() {
+        let dir = scratch("helper-fails");
+        let path = dir.join("doc.md");
+        write_at(&path, MATH_PAGE, 1);
+        let fake_core = script(
+            &dir,
+            "limpid-core",
+            "echo 'pdflatex: Undefined control sequence' >&2; echo more >&2; exit 1",
+        );
+        let fonts = Rc::new(RefCell::new(Fonts::new()));
+        let settings = Settings::parse("[view]\nwatch_interval_ms = 0\n").unwrap();
+        let page = DocPage::open(&path, &settings, Scheme::Dark, fonts).unwrap();
+        let locator = fake_core.clone();
+        let mut watched = WatchedPage::new(page, path.clone(), &settings)
+            .with_locator(move |name: &str| (name == "limpid-core").then(|| locator.clone()))
+            .with_cache_probe(|_, _| false);
+        paint(&mut watched, 500, 300);
+        let changed = drain(&mut watched);
+        assert!(changed, "the flash must repaint the page");
+        let now = watched.page().elapsed_ms();
+        let message = watched.page().nav().status_view(now).message;
+        assert_eq!(message, "math: pdflatex: Undefined control sequence");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
