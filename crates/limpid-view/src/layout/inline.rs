@@ -179,8 +179,20 @@ impl Flattener<'_> {
                 }
                 Inline::SoftBreak => self.text(" ", style),
                 Inline::HardBreak => self.flat.push("\n", style),
-                Inline::Emph(children) => self.walk(children, style.italic(), depth + 1),
-                Inline::Strong(children) => self.walk(children, style.bold(), depth + 1),
+                Inline::Emph(children) => {
+                    let emph = TextStyle {
+                        color: self.theme.emph,
+                        ..style.italic()
+                    };
+                    self.walk(children, emph, depth + 1);
+                }
+                Inline::Strong(children) => {
+                    let strong = TextStyle {
+                        color: self.theme.strong,
+                        ..style.bold()
+                    };
+                    self.walk(children, strong, depth + 1);
+                }
                 Inline::Strike(children) => {
                     self.decorated(DecorationKind::Strike, style, |this| {
                         this.walk(children, style, depth + 1)
@@ -538,6 +550,28 @@ mod tests {
         assert_eq!(flat.text, "a b c");
         let styles: Vec<_> = flat.runs.iter().map(|(_, s)| (s.bold, s.italic)).collect();
         assert_eq!(styles, vec![(false, false), (false, true), (true, true)]);
+    }
+
+    #[test]
+    fn should_colour_bold_white_and_italic_soft_when_the_theme_is_dark() {
+        let theme = theme();
+        let inlines = vec![
+            Inline::Strong(vec![text("b")]),
+            Inline::Emph(vec![text("i")]),
+            Inline::Link {
+                href: "https://example.com".into(),
+                title: None,
+                inlines: vec![Inline::Strong(vec![text("l")])],
+            },
+        ];
+        let flat = flatten(&inlines, base(), &theme, false);
+        let colours: Vec<_> = flat.runs.iter().map(|(_, s)| s.color).collect();
+        assert_eq!(
+            colours,
+            vec![theme.strong, theme.emph, theme.strong],
+            "bold in a link is white too, as in page.css"
+        );
+        assert_ne!(theme.strong, theme.ink);
     }
 
     #[test]

@@ -102,6 +102,9 @@ pub struct Theme {
     pub surface: Color,
     pub raised: Color,
     pub ink: Color,
+    /// Bold and italic text: page.css `strong` and `em`.
+    pub strong: Color,
+    pub emph: Color,
     pub muted: Color,
     pub faint: Color,
     pub teal: Color,
@@ -152,6 +155,8 @@ impl Theme {
             surface: rgb(0x12181f),
             raised: rgb(0x18212a),
             ink: rgb(0xe8eeed),
+            strong: rgb(0xffffff),
+            emph: rgb(0xd6dee4),
             muted: rgb(0x95a4b1),
             faint: rgb(0x627484),
             teal: rgb(0x7cdec7),
@@ -195,6 +200,9 @@ impl Theme {
             surface: rgb(0xf0eee8),
             raised: rgb(0xe8e6df),
             ink: rgb(0x20252a),
+            // page.css has no light value; #fff would vanish on this page.
+            strong: rgb(0x20252a),
+            emph: rgb(0x20252a),
             muted: rgb(0x53616c),
             faint: rgb(0x71818d),
             teal: rgb(0x126d5d),
