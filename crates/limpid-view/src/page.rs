@@ -1153,12 +1153,15 @@ impl Page for DocPage {
         if event.state != ElementState::Pressed {
             return false;
         }
+        let left_mouse_mode = self.input_mode == InputMode::Mouse;
         self.input_mode = InputMode::Keyboard;
         if self.box_open() {
-            return self.editor_key(&event.logical_key, event.text.as_deref(), self.modifiers);
+            return self.editor_key(&event.logical_key, event.text.as_deref(), self.modifiers)
+                || left_mouse_mode;
         }
         KeyInput::from_winit(&event.logical_key, self.modifiers)
             .is_some_and(|input| self.handle_input(&input))
+            || left_mouse_mode
     }
 
     fn modifiers_changed(&mut self, modifiers: ModifiersState) {
@@ -1835,7 +1838,7 @@ mod tests {
         press(&mut page, "j");
         let pixels = paint(&mut page, 800, 600, 1.0);
         let layout = page.layout().unwrap();
-        let gutter = (layout.column_x - 5.0) as usize;
+        let gutter = (layout.column_x + layout.column_width - 14.0) as usize;
         let at = |block: usize| {
             let rect = layout.blocks[block].rect;
             pixels[(rect.y + rect.h / 2.0) as usize * 800 + gutter]
@@ -1856,7 +1859,7 @@ mod tests {
             "no status bar"
         );
         let layout = bare.layout().unwrap();
-        let gutter = (layout.column_x - 5.0) as usize;
+        let gutter = (layout.column_x + layout.column_width - 14.0) as usize;
         let y = (layout.blocks[0].rect.y + 4.0) as usize;
         assert_eq!(pixels[y * 800 + gutter], bg, "no focus band");
     }
@@ -1933,10 +1936,10 @@ mod tests {
         let layout = page.layout().unwrap();
         let rect = layout.blocks[0].rect;
         let y = (rect.y + rect.h / 2.0) as usize;
-        let left = (layout.column_x - 9.0) as usize;
+        let left = (layout.column_x + layout.column_width - 14.0) as usize;
         let soft = blend(theme.bg, theme.teal, 15);
         assert_eq!(pixels[y * 800 + left], soft, "no bar on the left edge");
-        let corner = (rect.y as usize) * 800 + (layout.column_x - 10.0) as usize;
+        let corner = (rect.y as usize) * 800 + (layout.column_x + 10.0) as usize;
         assert_eq!(pixels[corner], theme.bg.to_pixel(), "corner is rounded");
     }
 
@@ -1951,7 +1954,7 @@ mod tests {
         let layout = page.layout().unwrap();
         let rect = layout.blocks[0].rect;
         let y = (rect.y + rect.h / 2.0) as usize;
-        let left = (layout.column_x - 9.0) as usize;
+        let left = (layout.column_x + layout.column_width - 14.0) as usize;
         assert_eq!(pixels[y * 800 + left], blend(theme.bg, theme.teal, 5));
     }
 
@@ -2043,7 +2046,7 @@ mod tests {
         let layout = page.layout().unwrap();
         let top = layout.blocks[0].rect;
         let y = (top.y + top.h / 2.0) as usize;
-        let left = (layout.column_x - 9.0) as usize;
+        let left = (layout.column_x + layout.column_width - 14.0) as usize;
         assert_eq!(pixels[y * 800 + left], blend(theme.bg, theme.teal, 31));
         let gap = ((top.bottom() + layout.blocks[1].rect.y) / 2.0) as usize;
         assert_eq!(

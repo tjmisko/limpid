@@ -138,11 +138,13 @@ impl StopKind {
     fn of(block: &LaidBlock) -> Self {
         match &block.content {
             Content::Heading { .. } => Self::Heading,
-            Content::Code { .. } | Content::Table(_) | Content::Media(_) => Self::Special,
+            Content::Code { .. } | Content::Table(_) => Self::Special,
+            // Only the framed media is a diagram; images and math get the band.
+            Content::Media(media) if media.framed => Self::Special,
             Content::Pending(pending) => match pending.kind {
                 PendingKind::Field => Self::Question,
-                PendingKind::Annotation => Self::Text,
-                _ => Self::Special,
+                PendingKind::Table | PendingKind::Mermaid => Self::Special,
+                _ => Self::Text,
             },
             _ => Self::Text,
         }
@@ -466,14 +468,14 @@ impl Cursor {
     }
 }
 
-/// The rectangle a band covers for `rect`: the whole column plus the bleed,
-/// in window coordinates.
+/// The rectangle a band covers for `rect`: the column minus the inset on each
+/// side, in window coordinates.
 pub fn band_rect(layout: &Layout, rect: Rect, scroll: f32) -> Rect {
     let bleed = BLEED_INSET * layout.scale();
     Rect::new(
-        layout.column_x - bleed,
+        layout.column_x + bleed,
         rect.y - scroll,
-        layout.column_width + 2.0 * bleed,
+        layout.column_width - 2.0 * bleed,
         rect.h,
     )
 }
@@ -1026,12 +1028,12 @@ mod tests {
     }
 
     #[test]
-    fn should_band_the_whole_column_plus_the_bleed_when_painting() {
+    fn should_band_the_column_minus_the_inset_when_painting() {
         let fixture = Fixture::new("para\n", 300.0);
         let rect = fixture.layout.blocks[0].rect;
         let band = band_rect(&fixture.layout, rect, 10.0);
-        assert_eq!(band.x, fixture.layout.column_x - BLEED_INSET);
-        assert_eq!(band.w, fixture.layout.column_width + 2.0 * BLEED_INSET);
+        assert_eq!(band.x, fixture.layout.column_x + BLEED_INSET);
+        assert_eq!(band.w, fixture.layout.column_width - 2.0 * BLEED_INSET);
         assert_eq!(band.y, rect.y - 10.0);
         assert_eq!(band.h, rect.h);
     }
@@ -1060,5 +1062,11 @@ mod tests {
         let fixture = Fixture::new("## Title\n\ntext\n", 400.0);
         assert_eq!(StopKind::of(&fixture.layout.blocks[0]), StopKind::Heading);
         assert_eq!(StopKind::of(&fixture.layout.blocks[1]), StopKind::Text);
+    }
+
+    #[test]
+    fn should_band_a_display_equation_when_it_is_a_stop() {
+        let all = kinds("$$\\frac{a}{b}$$\n\ntext\n");
+        assert!(!all.contains(&StopKind::Special), "{all:?}");
     }
 }
