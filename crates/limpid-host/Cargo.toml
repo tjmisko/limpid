@@ -4,9 +4,30 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# The WebKit host shows HTML pages and renders Mermaid diagrams. It needs the
+# GTK4 and WebKitGTK 6.0 development packages, so it builds only when asked:
+# `cargo build --workspace --features webkit`. Without the feature the
+# workspace builds the native viewer and the command alone.
+[features]
+default = []
+webkit = ["dep:gtk4", "dep:webkit6"]
+
+[[bin]]
+name = "limpid-host"
+path = "src/main.rs"
+required-features = ["webkit"]
+
+[[test]]
+name = "window"
+required-features = ["webkit"]
+
+[[test]]
+name = "mermaid"
+required-features = ["webkit"]
+
 [dependencies]
-gtk4 = { version = "0.11.5", features = ["v4_20"] }
-webkit6 = "0.6.1"
+gtk4 = { version = "0.11.5", features = ["v4_20"], optional = true }
+webkit6 = { version = "0.6.1", optional = true }
 limpid-core = { path = "../limpid-core" }
 serde_json.workspace = true
 toml.workspace = true
