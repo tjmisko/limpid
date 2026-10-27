@@ -14,6 +14,28 @@ Status, where checked against `crates/limpid-view` on 2026-10-27:
 
 Source tags: `pi 10-16` means a pi session that day; a short hash is a commit.
 
+## Status after the 2026-10-27 workflows
+
+Two workflows (`wf_e3216006-835`, nine units; `wf_0715d064-00d`, four units)
+and d90d26b landed every row below on main, except these:
+
+- **W1, partial.** The `:` command bar (`nav/status.rs`) still has square
+  corners: radius 7, teal border, 22 px side and 18 px bottom insets.
+- **E1, partial.** `:q` on a changed editor box refuses with "unsaved changes:
+  :wq to save, :q! to discard", but the message appears as a page flash, not
+  inside the box.
+- **E4, partial.** The nvim command line strip uses the code background, not
+  the surface colour, and covers the box's last text row. `page.rs` also
+  repeats the cmdline in the status bar.
+- **K10, skipped by choice.** `yy` on a code block copies only the code; there
+  is no mouse copy button.
+- Advisory:
+  - In visual mode, every question in the selection keeps its teal ring, not
+    only the focused one.
+  - Bold text inside a focused heading turns teal; page.css keeps it white.
+  - `G` reveals the last stop but does not scroll to the end of the document.
+  - `editor::rpc` has a test that occasionally times out under load.
+
 ## 1. Window
 
 | # | Behaviour | Source | Status |
