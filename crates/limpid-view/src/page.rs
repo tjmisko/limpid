@@ -10,7 +10,7 @@ use crate::{
         Feedback, FeedbackHandle, Focus,
         review::{self, ReviewKey},
     },
-    layout::{Layout, LayoutOptions, lay_out_with},
+    layout::{Layout, LayoutOptions, lay_out_with, rail::RailFollow},
     nav::{
         CloseKind, Io, Nav, NavOptions, NoActions, PageActions, Request, ZoomStep,
         cursor::{self, Env},
@@ -81,6 +81,7 @@ pub fn options_for(settings: &Settings) -> LayoutOptions {
     LayoutOptions {
         code_wrap: settings.view.code_wrap,
         rail: settings.view.rail,
+        contents_open: false,
     }
 }
 
@@ -165,6 +166,16 @@ fn find_block_like(doc: &Doc, text: &str, near: usize) -> Option<usize> {
     Some(near)
 }
 
+/// Which kind of input moved last: a key press or the pointer. The rail
+/// follows the focused block after a key and the scroll position after the
+/// pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputMode {
+    #[default]
+    Keyboard,
+    Mouse,
+}
+
 pub struct DocPage {
     title: String,
     /// The window title when the document has no title of its own.
@@ -175,6 +186,7 @@ pub struct DocPage {
     base_font_size: f32,
     zoom: f32,
     options: LayoutOptions,
+    input_mode: InputMode,
     settings: Settings,
     path: Option<PathBuf>,
     fonts: SharedFonts,
@@ -349,6 +361,7 @@ impl DocPage {
             zoom: 1.0,
             theme,
             options,
+            input_mode: InputMode::default(),
             settings: settings.clone(),
             path: None,
             fonts,
@@ -454,6 +467,20 @@ impl DocPage {
 
     pub fn scroll(&self) -> f32 {
         self.scroll
+    }
+
+    pub fn input_mode(&self) -> InputMode {
+        self.input_mode
+    }
+
+    pub fn set_input_mode(&mut self, mode: InputMode) {
+        self.input_mode = mode;
+    }
+
+    /// Open or close the compact contents block shown in narrow windows.
+    pub fn toggle_contents(&mut self) {
+        self.options.contents_open = !self.options.contents_open;
+        self.laid_for = None;
     }
 
     /// The font size after zoom, CSS px.
@@ -820,6 +847,7 @@ impl DocPage {
     /// Handle one key press. Returns true when the page changed and needs a
     /// repaint.
     pub fn handle_input(&mut self, input: &KeyInput) -> bool {
+        self.input_mode = InputMode::Keyboard;
         if self.box_open() {
             // Every key belongs to the editor; they arrive through
             // [`DocPage::editor_key`].
@@ -963,6 +991,21 @@ impl Page for DocPage {
         let now = self.now_ms();
         let Some(layout) = self.layout.as_mut() else {
             return;
+        };
+        let focused = match self.input_mode {
+            InputMode::Keyboard => self
+                .nav
+                .cursor()
+                .src
+                .as_ref()
+                .and_then(|src| layout.block_for_src(src.start)),
+            InputMode::Mouse => None,
+        };
+        layout.rail_follow = match focused {
+            Some(block) => RailFollow::Block(block),
+            None => RailFollow::Scroll {
+                viewport: self.viewport_height,
+            },
         };
         if self.chrome {
             let bands = self.nav.bands(layout);
@@ -1841,6 +1884,52 @@ mod tests {
         press(&mut page, "f1");
         paint(&mut page, 1400, 600, 1.0);
         assert!(page.layout().unwrap().rail.is_some());
+    }
+
+    #[test]
+    fn should_follow_the_focused_block_when_the_last_input_was_a_key() {
+        let source: String = (0..6).map(|n| format!("## H{n}\n\ntext\n\n")).collect();
+        let mut page = chrome_page(&source);
+        paint(&mut page, 1400, 600, 1.0);
+        assert_eq!(page.input_mode(), InputMode::Keyboard);
+        press(&mut page, "G");
+        paint(&mut page, 1400, 600, 1.0);
+        let layout = page.layout().unwrap();
+        assert_eq!(layout.rail_follow, RailFollow::Block(11));
+    }
+
+    #[test]
+    fn should_follow_the_scroll_position_when_the_last_input_was_the_mouse() {
+        let mut page = chrome_page("## One\n\ntext\n\n## Two\n\ntext\n");
+        press(&mut page, "G");
+        page.set_input_mode(InputMode::Mouse);
+        paint(&mut page, 1400, 600, 1.0);
+        let follow = page.layout().unwrap().rail_follow;
+        assert!(matches!(follow, RailFollow::Scroll { .. }), "{follow:?}");
+        press(&mut page, "k");
+        assert_eq!(page.input_mode(), InputMode::Keyboard);
+    }
+
+    #[test]
+    fn should_show_the_contents_block_open_when_toggled_in_a_narrow_window() {
+        let mut page = chrome_page("## One\n\ntext\n\n## Two\n\ntext\n");
+        paint(&mut page, 700, 600, 1.0);
+        assert!(
+            page.layout()
+                .unwrap()
+                .compact
+                .as_ref()
+                .is_some_and(|c| !c.open)
+        );
+        page.toggle_contents();
+        paint(&mut page, 700, 600, 1.0);
+        assert!(
+            page.layout()
+                .unwrap()
+                .compact
+                .as_ref()
+                .is_some_and(|c| c.open)
+        );
     }
 
     #[test]

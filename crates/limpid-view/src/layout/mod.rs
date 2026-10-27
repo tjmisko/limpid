@@ -35,6 +35,8 @@ pub struct LayoutOptions {
     /// Wrap long code lines instead of scrolling the block.
     pub code_wrap: bool,
     pub rail: RailMode,
+    /// Show the compact contents block expanded.
+    pub contents_open: bool,
 }
 
 impl Default for LayoutOptions {
@@ -42,6 +44,7 @@ impl Default for LayoutOptions {
         Self {
             code_wrap: false,
             rail: RailMode::Auto,
+            contents_open: false,
         }
     }
 }
@@ -211,6 +214,8 @@ struct State {
     margins: Vec<f32>,
     /// Bottom edge of the last laid block.
     bottom: f32,
+    /// Where the first block starts.
+    first_top: f32,
     complete: bool,
 }
 
@@ -219,6 +224,10 @@ pub struct Layout {
     /// Document height laid out so far; final once [`Layout::is_complete`].
     pub height: f32,
     pub rail: Option<RailLayout>,
+    /// The contents block under the page top when the window is too narrow for the rail.
+    pub compact: Option<rail::Compact>,
+    /// What decides the active rail entry.
+    pub rail_follow: rail::RailFollow,
     pub column_x: f32,
     pub column_width: f32,
     state: State,
@@ -281,11 +290,25 @@ pub fn lay_out_in(
     let geometry = rail::geometry(width, &theme, scale, options.rail, !doc.toc.is_empty());
     let rail = (geometry.rail_width > 0.0)
         .then(|| rail::build(doc, geometry.rail_width, &theme, scale, fonts));
-    let top = PAGE_TOP_PAD * scale;
+    let compact = (geometry.rail_width == 0.0 && width / scale < rail::COMPACT_BELOW)
+        .then(|| {
+            rail::build_compact(
+                doc,
+                geometry.column_width,
+                &theme,
+                scale,
+                options.contents_open,
+                fonts,
+            )
+        })
+        .flatten();
+    let top = PAGE_TOP_PAD * scale + compact.as_ref().map_or(0.0, |compact| compact.height);
     let mut layout = Layout {
         blocks: Vec::new(),
         height: top,
         rail,
+        compact,
+        rail_follow: rail::RailFollow::default(),
         column_x: geometry.column_x,
         column_width: geometry.column_width,
         state: State {
@@ -298,6 +321,7 @@ pub fn lay_out_in(
             prev_margin: 0.0,
             margins: Vec::new(),
             bottom: top,
+            first_top: top,
             complete: false,
         },
     };
@@ -458,7 +482,7 @@ impl Layout {
         self.state.next = first;
         self.state.bottom = match first.checked_sub(1) {
             Some(before) => self.blocks[before].rect.bottom(),
-            None => PAGE_TOP_PAD * self.state.scale,
+            None => self.state.first_top,
         };
         self.state.prev_margin = self.state.margins.last().copied().unwrap_or(0.0);
         self.state.complete = false;
@@ -492,12 +516,62 @@ impl Layout {
             }
             paint_block(&paint, canvas, fonts, block);
         }
-        let active = self.rail_active(scroll + 1.0);
+        let active = match self.rail_follow {
+            rail::RailFollow::Block(index) => self.rail.as_ref().and_then(|rail| {
+                // A block above every heading belongs to the first section.
+                rail.active_for(index)
+                    .or_else(|| (!rail.entries.is_empty()).then_some(0))
+            }),
+            rail::RailFollow::Scroll { viewport } => {
+                let viewport = if viewport > 0.0 {
+                    viewport
+                } else {
+                    canvas.height() as f32
+                };
+                self.rail_spy(scroll, viewport)
+            }
+        };
         let theme = self.state.theme.clone();
         let scale = self.state.scale;
+        if let Some(compact) = &mut self.compact {
+            let y = PAGE_TOP_PAD * scale - scroll;
+            compact.paint(canvas, fonts, &theme, scale, self.column_x, y, active);
+        }
         if let Some(rail) = &mut self.rail {
             rail.paint(canvas, fonts, &theme, scale, active);
         }
+    }
+
+    /// Index of the top-level block that holds source offset `start`.
+    pub fn block_for_src(&self, start: usize) -> Option<usize> {
+        let after = self
+            .blocks
+            .partition_point(|block| block.src.start <= start);
+        after.checked_sub(1)
+    }
+
+    /// The rail entry the scroll position selects: the first at the page top,
+    /// the last at the bottom, else the last heading above 90 CSS px.
+    pub fn rail_spy(&self, scroll: f32, viewport: f32) -> Option<usize> {
+        let rail = self.rail.as_ref()?;
+        let scale = self.state.scale;
+        if rail.entries.is_empty() {
+            return None;
+        }
+        if scroll <= scale {
+            return Some(0);
+        }
+        if self.is_complete() && scroll + viewport >= self.height - scale {
+            return Some(rail.entries.len() - 1);
+        }
+        let limit = scroll + rail::SPY_THRESHOLD * scale;
+        let above = rail.entries.iter().rposition(|entry| {
+            entry
+                .block_index
+                .and_then(|index| self.blocks.get(index))
+                .is_some_and(|block| block.rect.y <= limit)
+        });
+        Some(above.unwrap_or(0))
     }
 }
 
