@@ -12,8 +12,41 @@ use crate::{
     text::{Fonts, TextStyle},
     theme::{Color, Theme},
 };
-use limpid_core::doc::HlSpan;
-use std::ops::Range;
+use limpid_core::{
+    doc::HlSpan,
+    highlight::{Highlighter, highlight_spans},
+};
+use std::{
+    cell::{Cell, RefCell},
+    ops::Range,
+};
+
+thread_local! {
+    /// The one highlighter of the UI thread, built when the first fenced block
+    /// with a language is laid out and kept for the life of the process.
+    static HIGHLIGHTER: RefCell<Option<Highlighter>> = const { RefCell::new(None) };
+    static HIGHLIGHTED_BLOCKS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// How many code blocks this thread has highlighted. Tests use it to prove
+/// that blocks outside the viewport are never highlighted.
+pub fn highlighted_block_count() -> usize {
+    HIGHLIGHTED_BLOCKS.with(Cell::get)
+}
+
+/// Spans for `text` in `lang`, computed now. A block without a language has
+/// nothing to highlight and does not wake the highlighter.
+fn highlight_on_demand(lang: Option<&str>, text: &str) -> Vec<HlSpan> {
+    let Some(language) = lang.map(str::trim).filter(|lang| !lang.is_empty()) else {
+        return Vec::new();
+    };
+    HIGHLIGHTED_BLOCKS.with(|count| count.set(count.get() + 1));
+    HIGHLIGHTER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let highlighter = slot.get_or_insert_with(Highlighter::new);
+        highlight_spans(language, text, highlighter)
+    })
+}
 
 /// Code text size, CSS px at 17px body text.
 const CODE_SIZE: f32 = 13.0;
@@ -73,6 +106,13 @@ pub fn lay(
     let inner_width = (flow.width - 2.0 * border - 2.0 * pad_x).max(1.0);
 
     let trimmed = text.trim_end_matches(['\n', '\r']);
+    let computed;
+    let spans = if spans.is_empty() {
+        computed = highlight_on_demand(lang, trimmed);
+        computed.as_slice()
+    } else {
+        spans
+    };
     let mut flat = Flat::default();
     let base = TextStyle::mono(cx.theme.ink);
     for (range, color, italic) in token_runs(trimmed, spans, cx.theme) {
@@ -387,16 +427,12 @@ mod tests {
 
     #[test]
     fn should_draw_highlight_colours_inside_the_block_when_painting() {
-        // `parse` leaves spans empty; the viewer fills them on demand.
-        let mut doc = parse(
+        // `parse` leaves spans empty; laying the block out fills them in.
+        let doc = parse(
             "```rust\nfn main() {}\n```\n",
             Mode::File,
             &Settings::default(),
         );
-        let mut highlighter = limpid_core::highlight::Highlighter::new();
-        if let limpid_core::doc::BlockKind::Code { text, spans, .. } = &mut doc.blocks[0].kind {
-            *spans = limpid_core::highlight::highlight_spans("rust", text, &mut highlighter);
-        }
         let mut fonts = Fonts::new();
         let mut layout = lay_out_with(
             &doc,
@@ -438,5 +474,71 @@ mod tests {
                 assert_eq!(pixels[y * 700 + x], background, "({x},{y})");
             }
         }
+    }
+
+    fn many_rust_blocks(count: usize) -> String {
+        (0..count)
+            .map(|index| format!("Paragraph {index}.\n\n```rust\nfn f{index}() {{}}\n```\n\n"))
+            .collect()
+    }
+
+    #[test]
+    fn should_highlight_only_the_blocks_laid_out_when_the_document_is_long() {
+        let doc = parse(&many_rust_blocks(200), Mode::File, &Settings::default());
+        let mut fonts = Fonts::new();
+        let before = highlighted_block_count();
+        let mut layout = lay_out_with(
+            &doc,
+            700.0,
+            &Theme::dark(),
+            1.0,
+            &mut fonts,
+            LayoutOptions::default(),
+        );
+        layout.ensure_to(900.0, &doc, &mut fonts);
+        let first_screen = highlighted_block_count() - before;
+        assert!(layout.blocks.len() < doc.blocks.len(), "laid out lazily");
+        assert!(first_screen > 0, "the first screen shows code");
+        assert_eq!(
+            first_screen,
+            layout
+                .blocks
+                .iter()
+                .filter(|block| matches!(block.content, Content::Code { .. }))
+                .count(),
+            "one highlight per laid-out code block"
+        );
+        assert!(first_screen < 200);
+    }
+
+    #[test]
+    fn should_highlight_a_block_once_it_is_scrolled_to_when_laying_out_further() {
+        let doc = parse(&many_rust_blocks(40), Mode::File, &Settings::default());
+        let mut fonts = Fonts::new();
+        let mut layout = lay_out_with(
+            &doc,
+            700.0,
+            &Theme::dark(),
+            1.0,
+            &mut fonts,
+            LayoutOptions::default(),
+        );
+        layout.ensure_to(600.0, &doc, &mut fonts);
+        let after_first = highlighted_block_count();
+        layout.ensure_to(3000.0, &doc, &mut fonts);
+        assert!(highlighted_block_count() > after_first);
+    }
+
+    #[test]
+    fn should_not_wake_the_highlighter_when_a_fence_names_no_language() {
+        let before = highlighted_block_count();
+        let (doc, mut layout) = layout_with(
+            "```\nplain text\n```\n\n```   \nalso plain\n```\n",
+            700.0,
+            LayoutOptions::default(),
+        );
+        layout.ensure_to(5000.0, &doc, &mut Fonts::new());
+        assert!(layout.is_complete());
+        assert_eq!(highlighted_block_count(), before);
     }
 }
