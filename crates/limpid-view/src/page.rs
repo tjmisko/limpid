@@ -1057,6 +1057,15 @@ impl Page for DocPage {
         if let Some(selection) = bands.selection {
             let tint = selection_tint(&self.theme);
             cursor::paint_band(canvas, layout, selection, scroll, tint);
+            for (_, rect) in &bands.outlined {
+                let block = crate::paint::Rect::new(
+                    layout.column_x + rect.x,
+                    rect.y - scroll,
+                    rect.w,
+                    rect.h,
+                );
+                canvas.fill_rect(block, self.theme.bg);
+            }
         } else if let (Some(focus), false, StopKind::Text) = (bands.focus, visual, bands.focus_kind)
         {
             let tint = if mouse {
@@ -2057,6 +2066,29 @@ mod tests {
         let x = (layout.column_x + rect.x + rect.w / 2.0) as usize;
         let above = (rect.y - 3.0) as usize;
         assert_eq!(pixels[above * 800 + x], theme.teal.to_pixel());
+    }
+
+    #[test]
+    fn should_keep_a_table_on_the_page_background_when_inside_a_visual_selection() {
+        let mut page =
+            chrome_page("text\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |\n\nafter\n");
+        paint(&mut page, 800, 600, 1.0);
+        press(&mut page, "v");
+        press(&mut page, "j");
+        let pixels = paint(&mut page, 800, 600, 1.0);
+        let theme = Theme::dark();
+        let layout = page.layout().unwrap();
+        let rect = layout.blocks[1].rect;
+        let tinted = blend(theme.bg, theme.teal, 31).to_owned();
+        let (left, right) = (
+            (layout.column_x + rect.x) as usize,
+            (layout.column_x + rect.right()) as usize,
+        );
+        let leaked = (rect.y as usize..rect.bottom() as usize)
+            .flat_map(|y| (left..right).map(move |x| (x, y)))
+            .filter(|&(x, y)| pixels[y * 800 + x] == tinted)
+            .count();
+        assert_eq!(leaked, 0, "selection must not show through the table");
     }
 
     // Zoom, rail, reload.

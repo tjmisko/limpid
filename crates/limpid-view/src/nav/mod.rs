@@ -170,8 +170,8 @@ pub struct Bands {
     /// The one rectangle behind a visual selection. Empty for a lone
     /// heading, which shows only as text colour.
     pub selection: Option<Rect>,
-    /// Code, diagrams, tables and questions inside the selection, which are
-    /// outlined above it.
+    /// Code, diagrams and tables inside the selection, which are outlined
+    /// above it.
     pub outlined: Vec<(StopKind, Rect)>,
     /// The focused heading, whose text turns teal.
     pub heading: Option<Range<usize>>,
@@ -379,7 +379,7 @@ impl Nav {
             }
             outlined = covered
                 .iter()
-                .filter(|s| matches!(s.kind, StopKind::Special | StopKind::Question))
+                .filter(|s| s.kind == StopKind::Special)
                 .map(|s| (s.kind, s.rect))
                 .collect();
         }
