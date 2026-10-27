@@ -105,6 +105,55 @@ impl<'a> Canvas<'a> {
         );
     }
 
+    /// A filled rectangle with corners of `radius`, edges smoothed.
+    pub fn fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+        self.rounded(rect, radius, 0.0, color);
+    }
+
+    /// An outline of `thickness` pixels drawn inside a rounded `rect`.
+    pub fn stroke_rounded_rect(&mut self, rect: Rect, radius: f32, thickness: f32, color: Color) {
+        if thickness > 0.0 {
+            self.rounded(rect, radius, thickness, color);
+        }
+    }
+
+    /// Fill the rounded shape, or with `ring` above zero only the band that
+    /// wide along its edge.
+    fn rounded(&mut self, rect: Rect, radius: f32, ring: f32, color: Color) {
+        let Some((x0, y0, x1, y1)) = self.clip(rect) else {
+            return;
+        };
+        let radius = radius.max(0.0).min(rect.w / 2.0).min(rect.h / 2.0);
+        let (cx, cy) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+        let coverage = |px: f32, py: f32, half_w: f32, half_h: f32, r: f32| {
+            let qx = (px - cx).abs() - (half_w - r);
+            let qy = (py - cy).abs() - (half_h - r);
+            let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
+            let distance = outside + qx.max(qy).min(0.0) - r;
+            (0.5 - distance).clamp(0.0, 1.0)
+        };
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                let mut amount = coverage(px, py, rect.w / 2.0, rect.h / 2.0, radius);
+                if ring > 0.0 {
+                    let inner = coverage(
+                        px,
+                        py,
+                        rect.w / 2.0 - ring,
+                        rect.h / 2.0 - ring,
+                        (radius - ring).max(0.0),
+                    );
+                    amount = (amount - inner).max(0.0);
+                }
+                let alpha = (f32::from(color.a) * amount).round() as u8;
+                if alpha > 0 {
+                    self.blend(x, y, color.r, color.g, color.b, alpha);
+                }
+            }
+        }
+    }
+
     /// A one-pixel-high line from `x` across `length`.
     pub fn hline(&mut self, x: f32, y: f32, length: f32, color: Color) {
         self.fill_rect(Rect::new(x, y, length, 1.0), color);
@@ -237,6 +286,26 @@ mod tests {
         assert_eq!(canvas.pixel(6, 4), Some(0));
         assert_eq!(canvas.pixel(2, 5), Some(0));
         assert_eq!(canvas.pixel(1, 3), Some(0));
+    }
+
+    #[test]
+    fn should_leave_the_corner_empty_when_filling_a_rounded_rect() {
+        let mut pixels = buffer(20, 20);
+        let mut canvas = Canvas::new(&mut pixels, 20, 20);
+        canvas.fill_rounded_rect(Rect::new(0.0, 0.0, 20.0, 20.0), 7.0, RED);
+        assert_eq!(canvas.pixel(0, 0), Some(0));
+        assert_eq!(canvas.pixel(10, 10), Some(0xff0000));
+        assert_eq!(canvas.pixel(10, 0), Some(0xff0000));
+    }
+
+    #[test]
+    fn should_only_colour_the_edge_when_stroking_a_rounded_rect() {
+        let mut pixels = buffer(20, 20);
+        let mut canvas = Canvas::new(&mut pixels, 20, 20);
+        canvas.stroke_rounded_rect(Rect::new(0.0, 0.0, 20.0, 20.0), 7.0, 1.0, RED);
+        assert_eq!(canvas.pixel(10, 0), Some(0xff0000));
+        assert_eq!(canvas.pixel(10, 10), Some(0));
+        assert_eq!(canvas.pixel(0, 0), Some(0));
     }
 
     #[test]

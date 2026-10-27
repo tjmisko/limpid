@@ -54,6 +54,7 @@ pub enum Action {
     ZoomReset,
     Reload,
     Quit,
+    Help,
     Clear,
     /// A digit on a focused question. Not remappable: digits are counts
     /// everywhere else.
@@ -96,6 +97,7 @@ const TABLE: &[(Action, &str, &str)] = &[
     (Action::ZoomReset, "zoom_reset", "0"),
     (Action::Reload, "reload", "r"),
     (Action::Quit, "quit", "q, ctrl+q, ctrl+w"),
+    (Action::Help, "help", "?"),
     (Action::Clear, "clear", "escape"),
 ];
 

@@ -14,6 +14,7 @@ use crate::{
     nav::{
         CloseKind, Io, Nav, NavOptions, NoActions, PageActions, Request, ZoomStep,
         cursor::{self, Env},
+        help,
         keymap::{KeyInput, Keymap},
         search, selection_tint, status,
         yank::{Clipboard, NoClipboard, ReplyCommand},
@@ -799,17 +800,18 @@ impl DocPage {
     fn zoom_by(&mut self, step: ZoomStep) {
         let options = self.nav.options;
         let (low, high) = options.zoom_range;
-        let step_factor = if options.zoom_step.is_finite() && options.zoom_step > 1.0 {
+        let step_size = if options.zoom_step.is_finite() && options.zoom_step > 0.0 {
             options.zoom_step
         } else {
-            1.1
+            0.1
         };
         self.zoom = match step {
-            ZoomStep::In => self.zoom * step_factor,
-            ZoomStep::Out => self.zoom / step_factor,
+            ZoomStep::In => self.zoom + step_size,
+            ZoomStep::Out => self.zoom - step_size,
             ZoomStep::Reset => 1.0,
         }
         .clamp(low.min(high), high.max(low));
+        self.zoom = (self.zoom * 100.0).round() / 100.0;
         self.theme.font_size = self.base_font_size * self.zoom;
         self.laid_for = None;
         self.flash(format!("Zoom {}%", (self.zoom * 100.0).round()));
@@ -1064,6 +1066,14 @@ impl Page for DocPage {
                     view.message = message.clone();
                 }
             }
+        }
+        if let Some(text) = self.nav.search_box() {
+            let mut fonts = self.fonts.borrow_mut();
+            search::paint_box(canvas, &mut fonts, &self.theme, scale, bar, text);
+        }
+        if let Some((rows, scroll)) = self.nav.help_view() {
+            let mut fonts = self.fonts.borrow_mut();
+            help::paint(canvas, &mut fonts, &self.theme, scale, bar, &rows, scroll);
         }
         status::paint(
             canvas,
@@ -1864,11 +1874,24 @@ mod tests {
         for _ in 0..200 {
             press(&mut page, "+");
         }
-        assert!((page.font_size() / base - 3.0).abs() < 0.01);
+        assert!((page.font_size() / base - 2.0).abs() < 0.01);
         for _ in 0..400 {
             press(&mut page, "-");
         }
         assert!((page.font_size() / base - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn should_zoom_in_steps_of_a_tenth_when_pressing_plus_and_minus() {
+        let mut page = chrome_page("text\n");
+        paint(&mut page, 600, 400, 1.0);
+        let base = page.font_size();
+        for _ in 0..3 {
+            press(&mut page, "+");
+        }
+        assert!((page.font_size() / base - 1.3).abs() < 1e-4);
+        press(&mut page, "-");
+        assert!((page.font_size() / base - 1.2).abs() < 1e-4);
     }
 
     #[test]

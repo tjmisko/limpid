@@ -21,6 +21,8 @@ pub enum StateName {
     Editor,
     /// The review overlay is showing.
     Review,
+    /// The key reference is showing.
+    Help,
 }
 
 impl StateName {
@@ -32,6 +34,7 @@ impl StateName {
             StateName::Command => "COMMAND",
             StateName::Editor => "EDITOR",
             StateName::Review => "REVIEW",
+            StateName::Help => "HELP",
         }
     }
 }
@@ -144,7 +147,7 @@ pub fn paint(canvas: &mut Canvas, fonts: &mut Fonts, theme: &Theme, scale: f32, 
         StateName::Page => theme.muted,
         StateName::Visual => theme.purple,
         StateName::Search | StateName::Command => theme.amber,
-        StateName::Editor | StateName::Review => theme.teal,
+        StateName::Editor | StateName::Review | StateName::Help => theme.teal,
     };
     let tag = shape(
         fonts,

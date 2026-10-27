@@ -9,6 +9,7 @@
 
 pub mod command;
 pub mod cursor;
+pub mod help;
 pub mod keymap;
 pub mod search;
 pub mod status;
@@ -33,7 +34,7 @@ use yank::{Clipboard, Operator, Step, Target};
 pub struct NavOptions {
     /// How long a status flash stays, in milliseconds.
     pub flash_ms: u64,
-    /// Each zoom step multiplies the font size by this.
+    /// Each zoom step adds this to the zoom factor.
     pub zoom_step: f32,
     /// Smallest and largest zoom factor.
     pub zoom_range: (f32, f32),
@@ -43,8 +44,8 @@ impl Default for NavOptions {
     fn default() -> Self {
         Self {
             flash_ms: DEFAULT_FLASH_MS,
-            zoom_step: 1.1,
-            zoom_range: (0.5, 3.0),
+            zoom_step: 0.1,
+            zoom_range: (0.5, 2.0),
         }
     }
 }
@@ -158,6 +159,7 @@ enum Mode {
     Page,
     Search,
     Command,
+    Help,
 }
 
 /// Rectangles to paint behind the text, in document coordinates.
@@ -179,6 +181,8 @@ pub struct Nav {
     line: LineEditor,
     visual_anchor: Option<Range<usize>>,
     operator: Option<Operator>,
+    /// First visible row of the key reference.
+    help_scroll: usize,
 }
 
 impl Nav {
@@ -201,6 +205,7 @@ impl Nav {
             line: LineEditor::default(),
             visual_anchor: None,
             operator: None,
+            help_scroll: 0,
         }
     }
 
@@ -263,6 +268,7 @@ impl Nav {
         match self.mode {
             Mode::Search => StateName::Search,
             Mode::Command => StateName::Command,
+            Mode::Help => StateName::Help,
             Mode::Page if self.visual_anchor.is_some() => StateName::Visual,
             Mode::Page => StateName::Page,
         }
@@ -275,12 +281,7 @@ impl Nav {
 
     pub fn status_view(&self, now_ms: u64) -> StatusView {
         let prompt = match self.mode {
-            Mode::Page => None,
-            Mode::Search => Some(Prompt {
-                sigil: '/',
-                text: self.line.text().to_owned(),
-                placeholder: "",
-            }),
+            Mode::Page | Mode::Search | Mode::Help => None,
             Mode::Command => Some(Prompt {
                 sigil: ':',
                 text: self.line.text().to_owned(),
@@ -302,6 +303,17 @@ impl Nav {
             prompt,
             right,
         }
+    }
+
+    /// The text of the search box while it is open. The page paints it in the
+    /// corner rather than on the status bar.
+    pub fn search_box(&self) -> Option<&str> {
+        (self.mode == Mode::Search).then(|| self.line.text())
+    }
+
+    /// The rows of the key reference and its scroll, while it is open.
+    pub fn help_view(&self) -> Option<(Vec<help::Row>, usize)> {
+        (self.mode == Mode::Help).then(|| (help::rows(&self.keymap), self.help_scroll))
     }
 
     fn search_summary(&self) -> String {
@@ -359,6 +371,7 @@ impl Nav {
         match self.mode {
             Mode::Page => self.page_key(input, now_ms, env, io, &mut out),
             Mode::Search | Mode::Command => self.line_key(input, now_ms, env, io, &mut out),
+            Mode::Help => self.help_key(input, &mut out),
         }
         out
     }
@@ -443,6 +456,11 @@ impl Nav {
             Action::SearchNext => self.search_step(true, now_ms, env),
             Action::SearchPrev => self.search_step(false, now_ms, env),
             Action::CommandOpen => self.open_prompt(Mode::Command),
+            Action::Help => {
+                self.mode = Mode::Help;
+                self.help_scroll = 0;
+                self.keymap.reset();
+            }
             Action::Visual => {
                 self.visual_anchor = match self.visual_anchor {
                     Some(_) => None,
@@ -545,6 +563,19 @@ impl Nav {
         self.line.clear();
     }
 
+    fn help_key(&mut self, input: &KeyInput, out: &mut Outcome) {
+        let rows = help::rows(&self.keymap).len();
+        let close = self.keymap.bindings_of(Action::Help);
+        match help::handle(&input.chord, &mut self.help_scroll, rows, &close) {
+            help::HelpKey::Ignored => {}
+            help::HelpKey::Moved => out.redraw = true,
+            help::HelpKey::Close => {
+                self.mode = Mode::Page;
+                out.redraw = true;
+            }
+        }
+    }
+
     fn line_key(
         &mut self,
         input: &KeyInput,
@@ -558,7 +589,7 @@ impl Nav {
         match chord.key.as_str() {
             "escape" => return self.close_prompt(),
             "c" if chord.ctrl => return self.close_prompt(),
-            "enter" if !chord.ctrl => return self.submit(now_ms, env, io, out),
+            "enter" if !chord.ctrl => return self.submit(!chord.shift, now_ms, env, io, out),
             "backspace" => {
                 if !self.line.backspace() {
                     self.close_prompt();
@@ -577,14 +608,23 @@ impl Nav {
         }
     }
 
-    fn submit(&mut self, now_ms: u64, env: &mut Env, io: &mut Io, out: &mut Outcome) {
+    /// Run the open prompt. `forward` is false for Shift-Enter, which
+    /// searches backward.
+    fn submit(
+        &mut self,
+        forward: bool,
+        now_ms: u64,
+        env: &mut Env,
+        io: &mut Io,
+        out: &mut Outcome,
+    ) {
         let mode = self.mode;
         let text = self.line.text().to_owned();
         self.close_prompt();
         match mode {
-            Mode::Search => self.search_submit(&text, now_ms, env),
+            Mode::Search => self.search_submit(&text, forward, now_ms, env),
             Mode::Command => self.run_command(&text, now_ms, io, out),
-            Mode::Page => {}
+            Mode::Page | Mode::Help => {}
         }
     }
 
@@ -616,7 +656,7 @@ impl Nav {
         self.cursor.locate(&stops).map_or(0, |at| stops[at].top)
     }
 
-    fn search_submit(&mut self, text: &str, now_ms: u64, env: &mut Env) {
+    fn search_submit(&mut self, text: &str, forward: bool, now_ms: u64, env: &mut Env) {
         let query = if text.is_empty() {
             // An empty pattern repeats the last one, as in vim.
             match self.search.query.clone() {
@@ -629,8 +669,8 @@ impl Nav {
         self.search.run(env.doc, query);
         self.show_search = true;
         let before = self.matches_before_cursor(env);
-        match self.search.start_at(before) {
-            Some((hit, wrapped)) => self.land(hit, wrapped, true, now_ms, env),
+        match self.search.step_from_cursor(forward, before) {
+            Some((hit, wrapped)) => self.land(hit, wrapped, forward, now_ms, env),
             None => {
                 let pattern = self
                     .search
@@ -1212,7 +1252,7 @@ mod tests {
         assert_eq!(world.nav.state(), StateName::Search);
         assert_eq!(world.focused(), "one");
         world.press("ctrl+u");
-        assert_eq!(world.nav.status_view(world.now).prompt.unwrap().text, "");
+        assert_eq!(world.nav.search_box(), Some(""));
     }
 
     #[test]
@@ -1289,6 +1329,84 @@ mod tests {
         assert_eq!(outcome.requests, vec![Request::Close(CloseKind::Window)]);
         let outcome = world.press("ctrl+w");
         assert_eq!(outcome.requests, vec![Request::Close(CloseKind::Window)]);
+    }
+
+    #[test]
+    fn should_search_backward_when_submitting_with_shift_enter() {
+        let mut world = World::new("alpha\n\nbeta\n\nalpha again\n\nbeta end\n", 600.0);
+        world.press("j");
+        world.press("/");
+        world.typed("alpha");
+        world.press("shift+enter");
+        assert_eq!(world.focused(), "alpha");
+        assert_eq!(world.nav.state(), StateName::Page);
+    }
+
+    #[test]
+    fn should_search_forward_when_submitting_with_enter() {
+        let mut world = World::new("alpha\n\nbeta\n\nalpha again\n\nbeta end\n", 600.0);
+        world.press("j");
+        world.press("/");
+        world.typed("alpha");
+        world.press("enter");
+        assert_eq!(world.focused(), "alpha again");
+    }
+
+    #[test]
+    fn should_expose_the_box_text_instead_of_a_status_prompt_when_searching() {
+        let mut world = World::new("a\n", 600.0);
+        assert_eq!(world.nav.search_box(), None);
+        world.press("/");
+        world.typed("ab");
+        assert_eq!(world.nav.search_box(), Some("ab"));
+        assert_eq!(world.nav.status_view(world.now).prompt, None);
+        world.press("escape");
+        assert_eq!(world.nav.search_box(), None);
+    }
+
+    #[test]
+    fn should_open_and_close_the_key_reference_when_pressing_question_mark_and_escape() {
+        let mut world = World::new("a\n\nb\n", 600.0);
+        world.press("?");
+        assert_eq!(world.nav.state(), StateName::Help);
+        let (rows, _) = world.nav.help_view().unwrap();
+        assert!(rows.iter().any(|row| row.what == "Toggle this keymap"));
+        world.press("escape");
+        assert_eq!(world.nav.state(), StateName::Page);
+        assert!(world.nav.help_view().is_none());
+        world.press("?");
+        world.press("?");
+        assert_eq!(world.nav.state(), StateName::Page);
+    }
+
+    #[test]
+    fn should_keep_page_keys_out_of_the_page_when_the_key_reference_is_open() {
+        let mut world = World::new("a\n\nb\n", 600.0);
+        world.press("?");
+        let outcome = world.press("j");
+        assert_eq!(world.focused(), "a");
+        assert!(outcome.requests.is_empty());
+        let outcome = world.press("q");
+        assert!(
+            outcome.requests.is_empty(),
+            "q does not quit under the reference"
+        );
+    }
+
+    #[test]
+    fn should_show_a_remapped_key_in_the_reference_when_the_keymap_has_overrides() {
+        let mut keys = BTreeMap::new();
+        keys.insert("help".to_owned(), "f2".to_owned());
+        let mut world = World::with_keys("a\n", 600.0, &keys);
+        world.press("f2");
+        let (rows, _) = world.nav.help_view().unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.what == "Toggle this keymap")
+            .unwrap();
+        assert_eq!(row.keys, "F2");
+        world.press("f2");
+        assert_eq!(world.nav.state(), StateName::Page);
     }
 
     #[test]

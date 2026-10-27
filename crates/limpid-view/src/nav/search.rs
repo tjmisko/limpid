@@ -10,6 +10,7 @@ use crate::{
     layout::{Content, LaidBlock, Layout, inline::RichText},
     nav::cursor::Env,
     paint::{Canvas, Rect},
+    text::{Fonts, TextBlock, TextStyle},
     theme::{Color, Theme},
 };
 use limpid_core::doc::{Block, BlockKind, Doc, Inline};
@@ -658,6 +659,82 @@ pub fn paint_highlights(
     }
 }
 
+/// Shown dimmed while the search box is empty.
+const SEARCH_PLACEHOLDER: &str = "Search";
+
+fn shaped(fonts: &mut Fonts, theme: &Theme, size: f32, text: &str, color: Color) -> TextBlock {
+    let mut block = TextBlock::new(fonts, size, size * 1.4);
+    block.set_text(fonts, text, TextStyle::sans(color), &theme.families);
+    block.set_width(fonts, None);
+    block
+}
+
+fn extent(block: &TextBlock) -> f32 {
+    block
+        .glyphs()
+        .map(|glyph| glyph.x + glyph.width)
+        .fold(0.0, f32::max)
+}
+
+/// The search box in the bottom-right corner, above the bottom `reserved`
+/// pixels that belong to the status bar. Amber text on the surface colour
+/// inside a teal border.
+pub fn paint_box(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    theme: &Theme,
+    scale: f32,
+    reserved: f32,
+    text: &str,
+) {
+    let (width, total) = (canvas.width() as f32, canvas.height() as f32 - reserved);
+    let size = (14.0 * scale).round().max(8.0);
+    let (pad_x, pad_y) = (12.0 * scale, 8.0 * scale);
+    let box_width = (340.0 * scale).min(width - 44.0 * scale);
+    let box_height = size * 1.4 + 2.0 * pad_y;
+    if box_width < 3.0 * pad_x || total < box_height + 18.0 * scale {
+        return;
+    }
+    let rect = Rect::new(
+        width - 22.0 * scale - box_width,
+        total - 18.0 * scale - box_height,
+        box_width,
+        box_height,
+    );
+    let radius = 7.0 * scale;
+    let border = scale.round().max(1.0);
+    canvas.fill_rounded_rect(rect, radius, theme.surface);
+    canvas.stroke_rounded_rect(rect, radius, border, theme.teal);
+    let room = box_width - 2.0 * pad_x - size * 0.6;
+    let text_y = rect.y + pad_y;
+    if text.is_empty() {
+        let hint = shaped(fonts, theme, size, SEARCH_PLACEHOLDER, theme.faint);
+        canvas.draw_text(fonts, &hint, rect.x + pad_x, text_y, theme.faint);
+        let caret = Rect::new(
+            rect.x + pad_x,
+            text_y + size * 0.15,
+            2.0 * scale,
+            size * 1.1,
+        );
+        canvas.fill_rect(caret, theme.amber);
+        return;
+    }
+    // A long pattern shows its tail, where the caret is.
+    let mut shown = text;
+    let mut block = shaped(fonts, theme, size, shown, theme.amber);
+    while extent(&block) > room {
+        let Some((at, _)) = shown.char_indices().nth(1) else {
+            break;
+        };
+        shown = &shown[at..];
+        block = shaped(fonts, theme, size, shown, theme.amber);
+    }
+    canvas.draw_text(fonts, &block, rect.x + pad_x, text_y, theme.amber);
+    let caret_x = rect.x + pad_x + extent(&block) + 1.0 * scale;
+    let caret = Rect::new(caret_x, text_y + size * 0.15, 2.0 * scale, size * 1.1);
+    canvas.fill_rect(caret, theme.amber);
+}
+
 /// Intersect `rect` (window coordinates) with `clip` (column x, document y).
 fn clip_to(rect: Rect, clip: Rect, column_x: f32, scroll: f32) -> Option<Rect> {
     let left = rect.x.max(clip.x + column_x);
@@ -1060,6 +1137,46 @@ mod tests {
         let y = locate_y(env.layout, &q, Hit { block: 80, nth: 0 }).unwrap();
         let middle = y - *env.scroll;
         assert!((middle - 150.0).abs() < 20.0, "{middle}");
+    }
+
+    #[test]
+    fn should_paint_the_box_in_the_bottom_right_corner_when_searching() {
+        let theme = Theme::dark();
+        let mut fonts = Fonts::new();
+        let (w, h) = (800u32, 600u32);
+        let mut pixels = vec![theme.bg.to_pixel(); (w * h) as usize];
+        let mut canvas = Canvas::new(&mut pixels, w, h);
+        paint_box(&mut canvas, &mut fonts, &theme, 1.0, 24.0, "needle");
+        let bottom = h as i32 - 24 - 18;
+        let right = w as i32 - 22;
+        let top = canvas.pixel(right - 150, bottom - 20).unwrap();
+        assert_eq!(top, theme.surface.to_pixel(), "inside the box");
+        let border = (bottom - 40..bottom - 30)
+            .filter(|&y| {
+                canvas
+                    .pixel(right - 150, y)
+                    .is_some_and(|p| p & 0xff > p >> 16 & 0xff)
+            })
+            .count();
+        assert!(border >= 1, "teal-tinted border at the top edge");
+        assert_eq!(
+            canvas.pixel(40, 40),
+            Some(theme.bg.to_pixel()),
+            "left of the box is untouched"
+        );
+    }
+
+    #[test]
+    fn should_not_panic_when_painting_the_box_on_tiny_canvases_or_with_long_text() {
+        let theme = Theme::dark();
+        let mut fonts = Fonts::new();
+        let long = "x".repeat(400);
+        for (w, h) in [(1u32, 1u32), (30, 30), (200, 80), (800, 600)] {
+            let mut pixels = vec![0u32; (w * h) as usize];
+            let mut canvas = Canvas::new(&mut pixels, w, h);
+            paint_box(&mut canvas, &mut fonts, &theme, 1.0, 10.0, &long);
+            paint_box(&mut canvas, &mut fonts, &theme, 2.0, 10.0, "");
+        }
     }
 
     #[test]
