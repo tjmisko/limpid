@@ -856,6 +856,14 @@ impl DocPage {
     }
 
     fn toggle_rail(&mut self) {
+        let compact = self
+            .layout
+            .as_ref()
+            .is_some_and(|layout| layout.compact.is_some());
+        if compact {
+            self.toggle_contents();
+            return;
+        }
         let showing = self
             .layout
             .as_ref()
@@ -2161,6 +2169,30 @@ mod tests {
         press(&mut page, "f1");
         paint(&mut page, 1400, 600, 1.0);
         assert!(page.layout().unwrap().rail.is_some());
+    }
+
+    #[test]
+    fn should_toggle_the_compact_contents_when_pressing_t_in_a_narrow_window() {
+        let mut page = chrome_page("# One\n\ntext\n\n## Two\n\ntext\n");
+        let open = |page: &DocPage| page.layout().unwrap().compact.as_ref().map(|c| c.open);
+        paint(&mut page, 700, 600, 1.0);
+        assert_eq!(open(&page), Some(false), "closed by default");
+        press(&mut page, "t");
+        paint(&mut page, 700, 600, 1.0);
+        assert_eq!(open(&page), Some(true));
+        assert!(page.layout().unwrap().rail.is_none());
+        press(&mut page, "f1");
+        paint(&mut page, 700, 600, 1.0);
+        assert_eq!(open(&page), Some(false));
+    }
+
+    #[test]
+    fn should_toggle_the_rail_and_not_the_contents_when_pressing_t_in_a_wide_window() {
+        let mut page = chrome_page("# One\n\ntext\n\n## Two\n\ntext\n");
+        paint(&mut page, 1400, 600, 1.0);
+        press(&mut page, "t");
+        paint(&mut page, 1400, 600, 1.0);
+        assert!(page.layout().unwrap().compact.is_none());
     }
 
     #[test]
