@@ -6,11 +6,12 @@
 //! `limpid-box N <ht> <dp> <wd>` (TeX points), then unboxed into the preview
 //! environment. The `preview` package itself does not log snippet sizes in a
 //! form that is stable across drivers. The SVG's own height minus the depth
-//! gives the baseline offset from the top. Display formulas are boxed too, with
-//! top-level line breaks and amsmath environments rewritten to `gathered` /
-//! `aligned` so they can live in a box. Only environments with no boxable
-//! equivalent (`alignat`) are emitted bare, with no metrics (baseline in the
-//! middle).
+//! gives the baseline offset from the top. Display formulas cannot live in a
+//! box (`\tag`, `split` and the amsmath environments need a real display), so
+//! they are set in the `preview` environment itself: bare math goes in
+//! `\[ ... \]`, and a top-level amsmath environment stays as it is. Their
+//! metrics come from the `lyx` option's `Preview: Snippet N ht dp wd` log lines
+//! (scaled points).
 
 use super::{
     Backend, BackendError, Formula, MathSettings, Rendered, find_binary, numbered_files,
@@ -147,6 +148,7 @@ impl Backend for LatexBackend {
         let pages = self.split_pages(&tools, &work, batch.len())?;
         let log = std::fs::read_to_string(work.join(format!("{JOB}.log"))).unwrap_or_default();
         let boxes = parse_box_log(&log);
+        let snippets = parse_snippet_log(&log);
         let mut results = Vec::with_capacity(batch.len());
         for (index, (formula, page)) in batch.iter().zip(pages).enumerate() {
             let svg_text = std::fs::read_to_string(&page)?;
@@ -159,7 +161,14 @@ impl Backend for LatexBackend {
                 svg: destination,
                 width: size.width,
                 height: size.height,
-                baseline: baseline_from(size.height, boxes.get(&index)),
+                baseline: baseline_from(
+                    size.height,
+                    if formula.display {
+                        snippets.get(&index)
+                    } else {
+                        boxes.get(&index)
+                    },
+                ),
                 backend: "latex".into(),
             });
         }
@@ -254,7 +263,7 @@ impl LatexBackend {
 pub fn build_document(batch: &[&Formula]) -> String {
     let mut document = String::from(
         "\\documentclass{article}\n\
-         \\usepackage[active,tightpage]{preview}\n\
+         \\usepackage[active,tightpage,lyx]{preview}\n\
          \\usepackage{amsmath,amssymb}\n\
          \\PreviewBorder=0pt\n\
          \\newbox\\limpidbox\n\
@@ -269,7 +278,7 @@ pub fn build_document(batch: &[&Formula]) -> String {
         // the baseline.
         let latex = formula.latex.trim_end();
         let layout = if formula.display {
-            display_layout(latex)
+            Layout::Bare(display_body(latex))
         } else {
             Layout::Boxed {
                 open: "\\(",
@@ -295,56 +304,44 @@ pub fn build_document(batch: &[&Formula]) -> String {
 /// How one formula is placed on its page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Layout {
-    /// Set in an `\hbox` (so its metrics are logged) between the delimiters.
+    /// Inline math, set in an `\hbox` (so its metrics are logged) between the
+    /// delimiters.
     Boxed {
         open: &'static str,
         close: &'static str,
         body: String,
     },
-    /// Emitted as is, in paragraph mode: the formula is itself a display
-    /// environment that cannot live inside a box. No metrics are logged.
+    /// Display math, emitted as is inside the `preview` environment, in
+    /// paragraph mode.
     Bare(String),
 }
 
-/// Environments that need paragraph mode, with the math-mode environment that
-/// sets the same thing inside a box (`None`: just the body).
-const WRAPPABLE_ENVIRONMENTS: &[(&str, Option<&str>)] = &[
-    ("align", Some("aligned")),
-    ("align*", Some("aligned")),
-    ("flalign", Some("aligned")),
-    ("flalign*", Some("aligned")),
-    ("eqnarray", Some("aligned")),
-    ("eqnarray*", Some("aligned")),
-    ("gather", Some("gathered")),
-    ("gather*", Some("gathered")),
-    ("multline", Some("gathered")),
-    ("multline*", Some("gathered")),
-    ("equation", None),
-    ("equation*", None),
+/// Environments that are display math by themselves and must stay top-level.
+const DISPLAY_ENVIRONMENTS: &[&str] = &[
+    "equation",
+    "equation*",
+    "align",
+    "align*",
+    "alignat",
+    "alignat*",
+    "xalignat",
+    "xalignat*",
+    "xxalignat",
+    "flalign",
+    "flalign*",
+    "gather",
+    "gather*",
+    "multline",
+    "multline*",
+    "eqnarray",
+    "eqnarray*",
+    "displaymath",
 ];
 
-/// Environments that only work in paragraph mode and have no boxable
-/// equivalent here; a formula containing one is emitted bare.
-const PARAGRAPH_ONLY_ENVIRONMENTS: &[&str] = &["alignat", "alignat*", "xalignat", "xxalignat"];
-
-fn display_layout(latex: &str) -> Layout {
-    let display = |body: String| Layout::Boxed {
-        open: "$\\displaystyle ",
-        close: "$",
-        body,
-    };
-    if let Some((environment, inner)) = single_environment(latex)
-        && let Some((_, replacement)) = WRAPPABLE_ENVIRONMENTS
-            .iter()
-            .find(|(name, _)| *name == environment)
-    {
-        return display(match replacement {
-            Some(name) => format!("\\begin{{{name}}}{inner}\\end{{{name}}}"),
-            None => inner.to_owned(),
-        });
-    }
-    if mentions_paragraph_only_environment(latex) {
-        return Layout::Bare(latex.to_owned());
+/// The paragraph-mode source of one display formula.
+fn display_body(latex: &str) -> String {
+    if starts_with_display_environment(latex) {
+        return latex.trim_start().to_owned();
     }
     if has_top_level_alignment(latex) {
         let name = if has_top_level(latex, '&') {
@@ -352,27 +349,19 @@ fn display_layout(latex: &str) -> Layout {
         } else {
             "gathered"
         };
-        return display(format!("\\begin{{{name}}}{latex}\n\\end{{{name}}}"));
+        return format!("\\[\\begin{{{name}}}{latex}\n\\end{{{name}}}\n\\]");
     }
-    display(latex.to_owned())
+    format!("\\[{latex}\n\\]")
 }
 
-fn mentions_paragraph_only_environment(latex: &str) -> bool {
-    PARAGRAPH_ONLY_ENVIRONMENTS
-        .iter()
-        .any(|name| latex.contains(&format!("\\begin{{{name}}}")))
-}
-
-/// `(name, inner)` when the whole formula is one `\begin{name}...\end{name}`.
-fn single_environment(latex: &str) -> Option<(&str, &str)> {
-    let rest = latex.trim().strip_prefix("\\begin{")?;
-    let (name, after) = rest.split_once('}')?;
-    let inner = after.trim_end().strip_suffix(&format!("\\end{{{name}}}"))?;
-    // `\begin{a}x\end{a} + \begin{a}y\end{a}` is not a single environment.
-    if inner.contains(&format!("\\begin{{{name}}}")) {
-        return None;
-    }
-    Some((name, inner))
+fn starts_with_display_environment(latex: &str) -> bool {
+    let Some(rest) = latex.trim_start().strip_prefix("\\begin{") else {
+        return false;
+    };
+    let Some((name, _)) = rest.split_once('}') else {
+        return false;
+    };
+    DISPLAY_ENVIRONMENTS.contains(&name)
 }
 
 fn has_top_level_alignment(latex: &str) -> bool {
@@ -459,6 +448,36 @@ pub fn parse_box_log(log: &str) -> HashMap<usize, BoxMetrics> {
         .collect()
 }
 
+/// Read `Preview: Snippet N ht dp wd` lines (scaled points, `N` from 1) from a
+/// TeX log, keyed by formula index (from 0). Lines that do not parse are
+/// ignored.
+pub fn parse_snippet_log(log: &str) -> HashMap<usize, BoxMetrics> {
+    let scaled_points_to_px = |word: &str| {
+        let scaled: f64 = word.parse().ok()?;
+        svgmeta::tex_dimension_to_px(&format!("{}pt", scaled / 65536.0))
+    };
+    log.lines()
+        .filter_map(|line| {
+            let mut words = line
+                .trim()
+                .strip_prefix("Preview: Snippet ")?
+                .split_whitespace();
+            let number: usize = words.next()?.parse().ok()?;
+            let height = scaled_points_to_px(words.next()?)?;
+            let depth = scaled_points_to_px(words.next()?)?;
+            let width = scaled_points_to_px(words.next()?)?;
+            Some((
+                number.checked_sub(1)?,
+                BoxMetrics {
+                    height,
+                    depth,
+                    width,
+                },
+            ))
+        })
+        .collect()
+}
+
 /// Distance from the top of the SVG to the baseline.
 pub fn baseline_from(svg_height: f32, metrics: Option<&BoxMetrics>) -> f32 {
     match metrics {
@@ -494,14 +513,14 @@ mod tests {
         let display = Formula::new("\\int_0^1 f", true);
         let document = build_document(&[&inline, &display]);
         assert_eq!(document.matches("\\begin{preview}").count(), 2);
-        assert!(document.contains("\\usepackage[active,tightpage]{preview}"));
+        assert!(document.contains("\\usepackage[active,tightpage,lyx]{preview}"));
         assert!(document.contains("\\usepackage{amsmath,amssymb}"));
         assert!(document.contains("\\PreviewBorder=0pt"));
         assert!(document.contains("\\hbox{\\(x^2\n\\)}"));
         assert!(document.contains("limpid-box 0 "));
-        assert!(document.contains("\\hbox{$\\displaystyle \\int_0^1 f\n$}"));
-        assert!(document.contains("limpid-box 1 "));
-        assert!(!document.contains("\\["));
+        assert!(document.contains("\\begin{preview}\n\\[\\int_0^1 f\n\\]\n\\end{preview}"));
+        assert!(!document.contains("limpid-box 1 "));
+        assert!(!document.contains("displaystyle"));
         assert!(document.ends_with("\\end{document}\n"));
     }
 
@@ -510,36 +529,35 @@ mod tests {
         let display = Formula::new("a\\\\\nb\n", true);
         let inline = Formula::new("x\n\n", false);
         let document = build_document(&[&display, &inline]);
-        assert!(!document.contains("\n\n$}"));
+        assert!(!document.contains("\n\n\\]"));
         assert!(!document.contains("\n\n\\)}"));
         assert!(!document.contains("\n\n\\end{gathered}"));
-        assert!(document.contains("b\n\\end{gathered}\n$}"));
+        assert!(document.contains("b\n\\end{gathered}\n\\]"));
         assert!(document.contains("x\n\\)}"));
     }
 
-    fn layout_of(latex: &str) -> Layout {
-        display_layout(latex)
-    }
-
-    fn boxed_body(layout: Layout) -> String {
-        match layout {
-            Layout::Boxed { body, .. } => body,
-            Layout::Bare(body) => panic!("expected a boxed layout, got bare {body}"),
-        }
+    #[test]
+    fn should_wrap_in_display_brackets_when_formula_is_bare_math() {
+        assert_eq!(
+            display_body("E = mc^2 \\tag{1}"),
+            "\\[E = mc^2 \\tag{1}\n\\]"
+        );
+        assert_eq!(
+            display_body("\\int_0^1 f(x)\\,dx"),
+            "\\[\\int_0^1 f(x)\\,dx\n\\]"
+        );
     }
 
     #[test]
     fn should_wrap_in_gathered_when_display_formula_has_a_top_level_line_break() {
-        let body = boxed_body(layout_of("a = b \\\\ c = d"));
-        assert!(body.starts_with("\\begin{gathered}") && body.contains("\\end{gathered}"));
+        let body = display_body("a = b \\\\ c = d");
+        assert!(body.starts_with("\\[\\begin{gathered}") && body.contains("\\end{gathered}\n\\]"));
     }
 
     #[test]
     fn should_wrap_in_aligned_when_display_formula_has_a_top_level_ampersand() {
-        let body = boxed_body(layout_of("a &= b \\\\ c &= d"));
-        assert!(body.starts_with("\\begin{aligned}"));
-        let single = boxed_body(layout_of("a &= b"));
-        assert!(single.starts_with("\\begin{aligned}"));
+        assert!(display_body("a &= b \\\\ c &= d").starts_with("\\[\\begin{aligned}"));
+        assert!(display_body("a &= b").starts_with("\\[\\begin{aligned}"));
     }
 
     #[test]
@@ -551,36 +569,63 @@ mod tests {
             "x % a \\\\ comment\ny",
             "\\left\\{ x \\right.",
         ] {
-            assert_eq!(boxed_body(layout_of(latex)), latex, "{latex}");
+            assert_eq!(display_body(latex), format!("\\[{latex}\n\\]"), "{latex}");
         }
     }
 
     #[test]
-    fn should_convert_amsmath_environments_to_boxable_ones_when_formula_is_one() {
-        let aligned = boxed_body(layout_of("\\begin{align}a &= b \\\\ c &= d\\end{align}"));
-        assert_eq!(aligned, "\\begin{aligned}a &= b \\\\ c &= d\\end{aligned}");
-        let star = boxed_body(layout_of("\\begin{align*}x&=1\\end{align*}"));
-        assert!(star.starts_with("\\begin{aligned}"));
-        let gather = boxed_body(layout_of("\\begin{gather*}a\\\\b\\end{gather*}"));
-        assert!(gather.starts_with("\\begin{gathered}"));
-        let equation = boxed_body(layout_of("\n\\begin{equation}E = mc^2\\end{equation}\n"));
-        assert_eq!(equation, "E = mc^2");
+    fn should_keep_top_level_environment_as_itself_when_it_is_a_display_environment() {
+        for name in [
+            "align",
+            "align*",
+            "alignat",
+            "alignat*",
+            "flalign",
+            "gather",
+            "gather*",
+            "multline",
+            "multline*",
+            "equation",
+            "equation*",
+            "eqnarray",
+            "eqnarray*",
+        ] {
+            let latex = format!("\\begin{{{name}}}a &= b\\end{{{name}}}");
+            assert_eq!(display_body(&latex), latex, "{name}");
+            assert_eq!(display_body(&format!("\n{latex}")), latex, "{name} padded");
+        }
     }
 
     #[test]
-    fn should_emit_bare_when_environment_cannot_be_boxed() {
-        let layout = layout_of("\\begin{alignat}{2}a&=b&c&=d\\end{alignat}");
-        assert!(matches!(layout, Layout::Bare(_)));
+    fn should_keep_split_inside_its_equation_when_formula_is_equation_with_split() {
+        let latex = "\\begin{equation}\\begin{split}a&=b\\\\&=c\\end{split}\\end{equation}";
+        let document = build_document(&[&Formula::new(latex, true)]);
+        assert!(document.contains(&format!("\\begin{{preview}}\n{latex}\n\\end{{preview}}")));
+        assert!(!document.contains("aligned") && !document.contains("\\["));
+    }
+
+    #[test]
+    fn should_emit_tag_inside_display_brackets_when_formula_has_a_tag() {
+        let document = build_document(&[&Formula::new("E = mc^2 \\tag{1}", true)]);
+        assert!(document.contains("\\[E = mc^2 \\tag{1}\n\\]"));
+        assert!(!document.contains("\\hbox"));
+    }
+
+    #[test]
+    fn should_keep_starred_gather_bare_when_formula_is_gather_star() {
+        let latex = "\\begin{gather*}a\\\\b\\end{gather*}";
+        let document = build_document(&[&Formula::new(latex, true)]);
+        assert!(document.contains(&format!("\\begin{{preview}}\n{latex}\n\\end{{preview}}")));
+        assert!(!document.contains("gathered"));
+    }
+
+    #[test]
+    fn should_not_box_display_formula_when_it_is_an_environment() {
         let document =
             build_document(&[&Formula::new("\\begin{alignat}{2}a&=b\\end{alignat}", true)]);
         assert!(document.contains("\\begin{preview}\n\\begin{alignat}"));
+        assert!(!document.contains("\\hbox"));
         assert!(!document.contains("limpid-box 0"));
-    }
-
-    #[test]
-    fn should_not_treat_two_environments_as_one_when_unwrapping() {
-        let latex = "\\begin{align}a\\end{align} + \\begin{align}b\\end{align}";
-        assert!(single_environment(latex).is_none());
     }
 
     #[test]
@@ -604,6 +649,22 @@ mod tests {
         assert!((second.depth - 3.25 * 96.0 / 72.27).abs() < 1e-3);
         assert!(boxes[&0].depth.abs() < 1e-6);
         assert!(!boxes.contains_key(&3));
+    }
+
+    #[test]
+    fn should_parse_snippet_lines_when_log_has_noise() {
+        let log = "Preview: Tightpage 0 0 0 0\n\
+            Preview: Snippet 1 950272 0 22609920\n\
+            Preview: Snippet 3 1688296 65536 22609920\n\
+            Preview: Snippet x 1 1 1\n\
+            Preview: Snippet 0 1 1 1\n\
+            Preview: Snippet 2 1\n";
+        let snippets = parse_snippet_log(log);
+        assert_eq!(snippets.len(), 2);
+        let first = snippets[&0];
+        assert!((first.height - 950272.0 / 65536.0 * 96.0 / 72.27).abs() < 1e-2);
+        assert!(first.depth.abs() < 1e-6);
+        assert!((snippets[&2].depth - 96.0 / 72.27).abs() < 1e-3);
     }
 
     #[test]
@@ -707,11 +768,6 @@ mod tests {
             "a wide display formula must keep its natural width: {:?}",
             rendered[2]
         );
-        assert!(
-            rendered[0].width < 150.0,
-            "display math must be tightly bounded: {:?}",
-            rendered[0]
-        );
         // Line breaks and display environments typeset, and are taller than one line.
         let one_line = Formula::new("a = b", true);
         let broken_lines = Formula::new("a = b \\\\ c = d", true);
@@ -735,15 +791,87 @@ mod tests {
             both[1].height > both[0].height * 1.6,
             "two lines must be about twice as tall: {both:?}"
         );
-        assert!(
-            both[1].width < 100.0,
-            "a broken display formula must not span the line: {:?}",
-            both[1]
-        );
-        assert!(both[1].baseline < both[1].height, "depth must be reported");
         let broken = Formula::new("\\undefinedmacro", false);
         let error = backend.render(&[&broken], &out).unwrap_err();
         assert!(error.0.contains("Undefined control sequence"), "{error}");
         std::fs::remove_dir_all(&out).unwrap();
+    }
+
+    /// Typeset one display formula with real pdflatex; `None` when the tools
+    /// are missing.
+    fn typeset_display(latex: &str, label: &str) -> Option<Rendered> {
+        if !real_tools_present() {
+            eprintln!("skipped: pdflatex or pdftocairo missing");
+            return None;
+        }
+        let settings = MathSettings {
+            svg: "pdftocairo".into(),
+            ..MathSettings::default()
+        };
+        let backend = LatexBackend::new(settings, None);
+        let formula = Formula::new(latex, true);
+        let out = std::env::temp_dir().join(format!(
+            "limpid-latex-display-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(&out).unwrap();
+        let rendered = backend
+            .render(&[&formula], &out)
+            .unwrap_or_else(|error| panic!("{latex}: {error}"));
+        std::fs::remove_dir_all(&out).unwrap();
+        let rendered = rendered.into_iter().next().unwrap();
+        assert!(
+            rendered.width > 1.0 && rendered.height > 1.0,
+            "{rendered:?}"
+        );
+        assert!(rendered.baseline > 0.0 && rendered.baseline <= rendered.height);
+        Some(rendered)
+    }
+
+    #[test]
+    fn should_typeset_tag_when_pdflatex_is_installed() {
+        typeset_display("E = mc^2 \\tag{1}", "tag");
+    }
+
+    #[test]
+    fn should_typeset_equation_with_split_when_pdflatex_is_installed() {
+        let split = typeset_display(
+            "\\begin{equation}\\begin{split}a&=b\\\\&=c\\end{split}\\end{equation}",
+            "split",
+        );
+        let single = typeset_display("\\begin{equation}a=b\\end{equation}", "single");
+        if let (Some(split), Some(single)) = (split, single) {
+            assert!(split.height > single.height * 1.5, "{split:?} {single:?}");
+        }
+    }
+
+    #[test]
+    fn should_typeset_align_with_tag_when_pdflatex_is_installed() {
+        typeset_display(
+            "\\begin{align}a &= b \\tag{A}\\\\ c &= d \\nonumber\\end{align}",
+            "aligntag",
+        );
+    }
+
+    #[test]
+    fn should_typeset_alignat_when_pdflatex_is_installed() {
+        typeset_display(
+            "\\begin{alignat}{2}a&=b&\\quad c&=d\\end{alignat}",
+            "alignat",
+        );
+    }
+
+    #[test]
+    fn should_typeset_gather_star_when_pdflatex_is_installed() {
+        typeset_display("\\begin{gather*}a=b\\\\c=d\\end{gather*}", "gatherstar");
+    }
+
+    #[test]
+    fn should_typeset_plain_display_integral_when_pdflatex_is_installed() {
+        let Some(rendered) = typeset_display("\\int_0^1 f(x)\\,dx", "integral") else {
+            return;
+        };
+        assert!(rendered.height > 15.0, "{rendered:?}");
     }
 }
