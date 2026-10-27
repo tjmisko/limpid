@@ -409,8 +409,15 @@ impl Feedback {
     /// Keys for the editor, in nvim notation. Returns at once; the editor's
     /// answer arrives through [`Feedback::tick`].
     pub fn input(&mut self, keys: &str) {
-        if keys.is_empty() || self.open.is_none() {
+        let Some(open) = self.open.as_mut() else {
             return;
+        };
+        if keys.is_empty() {
+            return;
+        }
+        // A message stays until the next key, as in nvim.
+        if open.message.take().is_some() {
+            self.stale = true;
         }
         self.host.borrow_mut().input(self.owner, keys);
     }
@@ -505,21 +512,24 @@ impl Feedback {
                     self.finish_box(plan);
                 }
             }
+            // Shown in the box's footer, not as a page flash.
             EditorEvent::Message(message) => {
                 if let Some(open) = self.open.as_mut() {
-                    open.message = Some(message.clone());
+                    open.message = Some(message);
                 }
-                self.flashes.push(message);
+                self.fit_box_to_content();
             }
             EditorEvent::CmdlineShow(line) => {
                 if let Some(open) = self.open.as_mut() {
                     open.cmdline = Some(line);
                 }
+                self.fit_box_to_content();
             }
             EditorEvent::CmdlineHide => {
                 if let Some(open) = self.open.as_mut() {
                     open.cmdline = None;
                 }
+                self.fit_box_to_content();
             }
             EditorEvent::Error(message) => self.flashes.push(format!("editor: {message}")),
         }
@@ -535,7 +545,9 @@ impl Feedback {
         let Some(content) = content else {
             return;
         };
-        let rows = limits.rows_for(content);
+        // The footer takes a row of its own while it shows.
+        let footer = u16::from(open.footer().is_some());
+        let rows = limits.rows_for(content.saturating_add(footer));
         if open.plan.rows != rows {
             open.plan.rows = rows;
             self.stale = true;

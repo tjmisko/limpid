@@ -423,6 +423,30 @@ fn should_follow_the_content_when_the_editor_redraws() {
 }
 
 #[test]
+fn should_give_the_footer_its_own_row_when_a_message_or_command_line_shows() {
+    let mut h = harness(QUESTIONS, false);
+    h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
+    let mut grid = Grid::new(40, 10);
+    for (row, ch) in [(0usize, 'a'), (1, 'b'), (2, 'c'), (3, 'd'), (4, 'e')] {
+        grid.cells[row * 40] = Cell { ch, hl: 0 };
+    }
+    h.script.borrow_mut().grid = Some(grid);
+    h.say(EditorEvent::Redraw);
+    let plain = h.fb.open_box().unwrap().plan.rows;
+    h.say(EditorEvent::Message(
+        "unsaved changes: :wq to save, :q! to discard".into(),
+    ));
+    assert_eq!(h.fb.open_box().unwrap().plan.rows, plain + 1);
+    h.fb.input("i");
+    h.say(EditorEvent::Redraw);
+    assert_eq!(h.fb.open_box().unwrap().plan.rows, plain);
+    h.say(EditorEvent::CmdlineShow(":q".into()));
+    assert_eq!(h.fb.open_box().unwrap().plan.rows, plain + 1);
+    h.say(EditorEvent::CmdlineHide);
+    assert_eq!(h.fb.open_box().unwrap().plan.rows, plain);
+}
+
+#[test]
 fn should_track_mode_command_line_and_messages_when_the_editor_reports_them() {
     let mut h = harness(QUESTIONS, false);
     h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
@@ -432,9 +456,22 @@ fn should_track_mode_command_line_and_messages_when_the_editor_reports_them() {
     let open = h.fb.open_box().unwrap();
     assert_eq!(open.mode, "insert");
     assert_eq!(open.cmdline.as_deref(), Some(":wq"));
-    assert_eq!(h.fb.take_flashes(), ["written"]);
+    assert_eq!(
+        open.footer(),
+        Some((":wq", true)),
+        "the line being typed wins"
+    );
+    assert!(h.fb.take_flashes().is_empty(), "messages stay in the box");
     h.say(EditorEvent::CmdlineHide);
-    assert_eq!(h.fb.open_box().unwrap().cmdline, None);
+    let open = h.fb.open_box().unwrap();
+    assert_eq!(open.cmdline, None);
+    assert_eq!(open.footer(), Some(("written", false)));
+    h.fb.input("j");
+    assert_eq!(
+        h.fb.open_box().unwrap().footer(),
+        None,
+        "the next key clears it"
+    );
     h.say(EditorEvent::Error("boom".into()));
     assert_eq!(h.fb.take_flashes(), ["editor: boom"]);
 }

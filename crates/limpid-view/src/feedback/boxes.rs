@@ -276,6 +276,16 @@ impl OpenBox {
         }
     }
 
+    /// What the footer row of the box shows: the `:` line being typed, else
+    /// the last message, until the next key.
+    pub fn footer(&self) -> Option<(&str, bool)> {
+        match (&self.cmdline, &self.message) {
+            (Some(line), _) => Some((line, true)),
+            (None, Some(message)) => Some((message, false)),
+            (None, None) => None,
+        }
+    }
+
     /// Whether nvim is in a mode that types text.
     pub fn is_inserting(&self) -> bool {
         self.mode.starts_with('i') || self.mode.starts_with('R')
@@ -415,41 +425,54 @@ fn paint_frame(canvas: &mut Canvas, theme: &Theme, scale: f32, outer: Rect) {
     canvas.draw_pixmap(&pixmap, outer.x - room, outer.y - room);
 }
 
-/// The `:` or `/` line nvim is typing, in a dark strip along the bottom of
-/// the box.
-fn paint_cmdline(
+/// The footer along the bottom of the box: the `:` or `/` line nvim is
+/// typing, with a teal caret, or nvim's last message. It takes the grid's
+/// last row and the padding under it; the box is sized with a spare row for
+/// it, so it never covers text.
+fn paint_footer(
     canvas: &mut Canvas,
     fonts: &mut Fonts,
     theme: &Theme,
     scale: f32,
     outer: Rect,
     line: &str,
+    typing: bool,
 ) {
     let size = (CMDLINE_FONT_SIZE * scale).round().max(8.0);
     let pad = 14.0 * scale;
-    let height = (size * 1.5 + 12.0 * scale).round();
     let border = scale.round().max(1.0);
+    let inner = box_inner(outer, scale);
+    let row = (EDITOR_FONT_SIZE * scale * GRID_LINE_HEIGHT).round();
+    let top = (inner.bottom() - row).max(outer.y + border);
     let strip = Rect::new(
         outer.x + border,
-        outer.bottom() - border - height,
+        top,
         (outer.w - 2.0 * border).max(0.0),
-        height,
+        (outer.bottom() - border - top).max(0.0),
     );
-    canvas.fill_rect(strip, theme.code_bg);
+    canvas.fill_rect(strip, theme.surface);
     canvas.fill_rect(Rect::new(strip.x, strip.y, strip.w, border), theme.rule);
+    let color = if typing { theme.ink } else { theme.amber };
     let mut text = TextBlock::new(fonts, size, size * 1.5);
-    text.set_text(fonts, line, TextStyle::mono(theme.ink), &theme.families);
+    text.set_text(fonts, line, TextStyle::mono(color), &theme.families);
     text.set_width(fonts, None);
     let end = text
         .glyphs()
         .map(|glyph| glyph.x + glyph.width)
         .fold(0.0, f32::max);
-    let top = strip.y + 6.0 * scale;
-    canvas.draw_text(fonts, &text, strip.x + pad, top, theme.ink);
-    canvas.fill_rect(
-        Rect::new(strip.x + pad + end, top, 2.0 * scale.max(1.0), size * 1.5),
-        theme.teal,
-    );
+    let text_y = strip.y + ((strip.h - size * 1.5) / 2.0).max(0.0);
+    canvas.draw_text(fonts, &text, strip.x + pad, text_y, color);
+    if typing {
+        canvas.fill_rect(
+            Rect::new(
+                strip.x + pad + end,
+                text_y,
+                2.0 * scale.max(1.0),
+                size * 1.5,
+            ),
+            theme.teal,
+        );
+    }
 }
 
 /// Paint the box: a rounded teal-bordered frame, the editor grid, the mode
@@ -490,8 +513,8 @@ pub fn paint(
         outer.y + 3.0 * scale,
         theme.muted,
     );
-    if let Some(line) = open.cmdline.as_deref() {
-        paint_cmdline(canvas, fonts, theme, scale, outer, line);
+    if let Some((line, typing)) = open.footer() {
+        paint_footer(canvas, fonts, theme, scale, outer, line, typing);
     }
 }
 
@@ -661,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn should_paint_a_dark_strip_when_a_command_line_is_open() {
+    fn should_paint_the_footer_on_the_surface_within_the_last_row_when_a_command_line_is_open() {
         let theme = Theme::dark();
         let mut fonts = Fonts::new();
         let mut pixels = scene(300, 160);
@@ -681,7 +704,20 @@ mod tests {
             &Grid::new(10, 3),
             &open,
         );
-        assert_eq!(canvas.pixel(30, 140), Some(theme.code_bg.to_pixel()));
+        assert_eq!(canvas.pixel(30, 140), Some(theme.surface.to_pixel()));
+        let inner = box_inner(outer, 1.0);
+        let row = (EDITOR_FONT_SIZE * GRID_LINE_HEIGHT).round();
+        let rule_y = (inner.bottom() - row) as i32;
+        assert_eq!(
+            canvas.pixel(30, rule_y),
+            Some(theme.rule.to_pixel()),
+            "a rule tops the footer"
+        );
+        assert_eq!(
+            canvas.pixel(30, rule_y - 2),
+            Some(theme.surface.to_pixel()),
+            "the rows above are the box body, not the footer rule"
+        );
     }
 
     #[test]

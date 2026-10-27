@@ -1123,20 +1123,8 @@ impl Page for DocPage {
                 );
             } else if let Some(open) = feedback.open_box() {
                 view.state = status::StateName::Editor;
+                // The command line and messages show in the box's footer.
                 view.right = open.mode_label().to_owned();
-                if let Some(line) = &open.cmdline {
-                    let mut characters = line.chars();
-                    view.prompt = characters.next().map(|sigil| status::Prompt {
-                        sigil,
-                        text: characters.as_str().to_owned(),
-                        placeholder: "",
-                    });
-                }
-                if view.message.is_empty()
-                    && let Some(message) = &open.message
-                {
-                    view.message = message.clone();
-                }
             }
         }
         if let Some(text) = self.nav.search_box() {
