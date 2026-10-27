@@ -473,13 +473,17 @@ impl Splicer<'_> {
     ) -> Block {
         let src = free_position(self.source, anchor, &self.taken);
         self.taken.insert(src.start);
+        let field = match &what {
+            Synthetic::Reply(id) => Some(id.clone()),
+            _ => None,
+        };
         self.synthetic.insert(src.clone(), what);
         Block {
             kind: BlockKind::Annotation {
                 target: anchor.clone(),
                 kind,
                 text,
-                field: None,
+                field,
             },
             src,
             id: None,
@@ -928,6 +932,41 @@ mod tests {
         let merged = pending.merged_into(saved);
         assert_eq!(merged.comments["file:5-9"].text, "new");
         assert_eq!(merged.replies["q2"], "b");
+    }
+
+    #[test]
+    fn should_lay_a_pending_reply_inside_its_question_box_when_unsaved() {
+        use crate::layout::{Content, PendingKind, lay_out};
+        let doc = doc(QUESTIONS);
+        let index = DocIndex::from_blocks(&doc.blocks, &doc.source);
+        let mut pending = Pending::default();
+        pending.set_reply("q1", "SQLite", false);
+        let overlay = overlay(&doc.blocks, &index, &pending, None, &doc.source);
+        let mut shown = doc.clone();
+        shown.blocks = overlay.blocks;
+        let layout = lay_out(
+            &shown,
+            1000.0,
+            &crate::theme::Theme::dark(),
+            1.0,
+            &mut crate::text::Fonts::new(),
+        );
+        let kind = |laid: &crate::layout::LaidBlock| match &laid.content {
+            Content::Pending(p) => Some(p.kind),
+            _ => None,
+        };
+        let field = layout
+            .blocks
+            .iter()
+            .find(|laid| kind(laid) == Some(PendingKind::Field))
+            .unwrap();
+        let reply = layout
+            .blocks
+            .iter()
+            .find(|laid| kind(laid) == Some(PendingKind::Annotation))
+            .unwrap();
+        assert!(reply.rect.y > field.rect.y && reply.rect.bottom() < field.rect.bottom());
+        assert!(reply.rect.x > field.rect.x && reply.rect.right() < field.rect.right());
     }
 
     #[test]
