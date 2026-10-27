@@ -1,5 +1,5 @@
 /** /read [spec]: pass transcript messages to the Rust reader, then open its page. */
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 const ARGUMENT_HINT = '[0 | 0..2 | 1..=3 | 2.. | ..4]'
 const TIMEOUT_MS = 30_000
@@ -34,12 +34,55 @@ while True:
 `
 
 let feedbackSock: string | undefined
+let listenerSession: string | undefined
 let listener: AsyncGenerator<unknown, unknown> | undefined
 
 function stopListener(): void {
   void listener?.return(undefined)
   listener = undefined
+  listenerSession = undefined
   feedbackSock = undefined
+}
+
+// A /clear ends the session and starts no new one, so /read binds the socket
+// for the current session id when the one it has belongs to another.
+async function ensureListener($: EngineInterface): Promise<void> {
+  let sessionId: string | undefined
+  try { sessionId = await $.session.id() } catch { sessionId = undefined }
+  if (!sessionId) { stopListener(); return }
+  if (listener && listenerSession === sessionId) return
+  stopListener()
+  const runtime = await $.env.get('XDG_RUNTIME_DIR')
+  const home = (await $.env.get('HOME')) ?? '~'
+  const directory = runtime ? `${runtime}/limpid` : `${home}/.cache/limpid/run`
+  const socket = `${directory}/claude-${sessionId}.sock`
+  const stream = $.process.spawn({ argv: ['python3', '-c', LISTENER, socket] })
+  listener = stream
+  listenerSession = sessionId
+  feedbackSock = socket
+  void (async () => {
+    let buffer = ''
+    try {
+      for await (const chunk of stream) {
+        if (chunk.stream !== 'stdout') continue
+        buffer += chunk.text
+        let newline
+        while ((newline = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newline)
+          buffer = buffer.slice(newline + 1)
+          try {
+            const signal = JSON.parse(line)
+            if (typeof signal.message === 'string') void $.prompt.submit({ text: signal.message })
+          } catch { /* ignore malformed frames */ }
+        }
+      }
+    } catch { /* listener could not start */ }
+    if (listener === stream) {
+      listener = undefined
+      listenerSession = undefined
+      feedbackSock = undefined
+    }
+  })()
 }
 
 export const register: Register = on => {
@@ -49,39 +92,7 @@ export const register: Register = on => {
       description: 'Open a response, or a Rust-style range of turns, as a styled HTML page',
       argumentHint: ARGUMENT_HINT,
     })
-    stopListener()
-    let sessionId: string | undefined
-    try { sessionId = await $.session.id() } catch { sessionId = undefined }
-    if (!sessionId) return next(e)
-    const runtime = await $.env.get('XDG_RUNTIME_DIR')
-    const home = (await $.env.get('HOME')) ?? '~'
-    const directory = runtime ? `${runtime}/limpid` : `${home}/.cache/limpid/run`
-    const socket = `${directory}/claude-${sessionId}.sock`
-    const stream = $.process.spawn({ argv: ['python3', '-c', LISTENER, socket] })
-    listener = stream
-    feedbackSock = socket
-    void (async () => {
-      let buffer = ''
-      try {
-        for await (const chunk of stream) {
-          if (chunk.stream !== 'stdout') continue
-          buffer += chunk.text
-          let newline
-          while ((newline = buffer.indexOf('\n')) >= 0) {
-            const line = buffer.slice(0, newline)
-            buffer = buffer.slice(newline + 1)
-            try {
-              const signal = JSON.parse(line)
-              if (typeof signal.message === 'string') void $.prompt.submit({ text: signal.message })
-            } catch { /* ignore malformed frames */ }
-          }
-        }
-      } catch { /* listener could not start */ }
-      if (listener === stream) {
-        listener = undefined
-        feedbackSock = undefined
-      }
-    })()
+    await ensureListener($)
     return next(e)
   })
 
@@ -91,6 +102,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'read' }, async ($, e) => {
+    await ensureListener($)
     const messages = await $.session.messages()
     let model: string | undefined
     try { model = (await $.session.model()) || undefined } catch { model = undefined }
