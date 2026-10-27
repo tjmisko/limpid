@@ -27,6 +27,8 @@ pub struct Cx<'a> {
     pub viewport_css_width: f32,
     /// Width of the reading column, device pixels.
     pub column_width: f32,
+    /// See [`Geometry::gutter`](super::Geometry::gutter).
+    pub gutter: f32,
 }
 
 impl Cx<'_> {

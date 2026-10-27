@@ -1952,7 +1952,14 @@ mod tests {
         let left = (layout.column_x + layout.column_width - 14.0) as usize;
         let soft = blend(theme.bg, theme.teal, 15);
         assert_eq!(pixels[y * 800 + left], soft, "no bar on the left edge");
-        let corner = (rect.y as usize) * 800 + (layout.column_x + 10.0) as usize;
+        let band = crate::nav::cursor::band_rect(layout, rect, 0.0);
+        assert!(
+            band.x < layout.column_x,
+            "the band reaches left of the text"
+        );
+        let inside = y * 800 + (band.x + 1.0) as usize;
+        assert_eq!(pixels[inside], soft, "the band starts at its own edge");
+        let corner = (band.y as usize) * 800 + band.x as usize;
         assert_eq!(pixels[corner], theme.bg.to_pixel(), "corner is rounded");
     }
 
@@ -2171,11 +2178,13 @@ mod tests {
         let layout = page.layout().unwrap();
         let rect = layout.blocks[1].rect;
         let tinted = blend(theme.bg, theme.teal, 31).to_owned();
+        // Inset past the rounded corners, where the band may show as it did
+        // on the WebKit page.
         let (left, right) = (
-            (layout.column_x + rect.x) as usize,
-            (layout.column_x + rect.right()) as usize,
+            (layout.column_x + rect.x + 12.0) as usize,
+            (layout.column_x + rect.right() - 12.0) as usize,
         );
-        let leaked = (rect.y as usize..rect.bottom() as usize)
+        let leaked = (rect.y as usize + 12..rect.bottom() as usize - 12)
             .flat_map(|y| (left..right).map(move |x| (x, y)))
             .filter(|&(x, y)| pixels[y * 800 + x] == tinted)
             .count();

@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     editor::paint::{EDITOR_FONT_SIZE, GRID_LINE_HEIGHT},
-    nav::cursor::BLEED_INSET,
+    nav::cursor::band_reach,
     paint::Rect,
     text::TextStyle,
     theme::{Color, Theme},
@@ -93,8 +93,8 @@ fn slot(cx: &Cx, flow: Flow, look: &Look) -> (f32, f32) {
     if !look.bleed {
         return (flow.x, flow.width);
     }
-    let inset = cx.px(BLEED_INSET).min(cx.column_width / 4.0);
-    (inset, (cx.column_width - 2.0 * inset).max(1.0))
+    let reach = band_reach(cx.gutter, cx.scale);
+    (-reach, cx.column_width + 2.0 * reach)
 }
 
 /// Append `tail` to `head`, moving its ranges past the text already there.
@@ -675,8 +675,13 @@ mod tests {
     fn should_inset_a_comment_like_the_focus_band_when_it_sits_at_the_top_level() {
         let (_, layout) = laid("para\n\n<!-- limpid comment\nNote\n-->\n");
         let note = pending(&layout, PendingKind::Annotation);
-        assert_eq!(note.rect.x, BLEED_INSET);
-        assert_eq!(note.rect.w, layout.column_width - 2.0 * BLEED_INSET);
+        let reach = layout.gutter - BLEED_INSET;
+        assert!(reach > 0.0);
+        assert_eq!(
+            note.rect.x, -reach,
+            "the callout reaches into the page padding"
+        );
+        assert_eq!(note.rect.w, layout.column_width + 2.0 * reach);
         let Content::Pending(shape) = &note.content else {
             unreachable!()
         };

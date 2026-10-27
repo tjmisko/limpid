@@ -78,6 +78,7 @@ pub fn geometry(width: f32, theme: &Theme, scale: f32, mode: RailMode, has_toc: 
         rail_width,
         column_x,
         column_width,
+        gutter: column_x - page_x,
     }
 }
 

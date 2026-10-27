@@ -229,6 +229,9 @@ pub struct Geometry {
     /// Absolute x of the text column.
     pub column_x: f32,
     pub column_width: f32,
+    /// From the page edge to the text column, device pixels: the page's side
+    /// padding, which the focus band and callouts reach into.
+    pub gutter: f32,
 }
 
 struct State {
@@ -261,6 +264,8 @@ pub struct Layout {
     pub rail_follow: rail::RailFollow,
     pub column_x: f32,
     pub column_width: f32,
+    /// See [`Geometry::gutter`].
+    pub gutter: f32,
     /// The heading (by source range) whose text paints teal.
     pub heading_tint: Option<std::ops::Range<usize>>,
     state: State,
@@ -344,6 +349,7 @@ pub fn lay_out_in(
         rail_follow: rail::RailFollow::default(),
         column_x: geometry.column_x,
         column_width: geometry.column_width,
+        gutter: geometry.gutter,
         heading_tint: None,
         state: State {
             theme,
@@ -437,6 +443,7 @@ impl Layout {
             fonts,
             viewport_css_width: self.state.viewport_css_width,
             column_width: self.column_width,
+            gutter: self.gutter,
         };
         let nested = match self.blocks.last_mut() {
             Some(field) if field::answers(doc, self.state.next, field) => {

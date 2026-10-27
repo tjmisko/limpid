@@ -15,6 +15,13 @@ pub const REVEAL_MARGIN: f32 = 12.0;
 pub const ALIGN_MARGIN: f32 = 8.0;
 /// How far the focus band reaches past the text column, CSS px.
 pub const BLEED_INSET: f32 = 10.0;
+
+/// How far the band and callouts reach past each side of the text column:
+/// to `BLEED_INSET` inside the page edge, as the WebKit page measured from
+/// its padded `<article class="page">`.
+pub fn band_reach(gutter: f32, scale: f32) -> f32 {
+    (gutter - BLEED_INSET * scale).max(0.0)
+}
 /// Space kept above a heading when a section jump puts it at the top, CSS px.
 const HEADING_SCROLL_MARGIN: f32 = 24.0;
 /// Corner radius of the focus band and the selection, CSS px.
@@ -486,11 +493,11 @@ impl Cursor {
 /// The rectangle a band covers for `rect`: the column minus the inset on each
 /// side, in window coordinates.
 pub fn band_rect(layout: &Layout, rect: Rect, scroll: f32) -> Rect {
-    let bleed = BLEED_INSET * layout.scale();
+    let reach = band_reach(layout.gutter, layout.scale());
     Rect::new(
-        layout.column_x + bleed,
+        layout.column_x - reach,
         rect.y - scroll,
-        layout.column_width - 2.0 * bleed,
+        layout.column_width + 2.0 * reach,
         rect.h,
     )
 }
@@ -1081,12 +1088,24 @@ mod tests {
     }
 
     #[test]
-    fn should_band_the_column_minus_the_inset_when_painting() {
+    fn should_reach_past_the_text_to_the_inset_page_edge_when_painting_the_band() {
         let fixture = Fixture::new("para\n", 300.0);
-        let rect = fixture.layout.blocks[0].rect;
-        let band = band_rect(&fixture.layout, rect, 10.0);
-        assert_eq!(band.x, fixture.layout.column_x + BLEED_INSET);
-        assert_eq!(band.w, fixture.layout.column_width - 2.0 * BLEED_INSET);
+        let layout = &fixture.layout;
+        let rect = layout.blocks[0].rect;
+        let band = band_rect(layout, rect, 10.0);
+        let page_x = layout.column_x - layout.gutter;
+        assert!(layout.gutter > BLEED_INSET, "{}", layout.gutter);
+        assert_eq!(band.x, page_x + BLEED_INSET);
+        assert!(band.x < layout.column_x, "the band starts left of the text");
+        assert!(
+            band.right() > layout.column_x + layout.column_width,
+            "and ends right of it"
+        );
+        assert!(
+            (band.right() - (page_x + layout.column_width + 2.0 * layout.gutter - BLEED_INSET))
+                .abs()
+                < 0.01
+        );
         assert_eq!(band.y, rect.y - 10.0);
         assert_eq!(band.h, rect.h);
     }
