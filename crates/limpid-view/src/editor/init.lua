@@ -57,7 +57,7 @@ end
 
 -- Open a fresh acwrite buffer holding `text` in a full-grid floating window
 -- over the base window. The nvim process outlives the box: closing the
--- window (:q, :wq, :q!, Ctrl-Enter) reports a quit and nothing more.
+-- window (:q, :w, :wq, :q!, Ctrl-Enter) reports a quit and nothing more.
 -- Empty text starts in insert mode; otherwise the cursor lands at the end
 -- in normal mode.
 function limpid.open(text, kind)
@@ -121,6 +121,13 @@ vim.api.nvim_create_autocmd("BufWriteCmd", {
     end
     vim.rpcnotify(chan, "limpid", "save", buffer_text(args.buf))
     vim.bo[args.buf].modified = false
+    -- A save ends the box, so :w closes like :wq (a no-op when :wq already did).
+    local win = limpid.win
+    vim.schedule(function()
+      if win and limpid.win == win and vim.api.nvim_win_is_valid(win) then
+        pcall(vim.api.nvim_win_close, win, true)
+      end
+    end)
   end,
 })
 

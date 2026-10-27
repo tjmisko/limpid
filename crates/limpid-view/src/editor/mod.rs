@@ -295,7 +295,7 @@ impl Editor {
             None => {}
         }
         for (kind, text) in effects.messages {
-            if text.starts_with("E37") {
+            if text.starts_with("E37") || text.starts_with("E162") {
                 events.push(EditorEvent::Message(UNSAVED_CHANGES.to_string()));
                 continue;
             }
@@ -460,14 +460,15 @@ mod tests {
         editor.open("hello", BoxKind::Reply).unwrap();
         editor.input("A world<Esc>:w<CR>");
         let events = collect_until(&mut editor, |_, seen| {
-            seen.contains(&EditorEvent::Save("hello world".into()))
-        });
-        assert!(!events.iter().any(|e| matches!(e, EditorEvent::Quit { .. })));
-        editor.input(":q<CR>");
-        let events = collect_until(&mut editor, |_, seen| {
             seen.iter().any(|e| matches!(e, EditorEvent::Quit { .. }))
         });
-        assert!(events.contains(&EditorEvent::Quit { discard: false }));
+        let save = events
+            .iter()
+            .position(|e| *e == EditorEvent::Save("hello world".into()));
+        let quit = events
+            .iter()
+            .position(|e| *e == EditorEvent::Quit { discard: false });
+        assert!(save.is_some() && quit.is_some() && save < quit);
     }
 
     #[test]
@@ -557,6 +558,30 @@ mod tests {
     }
 
     #[test]
+    fn should_save_and_close_when_w_runs_on_a_changed_box() {
+        let Some(mut editor) = started() else { return };
+        editor.open("x", BoxKind::Reply).unwrap();
+        editor.input("Ay<Esc>:w<CR>");
+        let events = collect_until(&mut editor, |_, seen| {
+            seen.iter().any(|e| matches!(e, EditorEvent::Quit { .. }))
+        });
+        assert!(events.contains(&EditorEvent::Save("xy".into())));
+        assert!(events.contains(&EditorEvent::Quit { discard: false }));
+    }
+
+    #[test]
+    fn should_explain_the_refusal_when_qa_runs_on_a_changed_box() {
+        let Some(mut editor) = started() else { return };
+        editor.open("x", BoxKind::Reply).unwrap();
+        editor.input("Ay<Esc>:qa<CR>");
+        let events = collect_until(&mut editor, |_, seen| {
+            seen.iter().any(|e| matches!(e, EditorEvent::Message(_)))
+        });
+        assert!(events.contains(&EditorEvent::Message(UNSAVED_CHANGES.to_string())));
+        assert!(!events.iter().any(|e| matches!(e, EditorEvent::Error(_))));
+    }
+
+    #[test]
     fn should_save_and_close_when_wq_or_x_runs_on_a_changed_box() {
         for command in [":wq<CR>", ":x<CR>"] {
             let Some(mut editor) = started() else { return };
@@ -565,7 +590,10 @@ mod tests {
             let events = collect_until(&mut editor, |_, seen| {
                 seen.iter().any(|e| matches!(e, EditorEvent::Quit { .. }))
             });
-            assert!(events.contains(&EditorEvent::Save("xy".into())), "{command}");
+            assert!(
+                events.contains(&EditorEvent::Save("xy".into())),
+                "{command}"
+            );
             assert!(events.contains(&EditorEvent::Quit { discard: false }));
         }
     }
