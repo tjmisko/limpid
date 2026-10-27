@@ -295,7 +295,7 @@ impl Editor {
             None => {}
         }
         for (kind, text) in effects.messages {
-            if text.starts_with("E37") || text.starts_with("E162") {
+            if kind == "emsg" && (text.starts_with("E37") || text.starts_with("E162")) {
                 events.push(EditorEvent::Message(UNSAVED_CHANGES.to_string()));
                 continue;
             }
