@@ -334,8 +334,9 @@ fn agent_page_annotations(
     page: &Path,
 ) -> Result<limpid_core::replies::AgentReplies, Box<dyn Error>> {
     let mut merged = limpid_core::replies::read_annotations_file(page)?;
-    let sidecar =
-        limpid_core::replies::AgentReplies::load(&limpid_core::replies::sidecar_path(page))?;
+    let sidecar = limpid_core::replies::AgentReplies::load(
+        &limpid_core::replies::sidecar_path(page),
+    )?;
     merged.replies.extend(sidecar.replies);
     merged.comments.extend(sidecar.comments);
     Ok(merged)
@@ -431,7 +432,8 @@ fn feedback(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
     } else {
         parsed.page.ok_or("feedback requires a page or --session")?
     };
-    let is_agent_markdown = page.extension().and_then(|extension| extension.to_str()) == Some("md")
+    let is_agent_markdown = page.extension().and_then(|extension| extension.to_str())
+        == Some("md")
         && page.with_extension("meta.json").exists();
     let page = if is_agent_markdown {
         page.with_extension("html")
@@ -583,15 +585,8 @@ mod tests {
         let newest = cache.join(format!("pi-{:03}.html", KEEP_AGENT_PAGES));
         prune_agent_pages(&cache, &newest).unwrap();
         assert!(!cache.join("pi-000.html").exists());
-        assert!(
-            !cache.join("pi-000.md").exists(),
-            "the sidecar goes with its page"
-        );
-        assert!(
-            cache
-                .join(format!("pi-{:03}.md", KEEP_AGENT_PAGES))
-                .exists()
-        );
+        assert!(!cache.join("pi-000.md").exists(), "the sidecar goes with its page");
+        assert!(cache.join(format!("pi-{:03}.md", KEEP_AGENT_PAGES)).exists());
         std::fs::remove_dir_all(cache).unwrap();
     }
 
@@ -608,7 +603,8 @@ mod tests {
             File::open(&page)
                 .unwrap()
                 .set_times(
-                    FileTimes::new().set_modified(base + std::time::Duration::from_secs(index)),
+                    FileTimes::new()
+                        .set_modified(base + std::time::Duration::from_secs(index)),
                 )
                 .unwrap();
         }
@@ -666,13 +662,13 @@ mod tests {
         let cache = std::env::temp_dir().join(format!("limpid-side-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&cache);
         std::fs::create_dir_all(&cache).unwrap();
-        let page =
-            write_agent_page_set(&cache, "claude-abc", Some(r#"{"replies":{"q1":"SQLite"}}"#));
-        let from_html = agent_page_annotations(&page).unwrap();
-        assert_eq!(
-            from_html.replies.get("q1").map(String::as_str),
-            Some("SQLite")
+        let page = write_agent_page_set(
+            &cache,
+            "claude-abc",
+            Some(r#"{"replies":{"q1":"SQLite"}}"#),
         );
+        let from_html = agent_page_annotations(&page).unwrap();
+        assert_eq!(from_html.replies.get("q1").map(String::as_str), Some("SQLite"));
         assert!(page_has_feedback(&page));
         let args = vec![page.with_extension("md").into_os_string(), "--json".into()];
         feedback(&args).unwrap();
@@ -705,8 +701,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&cache);
         std::fs::create_dir_all(&cache).unwrap();
         let base = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-        let answered =
-            write_agent_page_set(&cache, "claude-000", Some(r#"{"replies":{"q1":"keep"}}"#));
+        let answered = write_agent_page_set(
+            &cache,
+            "claude-000",
+            Some(r#"{"replies":{"q1":"keep"}}"#),
+        );
         let blank = write_agent_page_set(&cache, "claude-001", Some(r#"{}"#));
         File::open(&answered)
             .unwrap()
@@ -731,10 +730,7 @@ mod tests {
         assert!(answered.exists());
         assert!(answered.with_extension("replies.json").exists());
         assert!(!blank.exists());
-        assert!(
-            !blank.with_extension("replies.json").exists(),
-            "no orphan sidecar"
-        );
+        assert!(!blank.with_extension("replies.json").exists(), "no orphan sidecar");
         std::fs::remove_dir_all(&cache).unwrap();
     }
 

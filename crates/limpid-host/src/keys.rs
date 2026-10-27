@@ -411,15 +411,7 @@ mod tests {
     fn f1_toggles_the_contents_pane_even_while_typing() {
         for (editable, search) in [(false, false), (true, false), (false, true)] {
             assert_eq!(
-                press(
-                    &KeyDispatcher::new(),
-                    "F1",
-                    0,
-                    false,
-                    false,
-                    editable,
-                    search
-                ),
+                press(&KeyDispatcher::new(), "F1", 0, false, false, editable, search),
                 Some(ToggleContents)
             );
         }
