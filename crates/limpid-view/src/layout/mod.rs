@@ -426,6 +426,13 @@ impl Layout {
         self.height = self.state.bottom + PAGE_BOTTOM_PAD * self.state.scale;
     }
 
+    /// The furthest the view can scroll once the document is laid out: the
+    /// last block, the page padding and one viewport of empty scroll space
+    /// below, so the last lines can reach the top of the window.
+    pub fn max_scroll(&self) -> Option<f32> {
+        self.is_complete().then_some(self.height)
+    }
+
     /// The top-level block containing document y, else the one just above
     /// it. `None` above the first block or when nothing is laid out.
     pub fn block_at(&self, y: f32) -> Option<usize> {

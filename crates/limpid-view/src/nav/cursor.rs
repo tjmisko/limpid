@@ -15,6 +15,8 @@ use std::ops::Range;
 pub const REVEAL_MARGIN: f32 = 12.0;
 /// How far the focus band reaches past the text column, CSS px.
 pub const BLEED_INSET: f32 = 10.0;
+/// Space kept above a heading when a section jump puts it at the top, CSS px.
+const HEADING_SCROLL_MARGIN: f32 = 24.0;
 /// Width of the accent bar on the band's left edge, CSS px.
 const BAR_WIDTH: f32 = 3.0;
 
@@ -57,9 +59,7 @@ impl Env<'_> {
     }
 
     pub fn max_scroll(&self) -> Option<f32> {
-        self.layout
-            .is_complete()
-            .then(|| (self.layout.height - self.viewport).max(0.0))
+        self.layout.max_scroll()
     }
 
     /// Scroll to `target`, clamped to the document. Returns whether it moved.
@@ -260,12 +260,13 @@ impl Cursor {
         }
         env.lay_out_all();
         let last = collect_stops(env.layout).pop();
-        let mut changed = env.set_scroll(f32::MAX / 4.0);
-        if let Some(stop) = last {
-            changed |= self.src.as_ref() != Some(&stop.src);
-            self.set(&stop);
-        }
-        changed
+        let Some(stop) = last else {
+            return false;
+        };
+        let changed = self.src.as_ref() != Some(&stop.src);
+        self.set(&stop);
+        let scrolled = env.reveal(stop.rect.y, stop.rect.h);
+        changed || scrolled
     }
 
     /// `zt`, `zz`, `zb`.
@@ -282,36 +283,60 @@ impl Cursor {
         env.set_scroll(target)
     }
 
-    /// Scroll `steps` times `fraction` of the viewport. The cursor stays where
-    /// it is while it is still visible, else it follows to the stop nearest
-    /// the edge it was pushed past.
+    /// Scroll `steps` times `fraction` of the viewport, then move the cursor
+    /// to the stop at the new viewport centre and centre it. A stop taller
+    /// than the viewport, one already focused, or one whose centring would
+    /// jump more than a viewport just gets the plain scroll.
     pub fn half_page(&mut self, env: &mut Env, steps: i64, fraction: f32) -> bool {
         let fraction = if fraction.is_finite() && fraction > 0.0 {
             fraction.min(1.0)
         } else {
             0.5
         };
-        let delta = steps as f32 * env.viewport * fraction;
-        let before = *env.scroll;
-        let scrolled = env.set_scroll(before + delta);
-        let (top, bottom) = (*env.scroll, *env.scroll + env.viewport);
-        let stops = collect_stops(env.layout);
-        let visible = |stop: &Stop| stop.rect.bottom() > top && stop.rect.y < bottom;
-        let on_screen = self.locate(&stops).is_some_and(|at| visible(&stops[at]));
-        if on_screen {
-            return scrolled;
-        }
-        let pick = if steps >= 0 {
-            stops.iter().find(|stop| visible(stop))
+        let viewport = env.viewport;
+        let start = *env.scroll;
+        let delta = steps as f32 * viewport * fraction;
+        let reach = if delta.is_finite() {
+            start + delta
         } else {
-            stops.iter().rev().find(|stop| visible(stop))
+            start
         };
-        let Some(stop) = pick else {
-            return scrolled;
-        };
-        let moved = self.src.as_ref() != Some(&stop.src);
-        self.src = Some(stop.src.clone());
-        scrolled || moved
+        env.layout
+            .ensure_to(reach.max(0.0) + viewport * 2.0, env.doc, env.fonts);
+        let limit = env.max_scroll().unwrap_or(f32::MAX);
+        let probe = reach.clamp(0.0, limit);
+        let stops = collect_stops(env.layout);
+        if stops.is_empty() {
+            return env.set_scroll(start + delta);
+        }
+        let centre = probe + viewport / 2.0;
+        let mut containing: Option<&Stop> = None;
+        for stop in stops
+            .iter()
+            .filter(|stop| stop.rect.y <= centre && stop.rect.bottom() >= centre)
+        {
+            if containing.is_none_or(|best| stop.rect.h < best.rect.h) {
+                containing = Some(stop);
+            }
+        }
+        let distance = |stop: &Stop| (stop.rect.y + stop.rect.h / 2.0 - centre).abs();
+        let mut nearest = &stops[0];
+        for stop in &stops {
+            if distance(stop) < distance(nearest) {
+                nearest = stop;
+            }
+        }
+        let target = containing.unwrap_or(nearest).clone();
+        let centred = (target.rect.y + target.rect.h / 2.0 - viewport / 2.0).clamp(0.0, limit);
+        let focused = self.src.as_ref() == Some(&target.src);
+        if focused || target.rect.h > viewport || (centred - start).abs() > viewport {
+            let scrolled = env.set_scroll(start + delta);
+            self.set(&target);
+            return scrolled || !focused;
+        }
+        self.set(&target);
+        env.set_scroll(centred);
+        true
     }
 
     /// `{` and `}`: step `steps` sections (negative goes back). The cursor
@@ -333,11 +358,15 @@ impl Cursor {
             };
         }
         let head = heads[target as usize];
+        let bound = heads
+            .get(target as usize + 1)
+            .copied()
+            .unwrap_or(usize::MAX);
         env.lay_out_through(head);
         let Some(head_rect) = env.layout.blocks.get(head).map(|block| block.rect) else {
             return false;
         };
-        let scrolled = env.set_scroll(head_rect.y - env.margin());
+        let scrolled = env.set_scroll(head_rect.y - HEADING_SCROLL_MARGIN * env.scale());
         let first_stop = loop {
             let stops = collect_stops(env.layout);
             if let Some(stop) = stops.into_iter().find(|stop| stop.top >= head) {
@@ -347,7 +376,7 @@ impl Cursor {
                 break None;
             }
         };
-        let Some(stop) = first_stop else {
+        let Some(stop) = first_stop.filter(|stop| stop.top < bound) else {
             return scrolled;
         };
         let moved = self.src.as_ref() != Some(&stop.src);
@@ -513,6 +542,15 @@ mod tests {
     }
 
     #[test]
+    fn should_start_on_the_first_real_line_when_the_page_has_front_matter() {
+        let fixture = Fixture::new("---\ntitle: Agent\nmodel: m\n---\n\nfirst line\n", 300.0);
+        let mut cursor = Cursor::default();
+        let mut fixture = fixture;
+        cursor.init(&mut fixture.env());
+        assert_eq!(focused_text(&fixture, &cursor), "first line");
+    }
+
+    #[test]
     fn should_move_one_stop_at_a_time_when_stepping() {
         let mut fixture = Fixture::new("one\n\ntwo\n\nthree\n", 600.0);
         let mut cursor = Cursor::default();
@@ -646,8 +684,9 @@ mod tests {
         cursor.init(&mut fixture.env());
         assert!(cursor.to_bottom(&mut fixture.env(), None));
         assert_eq!(focused_text(&fixture, &cursor), "paragraph 59");
-        let max = fixture.layout.height - 300.0;
-        assert_eq!(fixture.scroll, max);
+        let stop = cursor.stop(&fixture.layout).unwrap();
+        assert!(stop.rect.bottom() <= fixture.scroll + 300.0);
+        assert!(stop.rect.y >= fixture.scroll);
         assert!(cursor.to_top(&mut fixture.env(), None));
         assert_eq!(focused_text(&fixture, &cursor), "paragraph 0");
         assert_eq!(fixture.scroll, 0.0);
@@ -695,7 +734,39 @@ mod tests {
         assert_eq!(fixture.scroll, 0.0, "the first block cannot be centred");
         cursor.to_bottom(&mut fixture.env(), None);
         cursor.align(&mut fixture.env(), Align::Top);
-        assert_eq!(fixture.scroll, fixture.layout.height - 300.0);
+        let stop = cursor.stop(&fixture.layout).unwrap();
+        assert!((fixture.scroll - (stop.rect.y - REVEAL_MARGIN)).abs() < 1.0);
+    }
+
+    #[test]
+    fn should_move_the_view_for_zt_zz_zb_when_the_cursor_is_on_the_last_lines() {
+        let mut fixture = Fixture::new(&paragraphs(30), 300.0);
+        let mut cursor = Cursor::default();
+        cursor.init(&mut fixture.env());
+        cursor.to_bottom(&mut fixture.env(), None);
+        let stop = cursor.stop(&fixture.layout).unwrap();
+        let resting = fixture.scroll;
+        assert!(cursor.align(&mut fixture.env(), Align::Top));
+        assert!((fixture.scroll - (stop.rect.y - REVEAL_MARGIN)).abs() < 1.0);
+        assert!(fixture.scroll > resting, "the last line rises to the top");
+        assert!(cursor.align(&mut fixture.env(), Align::Center));
+        let middle = stop.rect.y + stop.rect.h / 2.0 - fixture.scroll;
+        assert!((middle - 150.0).abs() < 1.0, "{middle}");
+        assert!(cursor.align(&mut fixture.env(), Align::Bottom));
+        let gap = fixture.scroll + 300.0 - stop.rect.bottom();
+        assert!((gap - REVEAL_MARGIN).abs() < 1.0, "{gap}");
+    }
+
+    #[test]
+    fn should_stop_scrolling_one_viewport_below_the_last_block_when_paging_far() {
+        let mut fixture = Fixture::new(&paragraphs(30), 300.0);
+        let mut cursor = Cursor::default();
+        cursor.init(&mut fixture.env());
+        for _ in 0..200 {
+            cursor.half_page(&mut fixture.env(), 1, 0.5);
+        }
+        assert_eq!(fixture.scroll, fixture.layout.height);
+        assert!(fixture.scroll > fixture.layout.blocks.last().unwrap().rect.bottom());
     }
 
     #[test]
@@ -707,8 +778,8 @@ mod tests {
         let before = cursor.src.clone();
         let from = fixture.scroll;
         assert!(cursor.half_page(&mut fixture.env(), 1, 0.25));
-        assert_eq!(fixture.scroll, from + 100.0);
-        assert_eq!(cursor.src, before, "still on screen");
+        assert!((fixture.scroll - (from + 100.0)).abs() < 30.0);
+        assert_ne!(cursor.src, before, "the cursor follows the new centre");
     }
 
     #[test]
@@ -726,13 +797,45 @@ mod tests {
     }
 
     #[test]
-    fn should_not_report_a_change_when_half_paging_at_the_top_of_a_short_page() {
+    fn should_not_move_the_cursor_when_half_paging_on_a_single_stop_page() {
         let mut fixture = Fixture::new("only\n", 400.0);
         let mut cursor = Cursor::default();
         cursor.init(&mut fixture.env());
-        assert!(!cursor.half_page(&mut fixture.env(), 1, 0.5));
-        assert!(!cursor.half_page(&mut fixture.env(), -1, 0.5));
+        let before = cursor.src.clone();
+        cursor.half_page(&mut fixture.env(), 1, 0.5);
+        assert_eq!(cursor.src, before);
+        cursor.half_page(&mut fixture.env(), -1, 0.5);
         assert_eq!(fixture.scroll, 0.0);
+    }
+
+    #[test]
+    fn should_centre_the_stop_at_the_new_centre_when_half_paging() {
+        let mut fixture = Fixture::new(&paragraphs(100), 300.0);
+        let mut cursor = Cursor::default();
+        cursor.init(&mut fixture.env());
+        assert!(cursor.half_page(&mut fixture.env(), 1, 0.5));
+        let stop = cursor.stop(&fixture.layout).unwrap();
+        let middle = stop.rect.y + stop.rect.h / 2.0 - fixture.scroll;
+        assert!((middle - 150.0).abs() < 1.0, "{middle}");
+    }
+
+    #[test]
+    fn should_scroll_plainly_when_the_stop_at_the_centre_is_taller_than_the_window() {
+        let tall = "line\n\n".to_string() + &"tall\nrow\n".repeat(60) + "\n\nlast\n";
+        let mut fixture = Fixture::new(&tall, 100.0);
+        let mut cursor = Cursor::default();
+        cursor.init(&mut fixture.env());
+        assert!(cursor.half_page(&mut fixture.env(), 1, 0.5));
+        assert_eq!(fixture.scroll, 50.0);
+    }
+
+    #[test]
+    fn should_scroll_plainly_when_centring_would_jump_more_than_a_viewport() {
+        let mut fixture = Fixture::new(&paragraphs(200), 300.0);
+        let mut cursor = Cursor::default();
+        cursor.init(&mut fixture.env());
+        cursor.half_page(&mut fixture.env(), 20, 0.5);
+        assert_eq!(fixture.scroll, 3000.0);
     }
 
     #[test]
@@ -742,7 +845,7 @@ mod tests {
             let mut cursor = Cursor::default();
             cursor.init(&mut fixture.env());
             cursor.half_page(&mut fixture.env(), 1, bad);
-            assert_eq!(fixture.scroll, 200.0, "{bad}");
+            assert!((fixture.scroll - 200.0).abs() < 30.0, "{bad}");
         }
     }
 
@@ -782,10 +885,7 @@ mod tests {
         cursor.section(&mut fixture.env(), 1);
         let heads = heading_blocks(&fixture.doc);
         let head = fixture.layout.blocks[heads[1]].rect;
-        assert!(
-            (fixture.scroll - (head.y - REVEAL_MARGIN).min(fixture.layout.height - 120.0)).abs()
-                < 1.0
-        );
+        assert!((fixture.scroll - (head.y - 24.0)).abs() < 1.0);
     }
 
     #[test]
