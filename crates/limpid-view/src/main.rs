@@ -73,33 +73,37 @@ fn handoff_for(target: &Path, scheme: Scheme) -> Handoff {
     }
 }
 
-/// Lets one page ask the event loop to close windows. The loop can only end
-/// every window at once, so closing just this one works only while it is the
-/// last; `live` counts the pages that still exist.
+/// Lets one page ask the event loop to close windows. Closing this window
+/// sets a flag the loop reads after the page handles an event; the process
+/// ends when its last window closes.
 struct WindowCloser {
-    live: Rc<Cell<usize>>,
+    closing: Cell<bool>,
     proxy: EventLoopProxy<UserEvent>,
 }
 
 impl WindowCloser {
-    fn new(live: Rc<Cell<usize>>, proxy: EventLoopProxy<UserEvent>) -> Self {
-        live.set(live.get() + 1);
-        Self { live, proxy }
-    }
-}
-
-impl Drop for WindowCloser {
-    fn drop(&mut self) {
-        self.live.set(self.live.get().saturating_sub(1));
+    fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
+        Self {
+            closing: Cell::new(false),
+            proxy,
+        }
     }
 }
 
 impl Closer for WindowCloser {
     fn close(&self, kind: CloseKind) -> bool {
-        if kind == CloseKind::Window && self.live.get() > 1 {
-            return false;
-        }
-        self.proxy.send_event(UserEvent::CloseAll).is_ok()
+        let event = match kind {
+            CloseKind::Window => {
+                self.closing.set(true);
+                UserEvent::Wake
+            }
+            CloseKind::All => UserEvent::CloseAll,
+        };
+        self.proxy.send_event(event).is_ok()
+    }
+
+    fn closing(&self) -> bool {
+        self.closing.get()
     }
 }
 
@@ -119,7 +123,6 @@ fn run_windows(args: Args, settings: Settings, fonts: SharedFonts) -> Result<(),
         .build()
         .map_err(|error| error.to_string())?;
     let proxy = event_loop.create_proxy();
-    let live_pages = Rc::new(Cell::new(0));
     // One nvim for the whole process, lent to one window's box at a time.
     let editor_host = EditorHost::shared_nvim();
     let factory_proxy = proxy.clone();
@@ -142,10 +145,7 @@ fn run_windows(args: Args, settings: Settings, fonts: SharedFonts) -> Result<(),
             Feedback::new(request.clone(), page.title(), &settings).with_host(editor_host.clone());
         let page = page
             .with_feedback(feedback)
-            .with_closer(Box::new(WindowCloser::new(
-                live_pages.clone(),
-                factory_proxy.clone(),
-            )));
+            .with_closer(Box::new(WindowCloser::new(factory_proxy.clone())));
         let watched = WatchedPage::new(page, request.path.clone(), &settings).with_mode(mode);
         Ok(Box::new(watched) as Box<dyn Page>)
     });

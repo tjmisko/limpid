@@ -29,6 +29,10 @@ pub trait Page {
     fn ime(&mut self, _event: &Ime) -> bool {
         false
     }
+    /// Whether the page asked for its window to close.
+    fn closing(&self) -> bool {
+        false
+    }
     /// Whether the page needs [`Page::tick`] calls (an embedded editor is
     /// running); the event loop then wakes up every [`TICK_INTERVAL`].
     fn wants_ticks(&self) -> bool {
@@ -198,6 +202,15 @@ impl App {
         Ok(())
     }
 
+    /// Close the windows whose pages asked for it.
+    fn reap_closing(&mut self, event_loop: &ActiveEventLoop) {
+        let before = self.windows.len();
+        self.windows.retain(|_, open| !open.page.closing());
+        if self.windows.len() != before {
+            self.exit_if_finished(event_loop);
+        }
+    }
+
     fn exit_if_finished(&self, event_loop: &ActiveEventLoop) {
         if self.ever_opened && self.windows.is_empty() {
             event_loop.exit();
@@ -224,6 +237,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Wake => {}
         }
+        self.reap_closing(event_loop);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -239,6 +253,7 @@ impl ApplicationHandler<UserEvent> for App {
             let period = open.page.tick_period();
             next_wake = Some(next_wake.map_or(period, |soonest| soonest.min(period)));
         }
+        self.reap_closing(event_loop);
         let flow = match next_wake {
             Some(period) => ControlFlow::WaitUntil(std::time::Instant::now() + period),
             None => ControlFlow::Wait,
@@ -267,6 +282,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if changed {
                     open.request_redraw();
                 }
+                self.reap_closing(event_loop);
             }
             WindowEvent::Ime(ime) if open.page.ime(&ime) => open.request_redraw(),
             _ => {}

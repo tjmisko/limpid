@@ -131,6 +131,10 @@ struct LayoutKey {
 pub trait Closer {
     /// Returns false when the request cannot be honoured.
     fn close(&self, kind: CloseKind) -> bool;
+    /// Whether this window was asked to close.
+    fn closing(&self) -> bool {
+        false
+    }
 }
 
 /// Where a reload keeps the top of the viewport: the block that was there,
@@ -832,13 +836,7 @@ impl DocPage {
                     .as_ref()
                     .is_some_and(|closer| closer.close(kind));
                 if !closed {
-                    let message = match (&self.closer, kind) {
-                        (Some(_), CloseKind::Window) => {
-                            "other windows are open: close this one from the window manager, or :qa"
-                        }
-                        _ => "this page cannot close itself",
-                    };
-                    self.flash(message);
+                    self.flash("this page cannot close itself");
                 }
             }
             Request::Reload => self.reload(),
@@ -1107,6 +1105,10 @@ impl Page for DocPage {
             Ime::Enabled => false,
             Ime::Disabled => feedback.ime_preedit(None),
         }
+    }
+
+    fn closing(&self) -> bool {
+        self.closer.as_ref().is_some_and(|closer| closer.closing())
     }
 
     fn wants_ticks(&self) -> bool {
@@ -1539,7 +1541,7 @@ mod tests {
     fn should_ignore_keys_when_they_are_not_bound() {
         let mut page = page("text");
         paint(&mut page, 200, 100, 1.0);
-        assert!(!page.handle_key(&Key::Character("q".into()), false));
+        assert!(!page.handle_key(&Key::Character("w".into()), false));
         assert!(!page.handle_key(&Key::Character("d".into()), false));
         assert!(!page.handle_key(&Key::Named(NamedKey::Escape), false));
         assert!(!page.handle_key(&Key::Named(NamedKey::Shift), false));
@@ -2046,7 +2048,7 @@ mod tests {
         paint(&mut page, 500, 300, 1.0);
         press(&mut page, "ctrl+q");
         let message = page.nav().status_view(page.now_ms()).message;
-        assert!(message.contains(":qa"), "{message}");
+        assert_eq!(message, "this page cannot close itself");
         let mut loose = chrome_page("text\n");
         paint(&mut loose, 500, 300, 1.0);
         press(&mut loose, "ctrl+q");

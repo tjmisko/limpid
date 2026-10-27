@@ -238,6 +238,10 @@ impl Page for WatchedPage {
         self.page.ime(event)
     }
 
+    fn closing(&self) -> bool {
+        self.page.closing()
+    }
+
     fn wants_ticks(&self) -> bool {
         self.page.wants_ticks()
             || self.watcher.enabled()

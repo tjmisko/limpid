@@ -514,7 +514,7 @@ impl Nav {
     fn quit(&mut self, now_ms: u64, io: &mut Io, out: &mut Outcome) {
         if io.actions.has_unsaved() {
             self.flash(
-                "unsaved changes: :wq to save and send, :q! to discard",
+                "unsaved changes — :wq to save and send, :q! to discard",
                 now_ms,
             );
             return;
@@ -1257,7 +1257,10 @@ mod tests {
         world.typed("q");
         let outcome = world.press("enter");
         assert!(outcome.requests.is_empty());
-        assert!(world.message().contains("unsaved changes"));
+        assert_eq!(
+            world.message(),
+            "unsaved changes — :wq to save and send, :q! to discard"
+        );
         world.press(":");
         world.typed("q!");
         let outcome = world.press("enter");
@@ -1265,14 +1268,23 @@ mod tests {
     }
 
     #[test]
-    fn should_not_quit_when_plain_q_is_pressed_but_quit_on_ctrl_q_and_ctrl_w() {
+    fn should_quit_on_q_ctrl_q_and_ctrl_w_when_nothing_is_unsaved() {
         let mut world = World::new("a\n", 600.0);
         let outcome = world.press("q");
-        assert!(outcome.requests.is_empty(), "plain q is unbound");
+        assert_eq!(outcome.requests, vec![Request::Close(CloseKind::Window)]);
         let outcome = world.press("ctrl+q");
         assert_eq!(outcome.requests, vec![Request::Close(CloseKind::Window)]);
         let outcome = world.press("ctrl+w");
         assert_eq!(outcome.requests, vec![Request::Close(CloseKind::Window)]);
+    }
+
+    #[test]
+    fn should_refuse_plain_q_when_there_are_unsaved_changes() {
+        let mut world = World::new("a\n", 600.0);
+        world.actions.unsaved = true;
+        let outcome = world.press("q");
+        assert!(outcome.requests.is_empty());
+        assert!(world.message().starts_with("unsaved changes"));
     }
 
     #[test]
