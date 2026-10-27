@@ -3,6 +3,7 @@
 //! resize and scale changes, keeping the block at the top of the window. Keys
 //! go to [`Nav`], which moves the cursor, searches, yanks and runs commands.
 
+use self::load::{Input, Loader, Waker};
 use crate::{
     editor::keys::translate_key,
     feedback::{
@@ -25,7 +26,7 @@ use crate::{
 use limpid_core::{
     doc::{Block, Doc, Mode, parse},
     settings::{RailMode, Settings, ViewTheme},
-    transport::Scheme,
+    transport::{Handoff, Scheme},
 };
 use std::{
     cell::RefCell,
@@ -83,6 +84,37 @@ pub fn options_for(settings: &Settings) -> LayoutOptions {
     }
 }
 
+/// How the page named by `handoff` is parsed. An agent page is the Markdown
+/// beside a `<page>.html` and its `<page>.meta.json`: it has no source file of
+/// its own, and its raw HTML is the agent's output, shown as text. Anything
+/// else is a user's file.
+pub fn mode_for(handoff: &Handoff) -> Mode {
+    if handoff.source.is_some() {
+        return Mode::File;
+    }
+    let is_markdown = handoff
+        .path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"));
+    if is_markdown && handoff.path.with_extension("meta.json").is_file() {
+        Mode::Agent
+    } else {
+        Mode::File
+    }
+}
+
+/// The document's own title, else `fallback`.
+fn title_of(doc: &Doc, fallback: &str) -> String {
+    doc.title
+        .clone()
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+/// How often a page that waits for its parse looks for the result when
+/// nothing wakes the event loop.
+const LOAD_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 /// Inputs the layout was built for; a change throws it away.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct LayoutKey {
@@ -135,6 +167,9 @@ fn find_block_like(doc: &Doc, text: &str, near: usize) -> Option<usize> {
 
 pub struct DocPage {
     title: String,
+    /// The window title when the document has no title of its own.
+    fallback_title: String,
+    mode: Mode,
     doc: Doc,
     theme: Theme,
     base_font_size: f32,
@@ -165,6 +200,12 @@ pub struct DocPage {
     base_blocks: Vec<Block>,
     /// Scroll the cursor into view at the next paint.
     reveal_cursor: bool,
+    /// Parses Markdown off the UI thread.
+    loader: Loader,
+    /// The first document has not arrived yet; the page shows its background.
+    loading: bool,
+    /// Parses made on the calling thread (the loader counts the others).
+    sync_parses: usize,
 }
 
 impl DocPage {
@@ -173,6 +214,17 @@ impl DocPage {
         settings: &Settings,
         scheme: Scheme,
         fonts: SharedFonts,
+    ) -> Result<Self, String> {
+        Self::open_as(path, settings, scheme, fonts, Mode::File)
+    }
+
+    /// [`DocPage::open`], parsing in `mode`.
+    pub fn open_as(
+        path: &Path,
+        settings: &Settings,
+        scheme: Scheme,
+        fonts: SharedFonts,
+        mode: Mode,
     ) -> Result<Self, String> {
         Keymap::new(&settings.view.keys)?;
         let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
@@ -187,7 +239,68 @@ impl DocPage {
             scheme,
             fonts,
         );
+        Ok(page.with_mode(mode).interactive(Some(path.to_path_buf())))
+    }
+
+    /// Open `path` without reading it here: the page starts empty, the file is
+    /// read and parsed on a worker thread, and `waker` is called when the
+    /// document is ready. What a window uses; [`DocPage::open`] is the
+    /// synchronous twin that snapshots and tests use.
+    pub fn open_async(
+        path: &Path,
+        settings: &Settings,
+        scheme: Scheme,
+        fonts: SharedFonts,
+        mode: Mode,
+        waker: Option<Waker>,
+    ) -> Result<Self, String> {
+        let loader = Loader::new(mode, settings).with_waker(waker);
+        Self::open_async_with(path, settings, scheme, fonts, loader)
+    }
+
+    /// [`DocPage::open_async`] with a prepared [`Loader`] (its mode is the
+    /// page's mode), so tests can slow the parser down.
+    pub fn open_async_with(
+        path: &Path,
+        settings: &Settings,
+        scheme: Scheme,
+        fonts: SharedFonts,
+        mut loader: Loader,
+    ) -> Result<Self, String> {
+        Keymap::new(&settings.view.keys)?;
+        // A missing file is an error now, not a blank window.
+        std::fs::metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let stem = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "limpid".to_owned());
+        let mut page = Self::from_source("", stem, settings, scheme, fonts);
+        page.mode = loader.mode();
+        page.loading = true;
+        loader.start(Input::File(path.to_path_buf()));
+        page.loader = loader;
         Ok(page.interactive(Some(path.to_path_buf())))
+    }
+
+    /// Parse in `mode` from now on, and parse the current text again if that
+    /// changes what it means.
+    pub fn with_mode(mut self, mode: Mode) -> Self {
+        if mode == self.mode {
+            return self;
+        }
+        self.mode = mode;
+        self.loader.set_mode(mode);
+        self.sync_parses += 1;
+        let source = std::mem::take(&mut self.doc.source);
+        self.doc = parse(&source, mode, &self.settings);
+        self.title = title_of(&self.doc, &self.fallback_title);
+        self.adopt_document();
+        self
+    }
+
+    /// The mode the page parses in.
+    pub fn mode(&self) -> Mode {
+        self.mode
     }
 
     /// `fallback_title` names the window when the document has no title. The
@@ -219,11 +332,7 @@ impl DocPage {
         fonts: SharedFonts,
     ) -> Self {
         let doc = parse(source, Mode::File, settings);
-        let title = doc
-            .title
-            .clone()
-            .filter(|title| !title.trim().is_empty())
-            .unwrap_or(fallback_title);
+        let title = title_of(&doc, &fallback_title);
         let (nav, key_error) = match Nav::new(&settings.view.keys, NavOptions::default()) {
             Ok(nav) => (nav, None),
             Err(error) => (
@@ -233,6 +342,8 @@ impl DocPage {
         };
         let mut page = Self {
             title,
+            fallback_title,
+            mode: Mode::File,
             doc,
             base_font_size: theme.font_size,
             zoom: 1.0,
@@ -257,6 +368,9 @@ impl DocPage {
             feedback: None,
             base_blocks: Vec::new(),
             reveal_cursor: false,
+            loader: Loader::new(Mode::File, settings),
+            loading: false,
+            sync_parses: 1,
         };
         if let Some(error) = key_error {
             eprintln!("limpid-view: {error}");
@@ -300,10 +414,19 @@ impl DocPage {
 
     /// Let the page take feedback: replies to questions and comments on
     /// blocks, written in the embedded editor and saved through `feedback`.
+    /// Replies are subjects named after the document, so feedback follows the
+    /// title as the heading arrives or changes.
+    fn sync_feedback_title(&self) {
+        if let Some(feedback) = &self.feedback {
+            feedback.borrow_mut().set_title(self.title.clone());
+        }
+    }
+
     pub fn with_feedback(mut self, feedback: Feedback) -> Self {
         let shared = Rc::new(RefCell::new(feedback));
         self.actions = Box::new(FeedbackHandle(shared.clone()));
         self.feedback = Some(shared);
+        self.sync_feedback_title();
         self.adopt_document();
         self
     }
@@ -436,6 +559,14 @@ impl DocPage {
     /// Replace the document with `source`, keeping the viewport on the same
     /// part of the text. The cursor and search follow by source position.
     pub fn replace_source(&mut self, source: &str) {
+        self.sync_parses += 1;
+        let doc = parse(source, self.mode, &self.settings);
+        self.install_doc(doc);
+    }
+
+    /// Show `new_doc` in place of the current document, keeping the viewport
+    /// on the same part of the text. The window title follows the document.
+    fn install_doc(&mut self, new_doc: Doc) {
         self.pending_anchor = self.layout.as_ref().and_then(|layout| {
             let index = layout.block_at(self.scroll)?;
             let block = layout.blocks.get(index)?;
@@ -451,7 +582,9 @@ impl DocPage {
             let top = self.nav.cursor().stop(layout)?.top;
             Some((top, block_text(&self.doc, top)?.to_owned()))
         });
-        self.doc = parse(source, Mode::File, &self.settings);
+        self.doc = new_doc;
+        self.title = title_of(&self.doc, &self.fallback_title);
+        self.sync_feedback_title();
         let retargeted = cursor_block.and_then(|(top, text)| {
             let index = find_block_like(&self.doc, &text, top)?;
             Some(self.doc.blocks.get(index)?.src.clone())
@@ -555,6 +688,50 @@ impl DocPage {
         };
         self.nav.retarget_cursor(Some(src));
         self.reveal_cursor = true;
+        true
+    }
+
+    /// Show `bytes`, just read from the file, in place of the document. The
+    /// text is parsed on the worker thread; the old document stays on screen
+    /// until the new one arrives. The caller read the file, so nothing here
+    /// reads it a second time.
+    pub fn reload_from_bytes(&mut self, bytes: &[u8]) {
+        if let Some(feedback) = &self.feedback {
+            feedback.borrow_mut().source_reloaded(bytes);
+        }
+        self.loader
+            .start(Input::Source(String::from_utf8_lossy(bytes).into_owned()));
+    }
+
+    /// Whether a parse on the worker thread is still running.
+    pub fn parsing(&self) -> bool {
+        self.loader.busy()
+    }
+
+    /// Whether the first document has not arrived yet.
+    pub fn loading(&self) -> bool {
+        self.loading
+    }
+
+    /// How many times this page has parsed Markdown, on any thread.
+    pub fn parse_count(&self) -> usize {
+        self.sync_parses + self.loader.started()
+    }
+
+    /// Take in a document the worker finished. Returns whether the page
+    /// changed.
+    fn poll_loaded(&mut self) -> bool {
+        let Some(result) = self.loader.poll() else {
+            return false;
+        };
+        self.loading = false;
+        match result {
+            Ok(doc) => self.install_doc(doc),
+            Err(error) => {
+                eprintln!("limpid-view: {error}");
+                self.flash(format!("could not load: {error}"));
+            }
+        }
         true
     }
 
@@ -870,30 +1047,328 @@ impl Page for DocPage {
     }
 
     fn wants_ticks(&self) -> bool {
-        self.feedback
-            .as_ref()
-            .is_some_and(|feedback| feedback.borrow().wants_ticks())
+        self.loader.busy()
+            || self
+                .feedback
+                .as_ref()
+                .is_some_and(|feedback| feedback.borrow().wants_ticks())
     }
 
     fn tick_period(&self) -> Duration {
-        let Some(feedback) = self.feedback.as_ref() else {
-            return TICK_INTERVAL;
+        let feedback_period = match self.feedback.as_ref() {
+            Some(feedback) if feedback.borrow().wants_ticks() => {
+                feedback.borrow().tick_period(Instant::now())
+            }
+            _ => TICK_INTERVAL,
         };
-        feedback.borrow().tick_period(Instant::now())
+        if self.loader.busy() {
+            // The worker wakes the loop when it finishes; this only backs
+            // that up, and serves where nobody wakes the loop.
+            return feedback_period.min(LOAD_POLL_INTERVAL);
+        }
+        feedback_period
     }
 
     fn tick(&mut self) -> bool {
+        let mut changed = self.poll_loaded();
         let Some(feedback) = self.feedback.clone() else {
-            return false;
+            return changed;
         };
-        let mut changed = feedback.borrow_mut().tick(Instant::now());
+        changed |= feedback.borrow_mut().tick(Instant::now());
         changed |= self.sync_feedback();
         changed
     }
 }
 
+pub mod load {
+    //! Parsing on a worker thread, so a window can open before its text is read.
+    //!
+    //! [`Loader::start`] returns at once; the parsed [`Doc`] comes back through a
+    //! channel that the page polls from its tick. Each request carries a
+    //! generation: when a newer request exists, an older result is dropped, so a
+    //! slow parse of stale text never replaces a fresher document.
+
+    use limpid_core::{
+        doc::{Doc, Mode, parse},
+        settings::Settings,
+    };
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind},
+        path::PathBuf,
+        sync::{
+            Arc,
+            mpsc::{Receiver, Sender, channel},
+        },
+        thread,
+    };
+
+    /// Called from the worker when a result is ready, to wake the event loop.
+    pub type Waker = Arc<dyn Fn() + Send + Sync>;
+
+    /// How text becomes a document; tests slow it down.
+    pub type Parser = Arc<dyn Fn(&str, Mode, &Settings) -> Doc + Send + Sync>;
+
+    /// What to parse.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Input {
+        /// Read the file on the worker, then parse it.
+        File(PathBuf),
+        /// Text the caller already has.
+        Source(String),
+    }
+
+    struct Parsed {
+        generation: u64,
+        result: Result<Doc, String>,
+    }
+
+    pub struct Loader {
+        mode: Mode,
+        settings: Settings,
+        waker: Option<Waker>,
+        parser: Parser,
+        sender: Sender<Parsed>,
+        receiver: Receiver<Parsed>,
+        generation: u64,
+        in_flight: usize,
+        started: usize,
+    }
+
+    impl Loader {
+        pub fn new(mode: Mode, settings: &Settings) -> Self {
+            let (sender, receiver) = channel();
+            Self {
+                mode,
+                settings: settings.clone(),
+                waker: None,
+                parser: Arc::new(parse),
+                sender,
+                receiver,
+                generation: 0,
+                in_flight: 0,
+                started: 0,
+            }
+        }
+
+        pub fn with_waker(mut self, waker: Option<Waker>) -> Self {
+            self.waker = waker;
+            self
+        }
+
+        pub fn with_parser(mut self, parser: Parser) -> Self {
+            self.parser = parser;
+            self
+        }
+
+        pub fn mode(&self) -> Mode {
+            self.mode
+        }
+
+        /// Parse later requests in `mode`. Requests already running keep theirs.
+        pub fn set_mode(&mut self, mode: Mode) {
+            self.mode = mode;
+        }
+
+        /// Whether a request is still running (including one whose result will be
+        /// dropped as stale).
+        pub fn busy(&self) -> bool {
+            self.in_flight > 0
+        }
+
+        /// How many requests this loader has started.
+        pub fn started(&self) -> usize {
+            self.started
+        }
+
+        /// Begin parsing `input` on a new thread and return immediately.
+        pub fn start(&mut self, input: Input) {
+            self.generation += 1;
+            self.in_flight += 1;
+            self.started += 1;
+            let generation = self.generation;
+            let sender = self.sender.clone();
+            let waker = self.waker.clone();
+            let parser = self.parser.clone();
+            let settings = self.settings.clone();
+            let mode = self.mode;
+            let spawned = thread::Builder::new()
+                .name("limpid-parse".into())
+                .spawn(move || {
+                    let result = catch_unwind(AssertUnwindSafe(|| {
+                        let source = match input {
+                            Input::Source(source) => source,
+                            Input::File(path) => {
+                                let bytes = std::fs::read(&path)
+                                    .map_err(|error| format!("{}: {error}", path.display()))?;
+                                String::from_utf8_lossy(&bytes).into_owned()
+                            }
+                        };
+                        Ok(parser(&source, mode, &settings))
+                    }))
+                    .unwrap_or_else(|_| Err("the parser stopped unexpectedly".to_owned()));
+                    // The page may be gone by now; nobody is left to tell.
+                    let _ = sender.send(Parsed { generation, result });
+                    if let Some(waker) = waker {
+                        waker();
+                    }
+                });
+            if let Err(error) = spawned {
+                // No thread: report the failure through the same channel.
+                let _ = self.sender.send(Parsed {
+                    generation,
+                    result: Err(format!("could not start the parser: {error}")),
+                });
+            }
+        }
+
+        /// The newest finished request, if its result has arrived. Results of
+        /// requests that a later one replaced are discarded.
+        pub fn poll(&mut self) -> Option<Result<Doc, String>> {
+            let mut latest = None;
+            while let Ok(parsed) = self.receiver.try_recv() {
+                self.in_flight = self.in_flight.saturating_sub(1);
+                if parsed.generation == self.generation {
+                    latest = Some(parsed.result);
+                }
+            }
+            latest
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::time::{Duration, Instant};
+
+        fn wait(loader: &mut Loader) -> Result<Doc, String> {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(result) = loader.poll() {
+                    return result;
+                }
+                assert!(Instant::now() < deadline, "no result");
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        fn slow(delay: Duration) -> Parser {
+            Arc::new(move |source, mode, settings| {
+                thread::sleep(delay);
+                parse(source, mode, settings)
+            })
+        }
+
+        #[test]
+        fn should_return_at_once_when_the_parse_is_slow() {
+            let mut loader = Loader::new(Mode::File, &Settings::default())
+                .with_parser(slow(Duration::from_millis(400)));
+            let begun = Instant::now();
+            loader.start(Input::Source("# Slow\n".into()));
+            assert!(begun.elapsed() < Duration::from_millis(200));
+            assert!(loader.busy());
+            assert!(loader.poll().is_none(), "the parse is still running");
+            let doc = wait(&mut loader).unwrap();
+            assert_eq!(doc.title.as_deref(), Some("Slow"));
+            assert!(!loader.busy());
+        }
+
+        #[test]
+        fn should_read_the_file_on_the_worker_when_given_a_path() {
+            let path = std::env::temp_dir().join(format!("limpid-load-{}.md", std::process::id()));
+            std::fs::write(&path, "# From disk\n").unwrap();
+            let mut loader = Loader::new(Mode::File, &Settings::default());
+            loader.start(Input::File(path.clone()));
+            assert_eq!(
+                wait(&mut loader).unwrap().title.as_deref(),
+                Some("From disk")
+            );
+            std::fs::remove_file(path).unwrap();
+        }
+
+        #[test]
+        fn should_report_the_path_when_the_file_cannot_be_read() {
+            let mut loader = Loader::new(Mode::File, &Settings::default());
+            loader.start(Input::File("/nonexistent-dir/none.md".into()));
+            let error = wait(&mut loader).unwrap_err();
+            assert!(error.contains("/nonexistent-dir/none.md"), "{error}");
+        }
+
+        #[test]
+        fn should_drop_the_older_result_when_a_newer_request_replaced_it() {
+            let mut loader = Loader::new(Mode::File, &Settings::default()).with_parser(Arc::new(
+                |source, mode, settings| {
+                    if source.contains("old") {
+                        thread::sleep(Duration::from_millis(150));
+                    }
+                    parse(source, mode, settings)
+                },
+            ));
+            loader.start(Input::Source("# old\n".into()));
+            loader.start(Input::Source("# new\n".into()));
+            let doc = wait(&mut loader).unwrap();
+            assert_eq!(doc.title.as_deref(), Some("new"));
+            // Let the stale one land; it must neither surface nor leave the loader busy.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while loader.busy() {
+                assert!(Instant::now() < deadline);
+                assert!(loader.poll().is_none(), "a stale result surfaced");
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        #[test]
+        fn should_report_an_error_when_the_parser_panics() {
+            let mut loader = Loader::new(Mode::File, &Settings::default())
+                .with_parser(Arc::new(|_, _, _| panic!("boom")));
+            loader.start(Input::Source("x".into()));
+            let error = wait(&mut loader).unwrap_err();
+            assert!(error.contains("stopped"), "{error}");
+            assert!(!loader.busy());
+        }
+
+        #[test]
+        fn should_call_the_waker_when_a_result_is_ready() {
+            let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = woken.clone();
+            let mut loader = Loader::new(Mode::File, &Settings::default()).with_waker(Some(
+                Arc::new(move || {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }),
+            ));
+            loader.start(Input::Source("text".into()));
+            wait(&mut loader).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while woken.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        #[test]
+        fn should_parse_in_agent_mode_when_the_loader_says_so() {
+            let mut loader = Loader::new(Mode::Agent, &Settings::default());
+            loader.start(Input::Source("<div>raw</div>\n\ntext\n".into()));
+            let doc = wait(&mut loader).unwrap();
+            assert!(matches!(
+                doc.blocks[0].kind,
+                limpid_core::doc::BlockKind::Html(ref text) if text.contains("<div>raw</div>")
+            ));
+        }
+
+        #[test]
+        fn should_count_every_request_when_starting_several() {
+            let mut loader = Loader::new(Mode::File, &Settings::default());
+            loader.start(Input::Source("a".into()));
+            loader.start(Input::Source("b".into()));
+            assert_eq!(loader.started(), 2);
+            wait(&mut loader).unwrap();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::load::Loader;
     use super::*;
     use crate::nav::{ActionResult, FeedbackAction, keymap::Chord};
     use std::{cell::Cell, ops::Range};
@@ -1578,5 +2053,292 @@ mod tests {
         assert_eq!(focused(&page), "two");
         let chord = Chord::parse("j").unwrap();
         assert_eq!(chord.key, "j");
+    }
+
+    // Opening without waiting for the parse.
+
+    fn scratch_file(name: &str, text: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("limpid-page-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{name}.md"));
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    fn slow_loader(mode: Mode, delay: Duration) -> Loader {
+        Loader::new(mode, &Settings::default()).with_parser(std::sync::Arc::new(
+            move |source, mode, settings| {
+                std::thread::sleep(delay);
+                parse(source, mode, settings)
+            },
+        ))
+    }
+
+    fn fonts() -> SharedFonts {
+        Rc::new(RefCell::new(Fonts::new()))
+    }
+
+    fn tick_until_loaded(page: &mut DocPage) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while page.parsing() {
+            assert!(Instant::now() < deadline, "the parse never finished");
+            page.tick();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        page.tick();
+    }
+
+    #[test]
+    fn should_open_and_paint_the_background_when_the_parse_is_slow() {
+        let path = scratch_file("slow", "# Heading\n\nbody\n");
+        let begun = Instant::now();
+        let mut page = DocPage::open_async_with(
+            &path,
+            &Settings::default(),
+            Scheme::Dark,
+            fonts(),
+            slow_loader(Mode::File, Duration::from_millis(500)),
+        )
+        .unwrap();
+        let pixels = paint(&mut page, 400, 300, 1.0);
+        assert!(
+            begun.elapsed() < Duration::from_millis(400),
+            "opening and painting must not wait for the parse"
+        );
+        assert!(page.loading() && page.parsing());
+        assert!(
+            pixels[..400 * 240]
+                .iter()
+                .all(|&pixel| pixel == Theme::dark().bg.to_pixel()),
+            "only the background above the status bar until the text arrives"
+        );
+        assert!(page.wants_ticks(), "the window must keep asking for ticks");
+        assert!(page.tick_period() <= LOAD_POLL_INTERVAL);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn should_title_the_window_with_the_file_stem_until_the_heading_arrives() {
+        let path = scratch_file("stem-title", "# Real title\n\nbody\n");
+        let mut page = DocPage::open_async_with(
+            &path,
+            &Settings::default(),
+            Scheme::Dark,
+            fonts(),
+            slow_loader(Mode::File, Duration::from_millis(100)),
+        )
+        .unwrap();
+        assert_eq!(page.title(), "stem-title");
+        tick_until_loaded(&mut page);
+        assert_eq!(page.title(), "Real title");
+        assert!(!page.loading());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn should_give_feedback_the_heading_title_when_the_document_arrives_after_it_was_attached() {
+        let path = scratch_file("feedback-title", "# Fix the parser\n\nbody\n");
+        let page = DocPage::open_async_with(
+            &path,
+            &Settings::default(),
+            Scheme::Dark,
+            fonts(),
+            slow_loader(Mode::File, Duration::from_millis(100)),
+        )
+        .unwrap();
+        let handoff = Handoff {
+            path: path.clone(),
+            theme: Scheme::Dark,
+            pane: None,
+            source: None,
+            source_hash: None,
+            source_backed: false,
+        };
+        let feedback = Feedback::new(handoff, page.title(), &Settings::default());
+        assert_eq!(feedback.title(), "feedback-title");
+        let mut page = page.with_feedback(feedback);
+        tick_until_loaded(&mut page);
+        assert_eq!(page.feedback().unwrap().title(), "Fix the parser");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn should_report_a_repaint_when_the_document_arrives_and_show_its_text() {
+        let path = scratch_file("arrives", "# Hi\n\nsome body text\n");
+        let mut page = DocPage::open_async(
+            &path,
+            &Settings::default(),
+            Scheme::Dark,
+            fonts(),
+            Mode::File,
+            None,
+        )
+        .unwrap();
+        paint(&mut page, 400, 300, 1.0);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !page.tick() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let pixels = paint(&mut page, 400, 300, 1.0);
+        assert!(pixels.iter().any(|&p| p != Theme::dark().bg.to_pixel()));
+        assert!(!page.wants_ticks(), "nothing left to wait for");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn should_refuse_to_open_when_the_file_does_not_exist() {
+        let error = DocPage::open_async(
+            Path::new("/nonexistent-dir/none.md"),
+            &Settings::default(),
+            Scheme::Dark,
+            fonts(),
+            Mode::File,
+            None,
+        )
+        .err()
+        .expect("a missing file is an error");
+        assert!(error.contains("/nonexistent-dir/none.md"), "{error}");
+    }
+
+    #[test]
+    fn should_flash_and_stop_waiting_when_the_file_vanishes_before_it_is_read() {
+        let path = scratch_file("vanishes", "text\n");
+        let mut page = DocPage::open_async_with(
+            &path,
+            &Settings::default(),
+            Scheme::Dark,
+            fonts(),
+            slow_loader(Mode::File, Duration::from_millis(1)),
+        )
+        .unwrap();
+        // Whether the worker read the file first or not, the page must settle.
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        tick_until_loaded(&mut page);
+        assert!(!page.loading() && !page.wants_ticks());
+    }
+
+    #[test]
+    fn should_show_raw_html_as_text_when_the_page_is_an_agent_page() {
+        let source = "Before\n\n<script>alert(1)</script>\n\nAfter\n";
+        let path = scratch_file("agent", source);
+        let mut page = DocPage::open_async(
+            &path,
+            &Settings::default(),
+            Scheme::Dark,
+            fonts(),
+            Mode::Agent,
+            None,
+        )
+        .unwrap();
+        tick_until_loaded(&mut page);
+        assert_eq!(page.mode(), Mode::Agent);
+        let html: Vec<_> = page
+            .doc()
+            .blocks
+            .iter()
+            .filter_map(|block| match &block.kind {
+                limpid_core::doc::BlockKind::Html(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(html.len(), 1);
+        assert!(html[0].contains("<script>alert(1)</script>"), "{html:?}");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn should_sanitise_raw_html_when_the_page_is_a_file() {
+        let path = scratch_file("file-mode", "<script>alert(1)</script>\n\nAfter\n");
+        let mut page = DocPage::open_async(
+            &path,
+            &Settings::default(),
+            Scheme::Dark,
+            fonts(),
+            Mode::File,
+            None,
+        )
+        .unwrap();
+        tick_until_loaded(&mut page);
+        let shown = format!("{:?}", page.doc().blocks);
+        assert!(!shown.contains("alert(1)"), "{shown}");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn should_reparse_in_the_new_mode_when_the_mode_changes() {
+        let page = page("<div>raw</div>\n\ntext\n").with_mode(Mode::Agent);
+        assert_eq!(page.mode(), Mode::Agent);
+        assert_eq!(page.parse_count(), 2);
+        assert!(matches!(
+            &page.doc().blocks[0].kind,
+            limpid_core::doc::BlockKind::Html(text) if text.contains("<div>raw</div>")
+        ));
+        let unchanged = page.with_mode(Mode::Agent);
+        assert_eq!(unchanged.parse_count(), 2, "the same mode costs nothing");
+    }
+
+    fn handoff_at(path: &Path, source: Option<&Path>) -> Handoff {
+        Handoff {
+            path: path.to_path_buf(),
+            theme: Scheme::Dark,
+            pane: None,
+            source: source.map(Path::to_path_buf),
+            source_hash: None,
+            source_backed: true,
+        }
+    }
+
+    #[test]
+    fn should_choose_agent_mode_only_for_a_sidecar_markdown_beside_its_meta_file() {
+        let path = scratch_file("mode-for", "x\n");
+        let directory = path.parent().unwrap().to_path_buf();
+        std::fs::write(directory.join("other.md"), "x").unwrap();
+        std::fs::write(directory.join("mode-for.meta.json"), "{}").unwrap();
+        assert_eq!(mode_for(&handoff_at(&path, None)), Mode::Agent);
+        assert_eq!(
+            mode_for(&handoff_at(&path, Some(&path))),
+            Mode::File,
+            "a file with a source of its own is the user's"
+        );
+        assert_eq!(
+            mode_for(&handoff_at(&directory.join("other.md"), None)),
+            Mode::File,
+            "a stdin page has no meta file"
+        );
+        assert_eq!(
+            mode_for(&handoff_at(&directory.join("missing.md"), None)),
+            Mode::File
+        );
+        assert_eq!(
+            mode_for(&handoff_at(&directory.join("mode-for.meta.json"), None)),
+            Mode::File,
+            "only Markdown pages are agent pages"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn should_keep_the_old_document_until_the_new_text_is_parsed_when_reloading_from_bytes() {
+        let path = scratch_file("keeps-old", "old text\n");
+        let mut page = DocPage::open_async_with(
+            &path,
+            &Settings::default(),
+            Scheme::Dark,
+            fonts(),
+            slow_loader(Mode::File, Duration::from_millis(150)),
+        )
+        .unwrap();
+        tick_until_loaded(&mut page);
+        page.reload_from_bytes(b"new text\n");
+        assert!(page.parsing());
+        assert!(
+            page.doc().source.contains("old"),
+            "still showing the old text"
+        );
+        tick_until_loaded(&mut page);
+        assert!(page.doc().source.contains("new"));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

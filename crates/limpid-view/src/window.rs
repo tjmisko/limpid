@@ -52,6 +52,9 @@ pub type PageFactory = Box<dyn FnMut(&Handoff) -> Result<Box<dyn Page>, String>>
 pub enum UserEvent {
     Open(Handoff),
     CloseAll,
+    /// A worker thread has a result for a page. Handling the event is enough:
+    /// the loop then ticks every page that asks for it.
+    Wake,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +81,8 @@ struct OpenWindow {
     surface: Surface<OwnedDisplayHandle, Rc<Window>>,
     page: Box<dyn Page>,
     redraw_queued: bool,
+    /// The title last given to the window.
+    title: String,
 }
 
 impl OpenWindow {
@@ -87,6 +92,17 @@ impl OpenWindow {
         }
         self.redraw_queued = true;
         self.window.request_redraw();
+    }
+
+    /// Give the window the page's title if it changed (a document's heading
+    /// arrives after its window opened).
+    fn sync_title(&mut self) {
+        let title = self.page.title();
+        if title == self.title {
+            return;
+        }
+        self.window.set_title(&title);
+        self.title = title;
     }
 
     fn redraw(&mut self) {
@@ -143,8 +159,9 @@ impl App {
     fn open(&mut self, event_loop: &ActiveEventLoop, request: &Handoff) -> Result<(), String> {
         let page = (self.factory)(request)?;
         let class = self.config.class.clone();
+        let title = page.title();
         let attributes = Window::default_attributes()
-            .with_title(page.title())
+            .with_title(title.clone())
             .with_inner_size(LogicalSize::new(self.config.width, self.config.height));
         let attributes = WindowAttributesExtWayland::with_name(attributes, &class, &class);
         let attributes = WindowAttributesExtX11::with_name(attributes, &class, &class);
@@ -165,6 +182,7 @@ impl App {
             surface: surface?,
             page,
             redraw_queued: false,
+            title,
         };
         open.request_redraw();
         self.windows.insert(window.id(), open);
@@ -196,6 +214,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.windows.clear();
                 event_loop.exit();
             }
+            UserEvent::Wake => {}
         }
     }
 
@@ -206,6 +225,7 @@ impl ApplicationHandler<UserEvent> for App {
                 continue;
             }
             if open.page.tick() {
+                open.sync_title();
                 open.request_redraw();
             }
             let period = open.page.tick_period();

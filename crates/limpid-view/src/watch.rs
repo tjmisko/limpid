@@ -11,7 +11,7 @@ use crate::{
     paint::Canvas,
     window::Page,
 };
-use limpid_core::{doc::Mode, settings::Settings};
+use limpid_core::{doc::Mode, replies::source_hash, settings::Settings};
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -94,12 +94,17 @@ pub struct WatchedPage {
     replan: bool,
     /// How the page was parsed; helpers must see the same blocks.
     mode: Mode,
+    /// Hash of the text most recently handed to the page to parse, while that
+    /// parse runs. A file that changes back to what the page still shows must
+    /// not be mistaken for "no change" while a newer text is on its way.
+    requested: Option<String>,
     locate: Box<dyn Locate>,
     cached: CacheProbe,
 }
 
 impl WatchedPage {
     pub fn new(page: DocPage, file: PathBuf, settings: &Settings) -> Self {
+        let mode = page.mode();
         let interval = Duration::from_millis(settings.view.watch_interval_ms);
         Self {
             page,
@@ -110,7 +115,8 @@ impl WatchedPage {
             attempted: HashSet::new(),
             deferred: Vec::new(),
             replan: true,
-            mode: Mode::File,
+            mode,
+            requested: None,
             locate: Box::new(helpers::locate_installed),
             cached: Box::new(helpers::is_cached),
         }
@@ -148,7 +154,9 @@ impl WatchedPage {
         if self.watcher.changed(now) {
             changed |= self.reload_if_different();
         }
-        if self.replan {
+        // Helpers plan from the text on screen, so they wait for a parse in
+        // flight to land.
+        if self.replan && !self.page.parsing() {
             self.start_helpers();
         } else if !self.deferred.is_empty() {
             self.deferred = self.helpers.launch(std::mem::take(&mut self.deferred));
@@ -170,10 +178,18 @@ impl WatchedPage {
         let Ok(bytes) = std::fs::read(&self.file) else {
             return false;
         };
-        if bytes == self.page.doc().source.as_bytes() {
+        let hash = source_hash(&bytes);
+        let showing = match &self.requested {
+            Some(requested) if self.page.parsing() => requested.clone(),
+            _ => source_hash(self.page.doc().source.as_bytes()),
+        };
+        if hash == showing {
             return false;
         }
-        self.page.reload_quietly();
+        // One read, one parse (on the worker thread): the page gets the bytes
+        // that were just read instead of reading the file again.
+        self.page.reload_from_bytes(&bytes);
+        self.requested = Some(hash);
         self.replan = true;
         true
     }
@@ -379,6 +395,17 @@ mod tests {
             .with_cache_probe(|_, _| true)
     }
 
+    /// Let the worker thread finish and install what it parsed.
+    fn settle(page: &mut WatchedPage) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while page.page().parsing() {
+            assert!(Instant::now() < deadline, "the parse never finished");
+            page.page_mut().tick();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        page.page_mut().tick();
+    }
+
     fn fast_watch() -> Settings {
         Settings::parse("[view]\nwatch_interval_ms = 1\n").unwrap()
     }
@@ -453,6 +480,7 @@ mod tests {
         write_at(&path, &changed, 2);
         let start = Instant::now();
         assert!(page.step(after(start, 0)));
+        settle(&mut page);
         paint(&mut page, 500, 300);
         assert_eq!(page.page().doc().blocks.len(), 122);
         assert_eq!(block_at_top(&page), before);
@@ -496,6 +524,7 @@ mod tests {
         file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_009))
             .unwrap();
         assert!(page.step(Instant::now()));
+        settle(&mut page);
         paint(&mut page, 500, 300);
         assert!(page.page().doc().source.contains("bad"));
         std::fs::remove_dir_all(dir).unwrap();
@@ -532,8 +561,13 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut changed = false;
         while Instant::now() < deadline {
+            changed |= page.page_mut().tick();
             changed |= page.step(Instant::now());
-            if !page.helpers.busy() && page.deferred.is_empty() && !page.replan {
+            if !page.page().parsing()
+                && !page.helpers.busy()
+                && page.deferred.is_empty()
+                && !page.replan
+            {
                 return changed;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -550,7 +584,9 @@ mod tests {
         let fake_core = script(
             &dir,
             "limpid-core",
-            &format!("echo \"$@\" > {}", ran.display()),
+            // Slow enough that the first step sees it running, before the
+            // cache is marked ready.
+            &format!("sleep 0.3; echo \"$@\" > {}", ran.display()),
         );
         let ready = Rc::new(std::cell::Cell::new(false));
         let probe_ready = ready.clone();
@@ -657,6 +693,124 @@ mod tests {
         drain(&mut watched);
         let runs = std::fs::read_to_string(&count).unwrap().lines().count();
         assert_eq!(runs, 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // Reloads read once and parse once, off the UI thread.
+
+    fn open_slow(path: &Path, settings: &Settings, delay: Duration) -> WatchedPage {
+        let fonts = Rc::new(RefCell::new(Fonts::new()));
+        let loader = crate::page::load::Loader::new(Mode::File, settings).with_parser(
+            std::sync::Arc::new(move |source, mode, settings| {
+                std::thread::sleep(delay);
+                limpid_core::doc::parse(source, mode, settings)
+            }),
+        );
+        let page = DocPage::open_async_with(path, settings, Scheme::Dark, fonts, loader).unwrap();
+        let mut watched = WatchedPage::new(page, path.to_path_buf(), settings)
+            .with_locator(|_: &str| None)
+            .with_cache_probe(|_, _| true);
+        settle(&mut watched);
+        watched
+    }
+
+    #[test]
+    fn should_parse_once_when_the_file_changes() {
+        let dir = scratch("parse-once");
+        let path = dir.join("doc.md");
+        write_at(&path, "one\n", 1);
+        let mut page = open(&path, &fast_watch());
+        let before = page.page().parse_count();
+        write_at(&path, "two\n", 2);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(page.step(Instant::now()));
+        settle(&mut page);
+        assert_eq!(page.page().parse_count(), before + 1);
+        assert!(page.page().doc().source.contains("two"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_not_parse_again_when_the_same_text_is_saved_while_its_parse_runs() {
+        let dir = scratch("same-twice");
+        let path = dir.join("doc.md");
+        write_at(&path, "one\n", 1);
+        let mut page = open_slow(&path, &fast_watch(), Duration::from_millis(150));
+        let before = page.page().parse_count();
+        write_at(&path, "two\n", 2);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(page.step(Instant::now()));
+        assert!(page.page().parsing());
+        write_at(&path, "two\n", 3);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(
+            !page.step(Instant::now()),
+            "the text on its way is the same"
+        );
+        settle(&mut page);
+        assert_eq!(page.page().parse_count(), before + 1);
+        assert!(page.page().doc().source.contains("two"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_show_the_last_text_when_the_file_changes_back_during_a_parse() {
+        let dir = scratch("back-again");
+        let path = dir.join("doc.md");
+        write_at(&path, "one\n", 1);
+        let mut page = open_slow(&path, &fast_watch(), Duration::from_millis(150));
+        write_at(&path, "two\n", 2);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(page.step(Instant::now()));
+        // Back to what the page still shows, before "two" has landed.
+        write_at(&path, "one\n", 3);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(page.step(Instant::now()), "one is not what is on its way");
+        settle(&mut page);
+        assert!(
+            page.page().doc().source.contains("one"),
+            "the stale parse lost"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_wait_for_the_parse_before_planning_helpers_when_the_file_changes() {
+        let dir = scratch("plan-after-parse");
+        let path = dir.join("doc.md");
+        write_at(&path, "plain\n", 1);
+        let mut page = open_slow(&path, &fast_watch(), Duration::from_millis(150));
+        page.step(Instant::now());
+        std::thread::sleep(Duration::from_millis(5));
+        write_at(&path, "plain\n\nnow $x$ here\n", 2);
+        std::thread::sleep(Duration::from_millis(5));
+        page.step(Instant::now());
+        assert!(page.replan, "planning waits for the new text");
+        settle(&mut page);
+        page.step(Instant::now());
+        assert!(!page.replan, "planned from the new text");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_follow_the_page_mode_when_the_page_is_an_agent_page() {
+        let dir = scratch("agent-mode");
+        let path = dir.join("doc.md");
+        write_at(&path, "text\n", 1);
+        let fonts = Rc::new(RefCell::new(Fonts::new()));
+        let settings = fast_watch();
+        let page = DocPage::open_as(&path, &settings, Scheme::Dark, fonts, Mode::Agent).unwrap();
+        let mut watched = WatchedPage::new(page, path.clone(), &settings);
+        assert_eq!(watched.mode, Mode::Agent);
+        write_at(&path, "<script>x</script>\n\ntext\n", 2);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(watched.step(Instant::now()));
+        settle(&mut watched);
+        assert_eq!(watched.page().mode(), Mode::Agent);
+        assert!(
+            format!("{:?}", watched.page().doc().blocks).contains("<script>x</script>"),
+            "a reload parses in the page's mode"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

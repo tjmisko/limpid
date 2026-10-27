@@ -6,7 +6,7 @@ use limpid_view::{
     cli::{self, Args, Snapshot},
     feedback::{Feedback, host::EditorHost},
     nav::CloseKind,
-    page::{Closer, DocPage, SharedFonts},
+    page::{Closer, DocPage, SharedFonts, load::Waker, mode_for},
     serve::{self, Request},
     snapshot::{render, write_png},
     text::Fonts,
@@ -17,6 +17,7 @@ use std::{
     cell::{Cell, RefCell},
     path::{Path, PathBuf},
     rc::Rc,
+    sync::Arc,
 };
 use winit::event_loop::{EventLoop, EventLoopProxy};
 
@@ -123,16 +124,29 @@ fn run_windows(args: Args, settings: Settings, fonts: SharedFonts) -> Result<(),
     let editor_host = EditorHost::shared_nvim();
     let factory_proxy = proxy.clone();
     let factory: PageFactory = Box::new(move |request: &Handoff| {
-        let page = DocPage::open(&request.path, &settings, request.theme, fonts.clone())?;
-        let feedback = Feedback::new(request.clone(), page.title(), &settings)
-            .with_host(editor_host.clone());
+        let mode = mode_for(request);
+        // The worker parses; it wakes the loop when the document is ready.
+        let wake_proxy = factory_proxy.clone();
+        let waker: Waker = Arc::new(move || {
+            let _ = wake_proxy.send_event(UserEvent::Wake);
+        });
+        let page = DocPage::open_async(
+            &request.path,
+            &settings,
+            request.theme,
+            fonts.clone(),
+            mode,
+            Some(waker),
+        )?;
+        let feedback =
+            Feedback::new(request.clone(), page.title(), &settings).with_host(editor_host.clone());
         let page = page
             .with_feedback(feedback)
             .with_closer(Box::new(WindowCloser::new(
                 live_pages.clone(),
                 factory_proxy.clone(),
             )));
-        let watched = WatchedPage::new(page, request.path.clone(), &settings);
+        let watched = WatchedPage::new(page, request.path.clone(), &settings).with_mode(mode);
         Ok(Box::new(watched) as Box<dyn Page>)
     });
 
