@@ -30,6 +30,8 @@ impl Default for Fonts {
 pub struct TextStyle {
     pub mono: bool,
     pub bold: bool,
+    /// Weight 500, which bold overrides.
+    pub medium: bool,
     pub italic: bool,
     pub color: Color,
 }
@@ -39,6 +41,7 @@ impl TextStyle {
         Self {
             mono: false,
             bold: false,
+            medium: false,
             italic: false,
             color,
         }
@@ -53,6 +56,13 @@ impl TextStyle {
 
     pub fn bold(self) -> Self {
         Self { bold: true, ..self }
+    }
+
+    pub fn medium(self) -> Self {
+        Self {
+            medium: true,
+            ..self
+        }
     }
 
     pub fn italic(self) -> Self {
@@ -86,6 +96,8 @@ pub fn attrs<'a>(style: TextStyle, families: &'a Families) -> Attrs<'a> {
         .family(family(name))
         .weight(if style.bold {
             Weight::BOLD
+        } else if style.medium {
+            Weight::MEDIUM
         } else {
             Weight::NORMAL
         })
@@ -231,6 +243,22 @@ mod tests {
         assert_eq!(family("sans-serif"), Family::SansSerif);
         assert_eq!(family("monospace"), Family::Monospace);
         assert_eq!(family("Inter"), Family::Name("Inter"));
+    }
+
+    #[test]
+    fn should_use_weight_five_hundred_when_the_style_is_medium() {
+        let families = Families::default();
+        let medium = attrs(TextStyle::sans(INK).medium(), &families);
+        assert_eq!(medium.weight, Weight::MEDIUM);
+        let plain = attrs(TextStyle::sans(INK), &families);
+        assert_eq!(plain.weight, Weight::NORMAL);
+    }
+
+    #[test]
+    fn should_let_bold_win_when_the_style_is_also_medium() {
+        let families = Families::default();
+        let bold = attrs(TextStyle::sans(INK).medium().bold(), &families);
+        assert_eq!(bold.weight, Weight::BOLD);
     }
 
     #[test]
