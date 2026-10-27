@@ -417,7 +417,10 @@ pub enum FileEdit {
         field: String,
         text: String,
     },
+    /// A new comment after `byte_end`. `start` is where the block it is about
+    /// begins, which says how far a list item indents it.
     Comment {
+        start: usize,
         byte_end: usize,
         text: String,
     },
@@ -506,13 +509,18 @@ impl FileRevision {
                         });
                     }
                 }
-                FileEdit::Comment { byte_end, text } => {
+                FileEdit::Comment {
+                    start,
+                    byte_end,
+                    text,
+                } => {
                     if *byte_end > self.source.len() || !source.is_char_boundary(*byte_end) {
                         return Err("annotation source range is invalid".into());
                     }
+                    let indent = list_indent(source, *start);
                     operations.push(Op::Insert {
                         at: *byte_end,
-                        text: format!("\n\n<!-- limpid comment\n{}\n-->\n", escape_comment(text)),
+                        text: format!("\n\n{}", indented(&comment_block(text), indent, true)),
                     });
                 }
                 FileEdit::CommentReplace { start, end, text } => {
@@ -522,10 +530,14 @@ impl FileRevision {
                     } else {
                         ""
                     };
+                    let indent = list_indent(source, *start);
                     operations.push(Op::Replace {
                         start: *start,
                         end: *end,
-                        text: format!("<!-- limpid comment\n{}\n-->{suffix}", escape_comment(text)),
+                        text: format!(
+                            "{}{suffix}",
+                            indented(comment_block(text).trim_end_matches('\n'), indent, false)
+                        ),
                     });
                 }
                 FileEdit::CommentDelete { start, end } => {
@@ -655,6 +667,43 @@ pub fn valid_question_id(field: &str) -> bool {
 
 fn escape_comment(text: &str) -> String {
     text.replace("-->", "--&gt;")
+}
+
+/// The comment as it is written to the file, ending in a newline.
+fn comment_block(text: &str) -> String {
+    format!("<!-- limpid comment\n{}\n-->\n", escape_comment(text))
+}
+
+/// How far a comment about the block starting at `start` is indented: the
+/// width of the list markers and spaces before it on its line, so a comment
+/// on a list item stays inside the item. Zero at the left margin and inside
+/// quotes.
+fn list_indent(source: &str, start: usize) -> usize {
+    let Some(before) = source.get(..start) else {
+        return 0;
+    };
+    let line = before.rsplit('\n').next().unwrap_or("");
+    if line.contains('>') { 0 } else { line.len() }
+}
+
+/// `text` with `indent` spaces before every line that has text, the first
+/// one only when `first` says so.
+fn indented(text: &str, indent: usize, first: bool) -> String {
+    if indent == 0 {
+        return text.to_owned();
+    }
+    let pad = " ".repeat(indent);
+    let mut out = String::with_capacity(text.len() + indent * 4);
+    for (at, line) in text.split('\n').enumerate() {
+        if at > 0 {
+            out.push('\n');
+        }
+        if !line.is_empty() && (at > 0 || first) {
+            out.push_str(&pad);
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 fn check_annotation_range(
@@ -970,12 +1019,11 @@ pub fn save_pending(
             let Some(src) = item.get("src").and_then(serde_json::Value::as_str) else {
                 continue;
             };
-            let byte_end = src
-                .split_once('-')
-                .ok_or("invalid source range")?
-                .1
-                .parse::<usize>()?;
+            let (start, byte_end) = src.split_once('-').ok_or("invalid source range")?;
+            let start = start.parse::<usize>()?;
+            let byte_end = byte_end.parse::<usize>()?;
             edits.push(FileEdit::Comment {
+                start,
                 byte_end,
                 text: text.to_owned(),
             });
@@ -1164,10 +1212,12 @@ mod tests {
                     text: "SQLite".into(),
                 },
                 FileEdit::Comment {
+                    start: 0,
                     byte_end: pick,
                     text: "why sqlite".into(),
                 },
                 FileEdit::Comment {
+                    start: tail,
                     byte_end: tail,
                     text: "and the tail".into(),
                 },
@@ -1192,6 +1242,7 @@ mod tests {
                     text: "New".into(),
                 },
                 FileEdit::Comment {
+                    start: 0,
                     byte_end: 0,
                     text: "early".into(),
                 },
@@ -1202,6 +1253,67 @@ mod tests {
         assert_eq!(from_file_annotations(&saved).replies["q1"], "New");
         assert!(revision.apply(&[]).is_err());
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn indents_a_new_comment_when_it_is_about_a_list_item() {
+        let path = std::env::temp_dir().join(format!(
+            "limpid-indent-comment-{}-{:?}.md",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let source = "- one\n- two\n- three\n";
+        fs::write(&path, source).unwrap();
+        let revision = FileRevision::open(&path).unwrap();
+        let start = source.find("two").unwrap();
+        revision
+            .apply(&[FileEdit::Comment {
+                start,
+                byte_end: start + 3,
+                text: "first\n\nsecond".into(),
+            }])
+            .unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            saved,
+            "- one\n- two\n\n  <!-- limpid comment\n  first\n\n  second\n  -->\n\n- three\n"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn keeps_the_indent_when_a_comment_inside_a_list_item_is_replaced() {
+        let path = std::env::temp_dir().join(format!(
+            "limpid-indent-replace-{}-{:?}.md",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let source = "1. one\n\n   <!-- limpid comment\n   old\n   -->\n2. two\n";
+        fs::write(&path, source).unwrap();
+        let revision = FileRevision::open(&path).unwrap();
+        let start = source.find("<!--").unwrap();
+        let end = source.find("-->").unwrap() + 4;
+        revision
+            .apply(&[FileEdit::CommentReplace {
+                start,
+                end,
+                text: "new\nlines".into(),
+            }])
+            .unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            saved,
+            "1. one\n\n   <!-- limpid comment\n   new\n   lines\n   -->\n2. two\n"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn does_not_indent_a_comment_when_the_block_starts_at_the_left_margin() {
+        assert_eq!(list_indent("para\n\nnext\n", 6), 0);
+        assert_eq!(list_indent("> quoted\n", 2), 0);
+        assert_eq!(list_indent("- [ ] task\n", 6), 6);
+        assert_eq!(list_indent("short", 99), 0);
     }
 
     #[test]
