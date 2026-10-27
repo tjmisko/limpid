@@ -112,6 +112,20 @@ pub struct Feedback {
     flashes: Vec<String>,
 }
 
+impl Drop for Feedback {
+    /// A window closed with its box open: the editor must not stay claimed.
+    /// The process goes with the box (its float and buffer are abandoned, and
+    /// a late event from it must not reach the next owner).
+    fn drop(&mut self) {
+        if self.open.is_none() {
+            return;
+        }
+        if let Ok(mut host) = self.host.try_borrow_mut() {
+            host.discard(self.owner);
+        }
+    }
+}
+
 impl Feedback {
     /// `handoff` names the page; with both `source` and `source_hash` set,
     /// feedback is written into the Markdown file, else into the page's
@@ -570,12 +584,10 @@ impl Feedback {
         }
         let scale = layout.scale();
         let size = boxes::grid_size(outer, theme, scale, fonts);
-        if size != self.grid_size {
-            self.grid_size = size;
-            self.host
-                .borrow_mut()
-                .resize(self.owner, size.0, size.1);
-        }
+        self.grid_size = size;
+        self.host
+            .borrow_mut()
+            .resize(self.owner, size.0, size.1);
         let host = self.host.borrow();
         let Some(grid) = host.grid() else {
             return;

@@ -1177,3 +1177,52 @@ fn should_escape_only_less_than_when_converting_ime_text() {
     assert_eq!(ime_keys("plain"), "plain");
     assert_eq!(ime_keys(""), "");
 }
+
+#[test]
+fn should_let_another_window_open_when_the_owner_is_dropped_with_its_box_open() {
+    let mut h = harness(QUESTIONS, false);
+    let mut other = second_window(&h);
+    let src = h.field_src("q2");
+    h.fb.act(FeedbackAction::OpenReply, Some(&src));
+    assert_eq!(
+        other.act(FeedbackAction::OpenReply, Some(&src)),
+        ActionResult::Nothing("editor in use in another window".into())
+    );
+    let host = h.fb.host.clone();
+    drop(h);
+    assert!(!host.borrow().in_use_by_other(other.owner));
+    let result = other.act(FeedbackAction::OpenReply, Some(&src));
+    assert_eq!(result, ActionResult::Done(String::new()));
+}
+
+#[test]
+fn should_resize_the_editor_when_ownership_passes_to_a_window_with_its_old_size() {
+    let mut h = harness(QUESTIONS, false);
+    let other = second_window(&h);
+    let src = h.field_src("q2");
+    let host = h.fb.host.clone();
+    let size_for = |fb: &Feedback, cols: u16| {
+        fb.host.borrow_mut().resize(fb.owner, cols, 6);
+    };
+    h.fb.act(FeedbackAction::OpenReply, Some(&src));
+    size_for(&h.fb, 100);
+    h.fb.force_close();
+    let mut other = other;
+    other.act(FeedbackAction::OpenReply, Some(&src));
+    size_for(&other, 60);
+    other.force_close();
+    h.fb.act(FeedbackAction::OpenReply, Some(&src));
+    size_for(&h.fb, 100);
+    drop(host);
+    assert_eq!(h.script.borrow().resizes, vec![(100, 6), (60, 6), (100, 6)]);
+}
+
+#[test]
+fn should_not_resend_the_size_when_the_same_window_paints_again() {
+    let mut h = harness(QUESTIONS, false);
+    h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
+    for _ in 0..3 {
+        h.fb.host.borrow_mut().resize(h.fb.owner, 80, 6);
+    }
+    assert_eq!(h.script.borrow().resizes, vec![(80, 6)]);
+}

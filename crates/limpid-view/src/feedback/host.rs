@@ -43,6 +43,8 @@ pub struct EditorHost {
     owner: Option<OwnerId>,
     idle_since: Option<Instant>,
     next_owner: OwnerId,
+    /// The size the editor's grid was last set to, whichever window set it.
+    sized: Option<(u16, u16)>,
 }
 
 impl EditorHost {
@@ -53,6 +55,7 @@ impl EditorHost {
             owner: None,
             idle_since: None,
             next_owner: 1,
+            sized: None,
         }
     }
 
@@ -97,6 +100,7 @@ impl EditorHost {
         if !alive {
             self.port = None;
             self.port = Some((self.spawner)(config).map_err(BeginError::Spawn)?);
+            self.sized = None;
         }
         let Some(port) = self.port.as_mut() else {
             return Err(BeginError::Open(EditorError::Protocol(
@@ -127,6 +131,7 @@ impl EditorHost {
             return;
         }
         self.port = None;
+        self.sized = None;
         self.owner = None;
         self.idle_since = None;
     }
@@ -142,10 +147,14 @@ impl EditorHost {
         }
     }
 
+    /// Size the editor's grid for the owner's box. The host remembers the
+    /// last size it sent, so a window whose box has the size it had last
+    /// time still resizes an editor another window left at a different one.
     pub fn resize(&mut self, id: OwnerId, cols: u16, rows: u16) {
-        if self.owner != Some(id) {
+        if self.owner != Some(id) || self.sized == Some((cols, rows)) {
             return;
         }
+        self.sized = Some((cols, rows));
         if let Some(port) = self.port.as_mut() {
             port.resize(cols, rows);
         }
