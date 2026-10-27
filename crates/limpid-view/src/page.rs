@@ -1143,6 +1143,10 @@ impl Page for DocPage {
             let mut fonts = self.fonts.borrow_mut();
             search::paint_box(canvas, &mut fonts, &self.theme, scale, bar, text);
         }
+        if let Some(text) = self.nav.command_box() {
+            let mut fonts = self.fonts.borrow_mut();
+            crate::nav::command::paint_bar(canvas, &mut fonts, &self.theme, scale, bar, text);
+        }
         if let Some((rows, scroll)) = self.nav.help_view() {
             let mut fonts = self.fonts.borrow_mut();
             let hint = self.nav.help_hint();

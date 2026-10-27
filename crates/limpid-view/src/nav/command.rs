@@ -1,6 +1,12 @@
 //! The `:` command line: parsing, and the small text editor behind both the
 //! `:` and `/` prompts.
 
+use crate::{
+    paint::{Canvas, Rect},
+    text::{Fonts, TextBlock, TextStyle},
+    theme::{Color, Theme},
+};
+
 /// What a command line asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -75,6 +81,67 @@ impl LineEditor {
         let keep = self.text.rfind(char::is_whitespace).map_or(0, |at| at + 1);
         self.text.truncate(keep);
     }
+}
+
+/// The `:` bar along the bottom, above the bottom `reserved` pixels that
+/// belong to the status bar: a teal `:` already typed, then the line, on the
+/// surface colour inside a teal border.
+pub fn paint_bar(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    theme: &Theme,
+    scale: f32,
+    reserved: f32,
+    text: &str,
+) {
+    let (width, total) = (canvas.width() as f32, canvas.height() as f32 - reserved);
+    let size = (14.0 * scale).round().max(8.0);
+    let (inset, pad_x, pad_y) = (22.0 * scale, 12.0 * scale, 8.0 * scale);
+    let bar_height = size * 1.4 + 2.0 * pad_y;
+    let bar_width = width - 2.0 * inset;
+    if bar_width < 4.0 * pad_x || total < bar_height + 18.0 * scale {
+        return;
+    }
+    let rect = Rect::new(
+        inset,
+        total - 18.0 * scale - bar_height,
+        bar_width,
+        bar_height,
+    );
+    let radius = 7.0 * scale;
+    canvas.fill_rounded_rect(rect, radius, theme.surface);
+    canvas.stroke_rounded_rect(rect, radius, scale.round().max(1.0), theme.teal);
+    let shape = |fonts: &mut Fonts, text: &str, color: Color| {
+        let mut block = TextBlock::new(fonts, size, size * 1.4);
+        block.set_text(fonts, text, TextStyle::mono(color), &theme.families);
+        block.set_width(fonts, None);
+        block
+    };
+    let text_y = rect.y + pad_y;
+    let sigil = shape(fonts, ":", theme.teal);
+    canvas.draw_text(fonts, &sigil, rect.x + pad_x, text_y, theme.teal);
+    let x = rect.x + pad_x + extent(&sigil) + 4.0 * scale;
+    let caret_x = if text.is_empty() {
+        let hint = shape(fonts, COMMAND_PLACEHOLDER, theme.faint);
+        canvas.draw_text(fonts, &hint, x, text_y, theme.faint);
+        x
+    } else {
+        let line = shape(fonts, text, theme.ink);
+        canvas.draw_text(fonts, &line, x, text_y, theme.ink);
+        x + extent(&line) + scale
+    };
+    let caret_x = caret_x.min(rect.right() - pad_x);
+    canvas.fill_rect(
+        Rect::new(caret_x, text_y + size * 0.15, 2.0 * scale, size * 1.1),
+        theme.teal,
+    );
+}
+
+fn extent(block: &TextBlock) -> f32 {
+    block
+        .glyphs()
+        .map(|glyph| glyph.x + glyph.width)
+        .fold(0.0, f32::max)
 }
 
 #[cfg(test)]
@@ -156,5 +223,34 @@ mod tests {
         line.insert("caf\u{e9}\u{4e16}");
         assert!(line.backspace());
         assert_eq!(line.text(), "caf\u{e9}");
+    }
+
+    #[test]
+    fn should_paint_a_rounded_teal_bar_inset_from_the_edges_when_the_line_is_open() {
+        let theme = Theme::dark();
+        let mut fonts = Fonts::new();
+        let (width, height, reserved) = (600usize, 300usize, 30.0);
+        let mut pixels = vec![theme.bg.to_pixel(); width * height];
+        let mut canvas = Canvas::new(&mut pixels, width as u32, height as u32);
+        paint_bar(&mut canvas, &mut fonts, &theme, 1.0, reserved, "wq");
+        let bottom = height - reserved as usize - 18 - 1;
+        let teal = theme.teal.to_pixel();
+        assert_eq!(pixels[bottom * width + width / 2], teal, "bottom border");
+        assert_eq!(
+            pixels[bottom * width + 21],
+            theme.bg.to_pixel(),
+            "22 px from the left edge"
+        );
+        assert_eq!(
+            pixels[bottom * width + 22],
+            theme.bg.to_pixel(),
+            "the corner is rounded"
+        );
+        let below = (height - reserved as usize - 5) * width + width / 2;
+        assert_eq!(
+            pixels[below],
+            theme.bg.to_pixel(),
+            "nothing in the gap above the status bar"
+        );
     }
 }

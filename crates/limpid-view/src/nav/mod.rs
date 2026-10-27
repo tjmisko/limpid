@@ -20,12 +20,12 @@ use crate::{
     paint::Rect,
     theme::{Color, Theme},
 };
-use command::{COMMAND_PLACEHOLDER, Command, LineEditor};
+use command::{Command, LineEditor};
 use cursor::{Align, Cursor, Env, StopKind, collect_stops};
 use keymap::{Action, KeyInput, Keymap, Resolved};
 use limpid_core::doc::Doc;
 use search::{Hit, Query, Search};
-use status::{DEFAULT_FLASH_MS, Prompt, StateName, Status, StatusView};
+use status::{DEFAULT_FLASH_MS, StateName, Status, StatusView};
 use std::{collections::BTreeMap, ops::Range};
 use yank::{Clipboard, Operator, Step, Target};
 
@@ -288,14 +288,6 @@ impl Nav {
     }
 
     pub fn status_view(&self, now_ms: u64) -> StatusView {
-        let prompt = match self.mode {
-            Mode::Page | Mode::Search | Mode::Help => None,
-            Mode::Command => Some(Prompt {
-                sigil: ':',
-                text: self.line.text().to_owned(),
-                placeholder: COMMAND_PLACEHOLDER,
-            }),
-        };
         let pending = match &self.operator {
             Some(operator) => operator.pending_text(),
             None => self.keymap.pending_text(),
@@ -308,9 +300,15 @@ impl Nav {
         StatusView {
             state: self.state(),
             message: self.status.current(now_ms).unwrap_or("").to_owned(),
-            prompt,
+            prompt: None,
             right,
         }
+    }
+
+    /// The text of the `:` line while it is open. The page paints it as a bar
+    /// above the status bar.
+    pub fn command_box(&self) -> Option<&str> {
+        (self.mode == Mode::Command).then(|| self.line.text())
     }
 
     /// The text of the search box while it is open. The page paints it in the
@@ -1516,13 +1514,16 @@ mod tests {
     }
 
     #[test]
-    fn should_show_the_command_placeholder_only_while_the_line_is_empty() {
+    fn should_open_the_command_bar_off_the_status_bar_when_colon_is_pressed() {
         let mut world = World::new("a\n", 600.0);
+        assert_eq!(world.nav.command_box(), None);
         world.press(":");
-        let prompt = world.nav.status_view(world.now).prompt.unwrap();
-        assert_eq!(prompt.sigil, ':');
-        assert!(!prompt.placeholder.is_empty());
-        assert_eq!(prompt.text, "");
+        assert_eq!(world.nav.command_box(), Some(""));
+        assert_eq!(world.nav.status_view(world.now).prompt, None);
+        world.typed(":wq");
+        assert_eq!(world.nav.command_box(), Some(":wq"));
+        world.press("escape");
+        assert_eq!(world.nav.command_box(), None);
     }
 
     #[test]
