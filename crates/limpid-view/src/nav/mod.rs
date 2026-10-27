@@ -379,7 +379,7 @@ impl Nav {
             }
             outlined = covered
                 .iter()
-                .filter(|s| s.kind == StopKind::Special)
+                .filter(|s| matches!(s.kind, StopKind::Special | StopKind::Question))
                 .map(|s| (s.kind, s.rect))
                 .collect();
         }
@@ -1796,9 +1796,62 @@ mod tests {
 
     #[test]
     fn should_paint_nothing_for_bands_when_there_are_no_stops() {
-        let mut world = World::new("# heading only\n", 400.0);
+        let mut world = World::new("---\n", 400.0);
         world.press("j");
         assert_eq!(world.nav.bands(&world.layout), Bands::default());
+    }
+
+    #[test]
+    fn should_name_the_heading_for_the_teal_text_when_a_heading_is_focused() {
+        let mut world = World::new("# Title\n\ntext\n", 600.0);
+        world.press("k");
+        let bands = world.nav.bands(&world.layout);
+        assert_eq!(bands.focus_kind, StopKind::Heading);
+        assert_eq!(bands.heading, Some(0..8));
+        world.press("j");
+        assert_eq!(world.nav.bands(&world.layout).heading, None);
+    }
+
+    #[test]
+    fn should_leave_out_the_selection_band_when_visual_sits_on_a_lone_heading() {
+        let mut world = World::new("# Title\n\ntext\n", 600.0);
+        world.press("v");
+        let bands = world.nav.bands(&world.layout);
+        assert_eq!(bands.selection, None);
+        assert!(bands.heading.is_some(), "the text still turns teal");
+    }
+
+    #[test]
+    fn should_join_the_heading_to_the_band_when_visual_reaches_another_block() {
+        let mut world = World::new("# Title\n\ntext\n", 600.0);
+        world.keys(&["v", "j"]);
+        let bands = world.nav.bands(&world.layout);
+        let selection = bands.selection.unwrap();
+        let heading = world.layout.blocks[0].rect;
+        assert_eq!(selection.y, heading.y);
+        assert!(selection.h > heading.h);
+    }
+
+    #[test]
+    fn should_outline_the_question_when_visual_covers_it() {
+        let mut world = World::new("text\n\n## Questions\n\n1. Which?\n   - A\n   - B\n", 600.0);
+        world.keys(&["v", "j", "j"]);
+        let bands = world.nav.bands(&world.layout);
+        assert!(
+            bands
+                .outlined
+                .iter()
+                .any(|(kind, _)| *kind == StopKind::Question),
+            "{:?}",
+            bands.outlined
+        );
+    }
+
+    #[test]
+    fn should_focus_the_next_heading_when_pressing_close_brace() {
+        let mut world = World::new("# One\n\nalpha\n\n## Two\n\nbeta\n", 600.0);
+        world.press("}");
+        assert_eq!(world.focused(), "## Two");
     }
 
     #[test]

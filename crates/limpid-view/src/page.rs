@@ -1065,7 +1065,11 @@ impl Page for DocPage {
         if let Some(selection) = bands.selection {
             let tint = selection_tint(&self.theme);
             cursor::paint_band(canvas, layout, selection, scroll, tint);
-            for (_, rect) in &bands.outlined {
+            for (_, rect) in bands
+                .outlined
+                .iter()
+                .filter(|(kind, _)| *kind == StopKind::Special)
+            {
                 let block = crate::paint::Rect::new(
                     layout.column_x + rect.x,
                     rect.y - scroll,
@@ -2004,24 +2008,99 @@ mod tests {
     }
 
     #[test]
-    fn should_paint_a_heading_teal_when_it_is_the_tinted_heading() {
+    fn should_paint_a_heading_teal_when_it_is_focused() {
         let mut page = chrome_page("## Title\n\ntext\n");
-        let plain = paint(&mut page, 800, 600, 1.0);
+        let teal = Theme::dark().teal.to_pixel();
+        let focused = paint(&mut page, 800, 600, 1.0);
+        assert!(focused.contains(&teal), "heading text is teal");
+        press(&mut page, "j");
+        let moved = paint(&mut page, 800, 600, 1.0);
+        assert!(!moved.contains(&teal), "heading is ink once focus leaves");
+    }
+
+    #[test]
+    fn should_paint_no_band_behind_a_focused_heading() {
+        let mut page = chrome_page("## Title\n\ntext\n");
+        let pixels = paint(&mut page, 800, 600, 1.0);
+        let layout = page.layout().unwrap();
+        let rect = layout.blocks[0].rect;
+        let y = (rect.y + rect.h / 2.0) as usize;
+        let left = (layout.column_x + layout.column_width - 14.0) as usize;
+        assert_eq!(pixels[y * 800 + left], Theme::dark().bg.to_pixel());
+    }
+
+    #[test]
+    fn should_keep_inline_code_blue_when_the_heading_is_focused() {
+        let mut page = chrome_page("## Title `code`\n\ntext\n");
+        let blue = Theme::dark().blue.to_pixel();
+        let plain = {
+            let mut other = chrome_page("## Title `code`\n\ntext\n");
+            press(&mut other, "j");
+            paint(&mut other, 800, 600, 1.0)
+        };
+        assert!(
+            plain.contains(&blue),
+            "code is blue in an unfocused heading"
+        );
+        let focused = paint(&mut page, 800, 600, 1.0);
+        assert!(
+            focused.contains(&blue),
+            "code stays blue under the teal tint"
+        );
+    }
+
+    #[test]
+    fn should_paint_a_lone_visual_heading_as_text_colour_only() {
+        let mut page = chrome_page("## Title\n\ntext\n");
+        paint(&mut page, 800, 600, 1.0);
+        press(&mut page, "v");
+        let pixels = paint(&mut page, 800, 600, 1.0);
         let theme = Theme::dark();
-        let teal = theme.teal.to_pixel();
-        assert!(!plain.contains(&teal), "heading is ink by default");
-        let src = page.layout().unwrap().blocks[0].src.clone();
-        let mut pixels = vec![0; 800 * 600];
-        let layout = page.layout.as_mut().unwrap();
-        layout.heading_tint = Some(src);
-        let mut canvas = Canvas::new(&mut pixels, 800, 600);
-        layout.paint(&mut canvas, &mut page.fonts.borrow_mut(), 0.0);
-        assert!(pixels.contains(&teal), "heading text is teal");
+        assert!(pixels.contains(&theme.teal.to_pixel()));
+        let layout = page.layout().unwrap();
+        let rect = layout.blocks[0].rect;
+        let y = (rect.y + rect.h / 2.0) as usize;
+        let left = (layout.column_x + layout.column_width - 14.0) as usize;
+        assert_eq!(pixels[y * 800 + left], theme.bg.to_pixel(), "no band");
+    }
+
+    #[test]
+    fn should_band_the_heading_when_visual_reaches_the_next_block() {
+        let mut page = chrome_page("## Title\n\ntext\n");
+        paint(&mut page, 800, 600, 1.0);
+        press(&mut page, "v");
+        press(&mut page, "j");
+        let pixels = paint(&mut page, 800, 600, 1.0);
+        let layout = page.layout().unwrap();
+        let rect = layout.blocks[0].rect;
+        let y = (rect.y + rect.h / 2.0) as usize;
+        let left = (layout.column_x + layout.column_width - 14.0) as usize;
+        assert_ne!(pixels[y * 800 + left], Theme::dark().bg.to_pixel());
+    }
+
+    #[test]
+    fn should_keep_the_question_ring_teal_when_in_visual_mode() {
+        let mut page = chrome_page("## Questions\n\n1. Which?\n   - A\n   - B\n");
+        paint(&mut page, 800, 600, 1.0);
+        press(&mut page, "j");
+        press(&mut page, "v");
+        let pixels = paint(&mut page, 800, 600, 1.0);
+        let layout = page.layout().unwrap();
+        let field = layout
+            .blocks
+            .iter()
+            .find(|block| matches!(block.content, crate::layout::Content::Pending(ref p) if p.kind == crate::layout::PendingKind::Field))
+            .unwrap()
+            .rect;
+        let x = (layout.column_x + field.x + field.w / 2.0) as usize;
+        let above = (field.y - 1.0) as usize;
+        assert_eq!(pixels[above * 800 + x], Theme::dark().teal.to_pixel());
     }
 
     #[test]
     fn should_outline_a_question_in_solid_teal_when_it_is_focused() {
         let mut page = chrome_page("## Questions\n\n1. Which?\n   - A\n   - B\n");
+        paint(&mut page, 800, 600, 1.0);
         press(&mut page, "j");
         let pixels = paint(&mut page, 800, 600, 1.0);
         let theme = Theme::dark();

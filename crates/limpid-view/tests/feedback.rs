@@ -188,8 +188,8 @@ impl World {
     }
 
     fn field(&mut self, number: usize) {
-        // The first stop is the paragraph; the questions follow it.
-        for _ in 0..number {
+        // The title, the paragraph and the questions heading come first.
+        for _ in 0..number + 2 {
             self.press("j");
         }
     }
@@ -229,6 +229,7 @@ fn should_match_the_snapshot_when_an_option_is_picked_and_a_comment_is_pending()
     let mut world = world("snap-picked", false, "", None);
     world.field(1);
     world.press("2");
+    world.press("k");
     world.press("k");
     world.press("c");
     world.say(EditorEvent::Save("Say which store matters here.".into()));
@@ -604,6 +605,7 @@ fn should_write_the_sidecar_when_a_comment_is_typed_in_a_real_nvim() {
         "[editor]\ninit = 'clean'\n",
         Some(limpid_view::feedback::boxes::nvim_spawner()),
     );
+    world.press("j");
     world.press("c");
     assert!(world.page.box_open());
     let none = ModifiersState::empty();

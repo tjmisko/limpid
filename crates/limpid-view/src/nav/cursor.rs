@@ -313,6 +313,18 @@ impl Cursor {
         changed || scrolled
     }
 
+    /// The last stop, with the page scrolled to the document end.
+    fn go_to_end(&mut self, env: &mut Env) -> bool {
+        env.lay_out_all();
+        let last = collect_stops(env.layout).pop();
+        let mut changed = env.set_scroll(f32::MAX / 4.0);
+        if let Some(stop) = last {
+            changed |= self.src.as_ref() != Some(&stop.src);
+            self.set(&stop);
+        }
+        changed
+    }
+
     /// `zt`, `zz`, `zb`.
     pub fn align(&mut self, env: &mut Env, align: Align) -> bool {
         let Some(stop) = self.stop(env.layout) else {
@@ -384,10 +396,13 @@ impl Cursor {
     }
 
     /// `{` and `}`: step `steps` sections (negative goes back). The cursor
-    /// lands on the section's first stop and its heading sits at the top of the
-    /// window.
+    /// lands on the section's heading, which sits at the top of the window. A
+    /// document with no headings has no sections, so nothing moves.
     pub fn section(&mut self, env: &mut Env, steps: i64) -> bool {
         let heads = heading_blocks(env.doc);
+        if heads.is_empty() {
+            return false;
+        }
         let current_top = match self.stop(env.layout) {
             Some(stop) => stop.top,
             None => env.layout.block_at(*env.scroll).unwrap_or(0),
@@ -398,7 +413,7 @@ impl Cursor {
             return if target < 0 {
                 self.to_top(env, None)
             } else {
-                self.to_bottom(env, None)
+                self.go_to_end(env)
             };
         }
         let head = heads[target as usize];
@@ -577,7 +592,7 @@ mod tests {
         let mut fixture = Fixture::new("# Title\n\nfirst\n\nsecond\n", 400.0);
         let mut cursor = Cursor::default();
         assert!(cursor.init(&mut fixture.env()));
-        assert_eq!(focused_text(&fixture, &cursor), "first");
+        assert_eq!(focused_text(&fixture, &cursor), "# Title");
         assert!(!cursor.init(&mut fixture.env()), "already placed");
     }
 
@@ -598,7 +613,7 @@ mod tests {
 
     #[test]
     fn should_have_no_cursor_when_the_document_has_no_stops() {
-        let mut fixture = Fixture::new("# Only a heading\n\n---\n", 300.0);
+        let mut fixture = Fixture::new("---\n\n***\n", 300.0);
         let mut cursor = Cursor::default();
         assert!(!cursor.init(&mut fixture.env()));
         assert!(!cursor.move_by(&mut fixture.env(), 1));
@@ -646,10 +661,12 @@ mod tests {
     }
 
     #[test]
-    fn should_skip_headings_and_rules_when_moving() {
+    fn should_stop_on_headings_and_skip_rules_when_moving() {
         let mut fixture = Fixture::new("a\n\n# H\n\n---\n\nb\n", 600.0);
         let mut cursor = Cursor::default();
         cursor.init(&mut fixture.env());
+        cursor.move_by(&mut fixture.env(), 1);
+        assert_eq!(focused_text(&fixture, &cursor), "# H");
         cursor.move_by(&mut fixture.env(), 1);
         assert_eq!(focused_text(&fixture, &cursor), "b");
     }
@@ -920,15 +937,15 @@ mod tests {
     }
 
     #[test]
-    fn should_land_on_the_first_stop_of_the_next_section_when_pressing_close_brace() {
+    fn should_land_on_the_heading_of_the_next_section_when_pressing_close_brace() {
         let mut fixture = Fixture::new(&sectioned(), 600.0);
         let mut cursor = Cursor::default();
         cursor.init(&mut fixture.env());
-        assert_eq!(focused_text(&fixture, &cursor), "alpha");
+        assert_eq!(focused_text(&fixture, &cursor), "# One");
         assert!(cursor.section(&mut fixture.env(), 1));
-        assert_eq!(focused_text(&fixture, &cursor), "beta");
+        assert_eq!(focused_text(&fixture, &cursor), "## Two");
         assert!(cursor.section(&mut fixture.env(), 1));
-        assert_eq!(focused_text(&fixture, &cursor), "delta");
+        assert_eq!(focused_text(&fixture, &cursor), "# Three");
     }
 
     #[test]
@@ -938,9 +955,20 @@ mod tests {
         cursor.init(&mut fixture.env());
         cursor.to_bottom(&mut fixture.env(), None);
         assert!(cursor.section(&mut fixture.env(), -1));
+        assert_eq!(focused_text(&fixture, &cursor), "## Two");
+        assert!(cursor.section(&mut fixture.env(), -1));
+        assert_eq!(focused_text(&fixture, &cursor), "# One");
+    }
+
+    #[test]
+    fn should_go_back_to_the_section_heading_when_focus_is_inside_the_section() {
+        let mut fixture = Fixture::new(&sectioned(), 600.0);
+        let mut cursor = Cursor::default();
+        cursor.init(&mut fixture.env());
+        cursor.move_by(&mut fixture.env(), 3);
         assert_eq!(focused_text(&fixture, &cursor), "beta");
         assert!(cursor.section(&mut fixture.env(), -1));
-        assert_eq!(focused_text(&fixture, &cursor), "alpha");
+        assert_eq!(focused_text(&fixture, &cursor), "# One");
     }
 
     #[test]
@@ -961,19 +989,36 @@ mod tests {
         cursor.init(&mut fixture.env());
         cursor.section(&mut fixture.env(), 50);
         assert_eq!(focused_text(&fixture, &cursor), "delta");
+        assert_eq!(Some(fixture.scroll), fixture.env().max_scroll());
         cursor.section(&mut fixture.env(), -50);
-        assert_eq!(focused_text(&fixture, &cursor), "alpha");
+        assert_eq!(focused_text(&fixture, &cursor), "# One");
+        assert_eq!(fixture.scroll, 0.0);
     }
 
     #[test]
-    fn should_jump_to_the_ends_when_the_document_has_no_headings() {
-        let mut fixture = Fixture::new("a\n\nb\n\nc\n", 600.0);
+    fn should_go_to_the_document_end_when_jumping_past_the_last_section() {
+        let long = format!("# One\n\n{}## Two\n\nlast\n", paragraphs(30));
+        let mut fixture = Fixture::new(&long, 300.0);
         let mut cursor = Cursor::default();
         cursor.init(&mut fixture.env());
         cursor.section(&mut fixture.env(), 1);
-        assert_eq!(focused_text(&fixture, &cursor), "c");
-        cursor.section(&mut fixture.env(), -1);
-        assert_eq!(focused_text(&fixture, &cursor), "a");
+        assert_eq!(focused_text(&fixture, &cursor), "## Two");
+        assert!(cursor.section(&mut fixture.env(), 1));
+        assert_eq!(focused_text(&fixture, &cursor), "last");
+        assert_eq!(Some(fixture.scroll), fixture.env().max_scroll());
+    }
+
+    #[test]
+    fn should_do_nothing_when_jumping_sections_in_a_document_with_no_headings() {
+        let mut fixture = Fixture::new("a\n\nb\n\nc\n", 600.0);
+        let mut cursor = Cursor::default();
+        cursor.init(&mut fixture.env());
+        let before = cursor.clone();
+        assert!(!cursor.section(&mut fixture.env(), 1));
+        assert_eq!(cursor, before);
+        assert!(!cursor.section(&mut fixture.env(), -1));
+        assert_eq!(cursor, before);
+        assert_eq!(fixture.scroll, 0.0);
     }
 
     #[test]
@@ -1051,9 +1096,10 @@ mod tests {
         let all = kinds(
             "## Title\n\ntext\n\n```rust\nlet a = 1;\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n## Questions\n\n1. Which?\n",
         );
-        assert_eq!(all[0], StopKind::Text);
-        assert_eq!(all[1], StopKind::Special, "code");
-        assert_eq!(all[2], StopKind::Special, "table");
+        assert_eq!(all[0], StopKind::Heading);
+        assert_eq!(all[1], StopKind::Text);
+        assert_eq!(all[2], StopKind::Special, "code");
+        assert_eq!(all[3], StopKind::Special, "table");
         assert!(all.contains(&StopKind::Question));
     }
 

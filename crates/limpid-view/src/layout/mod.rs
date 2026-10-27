@@ -660,12 +660,13 @@ pub fn paint_block(paint: &PaintCx, canvas: &mut Canvas, fonts: &mut Fonts, bloc
         }
         Content::Heading {
             text,
+            level,
             rule,
             pad_top,
-            ..
         } => {
             let tinted = paint.heading_tint == Some(&block.src);
             let ink = if tinted { theme.teal } else { theme.ink };
+            let base = if *level >= 4 { theme.muted } else { theme.ink };
             let mut top = area.y;
             if *rule {
                 canvas.fill_rect(
@@ -683,7 +684,7 @@ pub fn paint_block(paint: &PaintCx, canvas: &mut Canvas, fonts: &mut Fonts, bloc
                 theme,
                 paint.scale,
                 ink,
-                tinted,
+                tinted.then_some(base),
             );
         }
         Content::Code { .. } => code::paint(paint, canvas, fonts, block),
@@ -775,8 +776,8 @@ mod tests {
             900.0,
         );
         let stops: Vec<_> = layout.stops().map(|block| block.src.start).collect();
-        // paragraph, code, two list items, quote; not the heading or rule.
-        assert_eq!(stops.len(), 5, "{stops:?}");
+        // heading, paragraph, code, two list items, quote; not the rule.
+        assert_eq!(stops.len(), 6, "{stops:?}");
         assert!(stops.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 

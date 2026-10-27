@@ -127,7 +127,8 @@ fn is_comment(kind: &BlockKind) -> bool {
 /// Whether a direct child of the document is a cursor stop.
 fn is_stop(kind: &BlockKind) -> bool {
     match kind {
-        BlockKind::Paragraph(_)
+        BlockKind::Heading { .. }
+        | BlockKind::Paragraph(_)
         | BlockKind::Code { .. }
         | BlockKind::Math { .. }
         | BlockKind::Mermaid { .. }
@@ -136,8 +137,7 @@ fn is_stop(kind: &BlockKind) -> bool {
         | BlockKind::Image { .. }
         | BlockKind::Field { .. } => true,
         BlockKind::Annotation { kind, .. } => *kind == AnnotationKind::Comment,
-        BlockKind::Heading { .. }
-        | BlockKind::Rule
+        BlockKind::Rule
         | BlockKind::List { .. }
         | BlockKind::Html(_)
         | BlockKind::FootnoteDef { .. } => false,

@@ -169,11 +169,11 @@ impl<'a> Canvas<'a> {
         y: f32,
         color: Color,
     ) {
-        self.draw_text_with(fonts, block, x, y, color, false);
+        self.draw_text_with(fonts, block, x, y, color, None);
     }
 
-    /// [`Self::draw_text`], with `color` also replacing the colours of spans
-    /// when `force` is set.
+    /// [`Self::draw_text`], with `color` also replacing the glyphs coloured
+    /// `replaced`, so spans with a colour of their own keep it.
     pub fn draw_text_with(
         &mut self,
         fonts: &mut Fonts,
@@ -181,7 +181,7 @@ impl<'a> Canvas<'a> {
         x: f32,
         y: f32,
         color: Color,
-        force: bool,
+        replaced: Option<Color>,
     ) {
         let origin_x = x.round() as i32;
         let origin_y = y.round() as i32;
@@ -194,10 +194,11 @@ impl<'a> Canvas<'a> {
                 if alpha == 0 {
                     return;
                 }
-                let (red, green, blue) = if force {
-                    (color.r, color.g, color.b)
-                } else {
-                    (glyph.r(), glyph.g(), glyph.b())
+                let (red, green, blue) = match replaced {
+                    Some(from) if (glyph.r(), glyph.g(), glyph.b()) == (from.r, from.g, from.b) => {
+                        (color.r, color.g, color.b)
+                    }
+                    _ => (glyph.r(), glyph.g(), glyph.b()),
                 };
                 for dy in 0..gh as i32 {
                     for dx in 0..gw as i32 {

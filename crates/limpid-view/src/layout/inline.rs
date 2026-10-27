@@ -461,11 +461,11 @@ pub fn paint(
     theme: &Theme,
     scale: f32,
 ) {
-    paint_ink(canvas, fonts, text, x, y, theme, scale, theme.ink, false);
+    paint_ink(canvas, fonts, text, x, y, theme, scale, theme.ink, None);
 }
 
-/// [`paint`] with `ink` for text that has no colour of its own, or for all
-/// of it when `force` is set.
+/// [`paint`] with `ink` for text that has no colour of its own, and for text
+/// coloured `replaced`. Spans coloured otherwise keep their colour.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_ink(
     canvas: &mut Canvas,
@@ -476,7 +476,7 @@ pub fn paint_ink(
     theme: &Theme,
     scale: f32,
     ink: Color,
-    force: bool,
+    replaced: Option<Color>,
 ) {
     let size = text.font_size;
     let line = scale.max(1.0).round();
@@ -499,7 +499,7 @@ pub fn paint_ink(
         canvas.fill_rect(rect, raised(theme));
         canvas.stroke_rect(rect, line, theme.rule);
     }
-    canvas.draw_text_with(fonts, &text.block, x, y, ink, force);
+    canvas.draw_text_with(fonts, &text.block, x, y, ink, replaced);
     crate::layout::boxes::paint_typeset_math(canvas, text, x, y, &typeset, ink);
     for deco in &text.decorations {
         if deco.kind != DecorationKind::Strike {
