@@ -379,8 +379,8 @@ pub fn paint_pending(
 ) {
     let theme = paint.theme;
     let border = paint.scale.round().max(1.0);
-    canvas.fill_round_rect(area, pending.radius, pending.fill.unwrap_or(theme.surface));
-    canvas.stroke_round_rect(
+    canvas.fill_rounded_rect(area, pending.radius, pending.fill.unwrap_or(theme.surface));
+    canvas.stroke_rounded_rect(
         area,
         pending.radius,
         border,

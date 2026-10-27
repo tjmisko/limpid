@@ -183,7 +183,7 @@ pub fn paint(paint: &PaintCx, canvas: &mut Canvas, fonts: &mut Fonts, block: &La
     canvas.with_round_corners(area, radius, |canvas| {
         paint_square(paint, canvas, fonts, block);
     });
-    canvas.stroke_round_rect(area, radius, *border, theme.rule);
+    canvas.stroke_rounded_rect(area, radius, *border, theme.rule);
 }
 
 /// The block with square corners, which [`paint`] then rounds.
