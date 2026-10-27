@@ -735,34 +735,6 @@ impl DocPage {
         true
     }
 
-    /// An input-method event for the open editor box: a commit is typed into
-    /// the editor, a preedit is shown in the box's status line. Returns
-    /// whether the page needs a repaint. The window forwards
-    /// `WindowEvent::Ime` here.
-    pub fn ime(&mut self, event: &winit::event::Ime) -> bool {
-        let Some(feedback) = self.feedback.clone() else {
-            return false;
-        };
-        if !feedback.borrow().box_open() {
-            return false;
-        }
-        match event {
-            winit::event::Ime::Commit(text) => {
-                let mut feedback = feedback.borrow_mut();
-                feedback.ime_preedit(None);
-                feedback.ime_commit(text);
-            }
-            winit::event::Ime::Preedit(text, _) => {
-                feedback.borrow_mut().ime_preedit(Some(text));
-            }
-            winit::event::Ime::Enabled | winit::event::Ime::Disabled => {
-                feedback.borrow_mut().ime_preedit(None);
-            }
-        }
-        self.sync_feedback();
-        true
-    }
-
     /// [`DocPage::handle_input`] for a winit key and whether Control is held.
     pub fn handle_key(&mut self, key: &Key, ctrl: bool) -> bool {
         let modifiers = if ctrl {
