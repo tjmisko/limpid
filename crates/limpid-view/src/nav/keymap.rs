@@ -80,7 +80,7 @@ const TABLE: &[(Action, &str, &str)] = &[
     (Action::Insert, "insert", "i"),
     (Action::InsertStart, "insert_start", "shift+i"),
     (Action::InsertEnd, "insert_end", "shift+a"),
-    (Action::OpenComment, "open_comment", "c"),
+    (Action::OpenComment, "open_comment", "c, o"),
     (Action::DeleteComment, "delete_comment", "x"),
     (Action::Review, "review", "shift+s"),
     (Action::FirstUnanswered, "first_unanswered", "shift+q"),
@@ -731,6 +731,8 @@ mod tests {
         assert_eq!(press(&mut map, "}", 0), action(Action::SectionNext));
         assert_eq!(press(&mut map, "f1", 0), action(Action::ToggleRail));
         assert_eq!(press(&mut map, "0", 0), action(Action::ZoomReset));
+        assert_eq!(press(&mut map, "o", 0), action(Action::OpenComment));
+        assert_eq!(press(&mut map, "c", 0), action(Action::OpenComment));
         assert_eq!(press(&mut map, "nonsense", 0), Resolved::Unbound);
     }
 
@@ -943,6 +945,7 @@ mod tests {
         assert_eq!(map().bindings_of(Action::NextBlock), vec!["j", "down"]);
         assert_eq!(map().bindings_of(Action::Top), vec!["g g"]);
         assert_eq!(map().bindings_of(Action::Bottom), vec!["shift+g"]);
+        assert_eq!(map().bindings_of(Action::OpenComment), vec!["c", "o"]);
     }
 
     #[test]
