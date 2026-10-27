@@ -7,16 +7,19 @@ heading. limpid lets you move between those questions, write replies with vim
 keys, comment on any block, and send everything back to the agent in compact
 form.
 
-This document describes the target system. [TASKS.md](TASKS.md) orders the work.
+This document describes the target system. [TASKS.md](TASKS.md) orders the
+work; [MINIMAL.md](MINIMAL.md) explains the native viewer and
+[TASKS-NATIVE.md](TASKS-NATIVE.md) orders its work units.
 
 ## Goals
 
 - **Fast to first readable text.** With a host already running, under 150 ms
   from command to visible window for a 2,000-line file. Cold start under
   0.3 s (htmlview today: about 0.4 s).
-- **Small.** One Rust workspace and one web engine instance shared by all
-  windows. No Python, Node or npm at runtime or build time. JavaScript runs only
-  in the page, and the heavy parts load lazily.
+- **Small.** One Rust workspace and one native viewer process shared by all
+  windows. No Python, Node or npm at runtime or build time. Heavy features
+  (math, Mermaid, the editor) run as helper processes that are not resident
+  while unused.
 - **Driven from the keyboard.** Every action has a key. The mouse is optional.
 - **Transparent to agents.** Agents write ordinary markdown. Nothing limpid
   asks of them looks odd in a terminal.
@@ -25,11 +28,11 @@ This document describes the target system. [TASKS.md](TASKS.md) orders the work.
 
 ## Non-goals
 
-- Leaving WebKit. A native toolkit would mean rebuilding CodeMirror, Mermaid
-  and lazy page loading. htmlview's `PERFORMANCE.md` measured the shared-engine
-  cost at about 10 MiB per extra window, which the toolkit research rated
-  already competitive.
-- macOS, X11-only setups, remote URLs for markdown, and general browsing.
+- Being a browser. The native viewer lays out limpid's own document model
+  (see [MINIMAL.md](MINIMAL.md)); it does not run HTML, CSS or JavaScript.
+  WebKit stays as an optional host for `.html` files and for rendering
+  Mermaid diagrams, built only with `--features webkit`.
+- Remote URLs for markdown and general browsing.
 - Editing documents beyond comments.
 
 ## Architecture
@@ -37,47 +40,51 @@ This document describes the target system. [TASKS.md](TASKS.md) orders the work.
 ```
 you / agent hook / integration
    │
-limpid-core <agent> [spec]  ─▶  ~/.cache/limpid/<page>.html + <page>.meta.json
+limpid-core <agent> [spec]  ─▶  ~/.cache/limpid/<page>.html + <page>.md + <page>.meta.json
    │  (page path on stdout)
    ▼
-limpid <file.md | page.html | ->      small binary, does not link GTK
-   │   renders .md in-process (limpid-core library)
+limpid <file.md | page.html | ->      small binary, links neither GTK nor winit
+   │   routes: .md, stdin and agent pages → limpid-view
+   │           plain .html              → limpid-host
    │   captures $WEZTERM_PANE
    │   Unix socket: {path, theme, pane, source}
-   ▼
-limpid-host                           GTK4 + WebKit 6.0, links limpid-core
-   │                                  one process, many windows,
-   │                                  one shared web process
-   │   script message handlers: reply, comment, mermaid-svg
-   ▼
-page: static HTML/CSS + small JS (rail, scroll-spy, search, fields)
-      lazy: mermaid.js, CodeMirror 6 + vim
+   ├──────────────────────────────┐
+   ▼                              ▼
+limpid-view                       limpid-host  (--features webkit)
+ winit + softbuffer, own layout    GTK4 + WebKit 6.0
+ one process, many windows         HTML pages; Mermaid helper
+ embedded nvim for replies         (--render-mermaid FILE)
+   │  child processes, never blocking the UI
+   ├─▶ limpid-core math FILE        typeset formulas → ~/.cache/limpid/math
+   └─▶ limpid-host --render-mermaid diagrams → ~/.cache/limpid/mermaid
 ```
 
-One Cargo workspace, three crates:
+One Cargo workspace, four crates:
 
 | Crate | Kind | Responsibility |
 |---|---|---|
-| `limpid-core` | lib + bin | Settings; reading sources (markdown files, stdin, Claude Code, Codex and pi transcripts with turn specs); rendering pages; highlighting and the grammar catalog; finding question fields; reply storage and formatting; agent instructions; `send`. No GTK. |
-| `limpid` | bin | The command you type. Renders `.md` in-process, writes the page to the cache, and hands it to the host over the socket. When no host is running, it starts `limpid-host` first, so GTK starts up while the page renders. |
-| `limpid-host` | bin | Windows, keys, the shared WebKit context, and the script message handlers. It stores replies and runs the reply command through `limpid-core`. |
+| `limpid-core` | lib + bin | Settings; reading sources (markdown files, stdin, Claude Code, Codex and pi transcripts with turn specs); the document model; rendering pages to HTML; highlighting and the grammar catalog; the math helper; finding question fields; reply storage and formatting; agent instructions; `send`. No GUI toolkit. |
+| `limpid` | bin | The command you type. Chooses the viewer, starts it when its socket is absent, and hands it the page. |
+| `limpid-view` | lib + bin | The native viewer: layout and paint, the block cursor and keys, search and the command line, the embedded Neovim for replies and comments, delivery, file watching and the helper processes. |
+| `limpid-host` | bin, `webkit` feature | HTML pages in WebKit, and `--render-mermaid`. Not built by default. |
 
-`limpid` must not link GTK or WebKit. The dynamic linker maps every linked
-library at startup, so keeping GTK and WebKit out of `limpid` keeps the handoff
-path to a few milliseconds. htmlview had the same split: its front end handed
-the file to the host and exited before importing GTK.
+`limpid` must not link a GUI toolkit. The dynamic linker maps every linked
+library at startup, so keeping GTK, WebKit and winit out of `limpid` keeps the
+handoff path to a few milliseconds.
 
 ### Commands
 
 ```
-limpid notes.md                    render and open
-limpid page.html                   open as is
+limpid notes.md                    open in the native viewer
+limpid page.html                   open in the WebKit host (agent pages: the viewer)
 limpid -                           read markdown from stdin
-limpid --dark | --light <target>   theme (separate host per scheme)
-limpid --separate <target>         own process, no host
+limpid --dark | --light <target>   theme (separate viewer per scheme)
+limpid --separate <target>         own process, no shared viewer
+limpid --viewer view|host <target> choose the viewer (or LIMPID_VIEWER)
 limpid --out FILE <target>         write a self-contained page, don't open
 
 limpid-core render FILE.md         render to the cache, print the page path
+limpid-core math FILE.md [--json]  typeset the formulas that are not cached
 limpid-core claude [spec]          newest Claude Code turn(s) -> page path
 limpid-core codex  [spec]
 limpid-core pi     [spec]
@@ -99,13 +106,16 @@ Integrations are thin wrappers. `/read` in Claude Code, pi's `Ctrl-R` and
 |---|---|---|
 | `~/.config/limpid/config.toml` | Settings (below) | you |
 | `~/.cache/limpid/<page>.html` | Rendered pages, newest 500 kept | `limpid`, `limpid-core` |
+| `~/.cache/limpid/<page>.md` | The Markdown an agent page was rendered from; what the native viewer opens | `limpid-core` |
 | `~/.cache/limpid/<page>.meta.json` | Agent, session id, turn spec, source path | `limpid-core` |
-| `~/.cache/limpid/<page>.replies.json` | Replies and comments on agent pages | host |
+| `~/.cache/limpid/<page>.replies.json` | Replies and comments on agent pages, keyed by the page stem | viewer, host |
 | `$XDG_RUNTIME_DIR/limpid/<session>.sock` | Feedback wake socket, one per agent session | pi extension, Claude Code plugin |
 | `~/.cache/limpid/assets/<hash>.js` | Shared page scripts and styles | `limpid` |
-| `~/.cache/limpid/mermaid/<hash>.svg` | Rendered diagrams | host |
+| `~/.cache/limpid/math/<hash>.svg`, `.json` | Typeset formulas and their size and baseline | `limpid-core math` |
+| `~/.cache/limpid/mermaid/<hash>.svg` | Rendered diagrams | `limpid-host --render-mermaid` |
 | `~/.local/share/limpid/grammars/` | Compiled grammars (`<lang>.so`) and their queries | `limpid-core grammars sync` |
-| `$XDG_RUNTIME_DIR/limpid-<scheme>.sock` | Handoff socket, one per color scheme | host |
+| `$XDG_RUNTIME_DIR/limpid-view-<scheme>.sock` | Handoff socket of the native viewer, one per color scheme | viewer |
+| `$XDG_RUNTIME_DIR/limpid-<scheme>.sock` | Handoff socket of the WebKit host | host |
 
 ### Settings
 
@@ -121,11 +131,49 @@ headings = ["Questions", "Open questions", "Questions for you"]
 
 [reply]
 command = "wl-copy"            # or "limpid-core send"
+
+[view]
+font = "sans-serif"            # family, or sans-serif / serif / monospace
+mono_font = "monospace"
+font_size = 17                 # CSS px at scale 1
+line_height = 1.65
+content_width = 860            # px
+rail_width = 220               # px
+rail = "auto"                  # auto | on | off
+code_wrap = false
+theme = "auto"                 # auto | dark | light
+scroll_fraction = 0.5
+watch_interval_ms = 300        # 0 turns watching off
+
+[view.keys]                    # remaps by action name: next_block = "n"
+
+[editor]
+command = "nvim"
+init = "user"                  # user | clean
+idle_seconds = 300
+
+[math]
+backend = "auto"               # auto | latex | typst | mathjax | none
+latex = "auto"                 # auto | pdflatex | latex
+svg = "auto"                   # auto | dvisvgm | pdftocairo
+typst = "typst"
+
+[mermaid]
+enabled = true
+timeout_seconds = 20
+helper_window = "auto"         # auto | never | always
 ```
 
 Unknown keys are an error with the key's name, so typos don't fail silently.
 
 ## Rendering
+
+This section describes the HTML pages that `limpid-core` emits for `--out`,
+for the WebKit host and for agent pages' `.html` files. The native viewer
+parses the same Markdown into the shared `Doc` model (`limpid_core::doc`) and
+lays that out itself: tables, code, quotes and question fields as described
+here, but math and Mermaid as cached SVG pictures, drawn from the helpers'
+output, instead of MathML and `mermaid.js`.
 
 The parser is `pulldown-cmark` with tables, task lists, strikethrough,
 footnotes, YAML front matter and math enabled.
@@ -248,8 +296,13 @@ Code blocks carry a hover copy button.
 | `Ctrl-Enter` (in review) | Send the reply |
 | `t` or `F1` | Toggle the rail |
 
-The page owns keys while an editor or the search field has focus. The host
-owns them otherwise. This rule exists today in `keys.py` and carries over.
+Key ownership is one explicit state, shown in the status line: the page, an
+editor box (every key is Neovim's), the `:` command line, or the `/` search
+line (see MINIMAL.md, "Key routing"). Every page key can be remapped under
+`[view.keys]`; `limpid-view`'s `nav::Action` names the actions and their
+defaults match the table above. `h` / `l` scroll a focused table or code block,
+`v` / `y` / `Y` select and copy, `Q` jumps to the first unanswered question,
+and `r`, `+`, `-`, `0` reload and zoom.
 
 ## Replies
 
@@ -297,7 +350,7 @@ question is an answer to that question. Unanswered fields are left out.
 
 ### Delivery
 
-The host delivers a reply by running `reply.command`, with the message on stdin
+The viewer delivers a reply by running `reply.command`, with the message on stdin
 and these environment variables:
 
 | Variable | Meaning | Source |
@@ -393,11 +446,11 @@ sidecar.
 
 ### Wake signal
 
-The host is detached and the agent runs elsewhere, so the integration owns a
+The viewer is detached and the agent runs elsewhere, so the integration owns a
 per-session unix socket:
 
 ```
-limpid-host ── connect, one JSON line ──▶ $XDG_RUNTIME_DIR/limpid/<session>.sock
+limpid-view ── connect, one JSON line ──▶ $XDG_RUNTIME_DIR/limpid/<session>.sock
                                               │
                                               ▼
                               pi extension: sendUserMessage(message)
@@ -409,9 +462,9 @@ directory) and removes it in `session_shutdown`. Claude Code mods have no
 sockets, so its plugin spawns a small Python listener that prints each frame
 and answers `{ok}` only after the print succeeds.
 - It passes the path as `feedback_sock` in the JSON it already sends to
-`limpid-core`, which records it in `<page>.meta.json`, so the host needs no
+`limpid-core`, which records it in `<page>.meta.json`, so the viewer needs no
 global state to find it.
-- On `:wq` the host composes the feedback, connects, writes `{page, message}`
+- On `:wq` the viewer composes the feedback, connects, writes `{page, message}`
 as one newline-terminated frame, and waits for `{ok}`. The listener replies,
 then calls `sendUserMessage` (or `{deliverAs:"followUp"}` while streaming).
 The message is the composed feedback followed by a note that it is complete,
@@ -444,9 +497,11 @@ There is no `feedback --wait`: an empty wait costs a turn and a timeout.
 
 ## Windows
 
-Every handoff opens one window. One host process serves all of them and shares
-a single WebKit context, so an extra window costs about 10 MiB rather than a
-whole new engine. The host quits when its last window closes.
+Every handoff opens one window. One viewer process per color scheme serves all
+of them and shares its fonts and caches, so an extra window costs little more
+than its pixels. The viewer quits when its last window closes. Tests set
+`LIMPID_WINDOW_CLASS=limpid-test` so a compositor rule can keep their windows
+off your desktop.
 
 limpid does not try to control keyboard focus. A window that opens takes focus
 like any other; what has focus is the compositor's decision, not the app's.
@@ -455,15 +510,30 @@ that opens a page.
 
 ## Watch
 
-`--watch` re-renders on save and keeps the scroll position, anchored to the
-`data-src` of the block at the top of the view rather than to a pixel offset.
-Markdown files you open with `limpid` are watched by default, so annotations
-appear after an external edit and after limpid saves a comment.
+The viewer polls the file it shows every `view.watch_interval_ms` (300 by
+default; `0` turns watching off). When the file changes it parses and lays the
+page out again and keeps the viewport anchored to the block that was at the
+top, found by its text and position rather than by a pixel offset, so
+annotations appear after an external edit and after limpid saves a comment. A
+file that is briefly missing (an editor saving by rename) is ignored until it
+returns. `limpid --watch` is accepted and does nothing; watching is always on.
+
+## Helpers
+
+Typesetting and diagram rendering never run inside the viewer. After a page
+opens or reloads, the viewer starts `limpid-core math FILE` when the page has
+formulas that are not cached, and `limpid-host --render-mermaid FILE` when it
+has uncached diagrams, `mermaid.enabled` is true and `limpid-host` is
+installed. Each runs as a child process in its own process group, is killed
+after its time limit (and with the page), and is not started again for the same
+hashes if it left them uncached. When a child exits, the viewer redraws the
+blocks whose output reached the cache. Until then, and when no helper is
+available, a formula or diagram shows its source.
 
 ## Dependencies
 
-- **Runtime:** WebKitGTK 6.0 and GTK4 (system packages), `wl-copy`, and
-  `wezterm` for `send`.
+- **Runtime:** a Wayland or X11 session, `nvim`, `wl-copy`, and `wezterm` for
+  `send`. WebKitGTK 6.0 and GTK4 only for `limpid-host` (`--features webkit`).
 - **Installing grammars:** `git` and a C compiler.
 - **Rust crates:** `pulldown-cmark`, `pulldown-latex`, `ammonia`, `tree-sitter`,
   `tree-sitter-highlight`, `libloading`, `toml`, `serde`, `serde_json`, `gtk4`,
@@ -494,10 +564,12 @@ appear after an external edit and after limpid saves a comment.
   - **Settings:** an unknown key in the settings file.
   - **Replies:** a reply containing `-->`, and a file that changed on disk
     between render and save.
+- **Viewer:** layout and navigation are tested without a display on the
+  layout and through PNG snapshots (`limpid-view --snapshot WxH --out FILE.png`).
+  Window tests are display-gated, set `LIMPID_WINDOW_CLASS=limpid-test`, and
+  cover the handoff socket, the close request and routing from `limpid`.
 - **Host:** the handoff and window tests from htmlview are ported, plus the
-  ported key dispatcher. Window tests are display-gated and cover file://
-  fetch and ES modules, the forced color scheme, one shared web process, and
-  watched-file reload.
+  ported key dispatcher, and build only with `--features webkit`.
 - **Benchmarks:** `bench/` holds the measurement scripts from
   `~/.cache/htmlview-bench/`, adapted for limpid. Each phase that touches the
   hot path reports cold start, warm start and private memory for 1, 2 and 3

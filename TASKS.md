@@ -4,6 +4,12 @@ Phased plan for [DESIGN.md](DESIGN.md). Each phase ends in something usable and
 merges on its own. Task ids are stable once work starts; refer to them in branch
 names and commits.
 
+The native viewer that replaces WebKit for Markdown is planned in
+[TASKS-NATIVE.md](TASKS-NATIVE.md) (design in [MINIMAL.md](MINIMAL.md)). Phases
+whose work the viewer supersedes are marked below; their code stays as the
+optional WebKit host (`--features webkit`) for `.html` files and the Mermaid
+helper.
+
 Performance measurements in Phases 0, 3 and 4 are deferred at the user's
 request. Build and behavior work continues independently of those benchmarks.
 
@@ -53,6 +59,9 @@ TypeScript renderer and test suite are deleted.
 
 ## Phase 3: `limpid` front end on the existing host
 
+> Routing changed: `limpid` now sends Markdown, stdin and agent pages to
+> `limpid-view` and only plain `.html` to the host (TASKS-NATIVE.md, WU-V6).
+
 - [x] **P3.1** `limpid` binary: open `.md`, `.html` and `-`; write to the
   cache; `--out`; hand off over the socket protocol. When no host is running,
   start it first so GTK starts up while the page renders. The Rust host
@@ -70,6 +79,9 @@ TypeScript renderer and test suite are deleted.
 installed, and the benchmarks are no worse than the P0.1 baseline.
 
 ## Phase 4: Rust host
+
+> Superseded for Markdown by the native viewer (TASKS-NATIVE.md, WU-V1 to
+> WU-V6). The host remains for `.html` files and `--render-mermaid`.
 
 - [x] **P4.1** `limpid-host`: windows, shared WebKit context, JIT setting,
   per-scheme hosts, `--separate`, and exit when the last window closes.
@@ -89,6 +101,10 @@ of a 2,000-line `.md` is under 150 ms.
 
 ## Phase 5: Richer markdown
 
+> Superseded in the window by the viewer's own layout (WU-V2a, WU-V2b) and the
+> math and Mermaid helpers (WU-C2, WU-C3, WU-H1). The HTML emitter still
+> serves `--out` and the host.
+
 - [x] **P5.1** Shared assets written once to `~/.cache/limpid/assets/`. `--out`
   inlines everything except lazy bundles.
 - [x] **P5.2** Math as MathML, or lazy KaTeX
@@ -106,6 +122,8 @@ text first and the diagram after, and reopening it loads no Mermaid script.
 
 ## Phase 6: Question fields
 
+> The viewer's fields are WU-V5; the HTML fields here serve the host.
+
 - [x] **P6.1** Find the Questions section (`questions.headings`, any level,
   case-insensitive): top-level numbered items become `q1`, `q2`, …, and nested
   `- ` items become options. Golden tests, including a heading with no list,
@@ -121,6 +139,9 @@ text first and the diagram after, and reopening it loads no Mermaid script.
 through and pick options in without the mouse.
 
 ## Phase 7: Replies and comments
+
+> The CodeMirror editor is superseded by the embedded Neovim (WU-V4, WU-V5);
+> storage and delivery are shared.
 
 - [x] **P7.1** Vendor CodeMirror 6 with vim mode as one bundle (recorded in
   `vendor/README.md`); load it lazily on the first `Enter`, `i` or `c`.
