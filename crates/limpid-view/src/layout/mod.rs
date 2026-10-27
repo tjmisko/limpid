@@ -539,6 +539,10 @@ impl Layout {
         self.state.margins.truncate(first);
         self.state.next = first;
         self.state.bottom = match first.checked_sub(1) {
+            // A reply ends inside its question box; the flow resumes below the box.
+            Some(before) if self.nested_in_previous(before) => {
+                self.blocks[before - 1].rect.bottom()
+            }
             Some(before) => self.blocks[before].rect.bottom(),
             None => self.state.first_top,
         };
@@ -546,6 +550,14 @@ impl Layout {
         self.state.complete = false;
         self.height = self.state.bottom;
         true
+    }
+
+    /// Whether top-level block `index` is a reply laid inside the question box
+    /// before it: it ends above that box's bottom.
+    fn nested_in_previous(&self, index: usize) -> bool {
+        index.checked_sub(1).is_some_and(|outer| {
+            self.blocks[index].rect.bottom() < self.blocks[outer].rect.bottom()
+        })
     }
 
     /// Index of the rail entry that follows document y.
@@ -810,6 +822,38 @@ mod tests {
         let field = &layout.blocks[1];
         let top = field.rect.bottom() - 2.0;
         assert_eq!(first_visible(&layout.blocks, top), 1);
+    }
+
+    fn pending_hash(block: &LaidBlock) -> String {
+        match &block.content {
+            Content::Pending(pending) => pending.hash.clone(),
+            Content::Media(media) => media.hash.clone(),
+            _ => None,
+        }
+        .expect("the block shows display math")
+    }
+
+    #[test]
+    fn should_relay_a_block_below_the_question_box_when_it_follows_an_answered_question() {
+        let markdown =
+            "## Questions\n\n1. Pick?\n   - A\n   - B\n\n<!-- limpid reply q1\nB\n-->\n\n$$x^2$$\n";
+        let (doc, mut layout, mut fonts) = laid(markdown, 900.0);
+        let fresh: Vec<Rect> = layout.blocks.iter().map(|block| block.rect).collect();
+        assert!(fresh[2].bottom() < fresh[1].bottom(), "the reply is nested");
+        let hash = pending_hash(&layout.blocks[3]);
+        assert!(layout.refresh_pending(&[hash]));
+        while !layout.is_complete() {
+            let next = layout.blocks.len();
+            layout.ensure_block(next, &doc, &mut fonts);
+        }
+        let relaid: Vec<Rect> = layout.blocks.iter().map(|block| block.rect).collect();
+        assert_eq!(relaid, fresh);
+        assert!(
+            relaid[3].y > relaid[1].bottom(),
+            "{:?} {:?}",
+            relaid[3],
+            relaid[1]
+        );
     }
 
     #[test]
