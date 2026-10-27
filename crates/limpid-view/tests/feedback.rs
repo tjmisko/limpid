@@ -552,6 +552,40 @@ fn should_put_a_comment_on_any_block_when_c_is_pressed_and_remove_it_with_x() {
     assert!(saved.is_ok_and(|saved| saved.comments.is_empty()));
 }
 
+#[test]
+fn should_keep_a_comment_on_a_list_item_inside_the_item_when_o_is_pressed() {
+    let mut world = world_from("item", "- one\n- two\n", false, "", None);
+    world.press("o");
+    assert_eq!(
+        world.script.borrow().opened,
+        [(String::new(), BoxKind::Comment)]
+    );
+    world.say(EditorEvent::Save("About one.".into()));
+    world.say(EditorEvent::Quit { discard: false });
+    assert_eq!(world.page.doc().blocks.len(), 1, "still one list");
+    let BlockKind::List { items, .. } = &world.page.doc().blocks[0].kind else {
+        panic!("not a list");
+    };
+    assert_eq!(items.len(), 2, "the comment is not a list element");
+    assert!(matches!(
+        items[0].blocks.last().map(|block| &block.kind),
+        Some(BlockKind::Annotation {
+            kind: AnnotationKind::Comment,
+            ..
+        })
+    ));
+    let on_comment = world.page.nav().cursor().src.clone().unwrap();
+    assert_eq!(on_comment.start, on_comment.end, "the comment is the stop");
+    world.press("j");
+    let on_second = world.page.nav().cursor().src.clone().unwrap();
+    assert!(
+        on_second.start > on_comment.start,
+        "the next stop is item two"
+    );
+    world.press("k");
+    assert_eq!(world.page.nav().cursor().src.clone().unwrap(), on_comment);
+}
+
 /// The real thing: nvim embedded, a comment typed, saved with `:wq`, then the
 /// page saved. Skipped when nvim is not installed.
 #[test]

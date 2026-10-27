@@ -14,7 +14,7 @@ pub mod review;
 
 use crate::{
     editor::{BoxKind, EditorConfig, EditorEvent},
-    layout::Layout,
+    layout::{LaidBlock, Layout},
     nav::{ActionResult, EditAt, FeedbackAction, PageActions},
     paint::{Canvas, Rect},
     text::Fonts,
@@ -26,13 +26,13 @@ use fields::{
     BoxPlan, BoxTarget, CommentEntry, DocIndex, FILE_KEY_PREFIX, Pending, QUOTE_CHARS, Synthetic,
     file_key, line_of, quote_of, range_text,
 };
+use host::{BeginError, EditorHost, OwnerId, SharedEditor};
 use limpid_core::{
     doc::Block,
     replies::{self, AgentReplies},
     settings::Settings,
     transport::Handoff,
 };
-use host::{BeginError, EditorHost, OwnerId, SharedEditor};
 use review::Review;
 use std::{
     cell::RefCell,
@@ -64,6 +64,16 @@ impl FeedbackOptions {
             idle: Duration::from_secs(settings.editor.idle_seconds),
         }
     }
+}
+
+/// The laid-out block at `src`, looked for inside list items too.
+fn find_block<'a>(blocks: &'a [LaidBlock], src: &Range<usize>) -> Option<&'a LaidBlock> {
+    blocks.iter().find_map(|block| {
+        if &block.src == src {
+            return Some(block);
+        }
+        find_block(block.children(), src)
+    })
 }
 
 /// Text from an input method as nvim key notation: `<` is the only
@@ -574,9 +584,7 @@ impl Feedback {
     pub fn tick(&mut self, now: Instant) -> bool {
         let handled = self.drain_editor();
         if self.open.is_none() {
-            self.host
-                .borrow_mut()
-                .stop_if_idle(now, self.options.idle);
+            self.host.borrow_mut().stop_if_idle(now, self.options.idle);
         }
         handled || self.stale
     }
@@ -602,7 +610,7 @@ impl Feedback {
         let (Some(open), Some(src)) = (self.open.as_ref(), self.box_src()) else {
             return;
         };
-        let Some(block) = layout.blocks.iter().find(|block| block.src == src) else {
+        let Some(block) = find_block(&layout.blocks, &src) else {
             return;
         };
         let outer = Rect::new(
@@ -617,9 +625,7 @@ impl Feedback {
         let scale = layout.scale();
         let size = boxes::grid_size(outer, theme, scale, fonts);
         self.grid_size = size;
-        self.host
-            .borrow_mut()
-            .resize(self.owner, size.0, size.1);
+        self.host.borrow_mut().resize(self.owner, size.0, size.1);
         let host = self.host.borrow();
         let Some(grid) = host.grid() else {
             return;

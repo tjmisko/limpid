@@ -7,9 +7,12 @@
 //! Those blocks have no place in the source, so each gets a zero-width source
 //! range inside the block it follows; [`Synthetic`] says what each one is.
 
-use crate::layout::field::box_text;
+use crate::layout::{
+    field::{CHOSEN_MARK, box_text},
+    list::item_source,
+};
 use limpid_core::{
-    doc::{AnnotationKind, Block, BlockKind, Inline},
+    doc::{AnnotationKind, Block, BlockKind, Inline, ListItem},
     replies::{AgentReplies, Comment},
 };
 use serde_json::{Value, json};
@@ -89,15 +92,28 @@ impl DocIndex {
         let mut index = DocIndex::default();
         for block in blocks {
             index.blocks.push(block.src.clone());
+        }
+        index.add(blocks, source);
+        index
+    }
+
+    /// Index the fields and notes in `blocks`, and in the list items inside.
+    fn add(&mut self, blocks: &[Block], source: &str) {
+        for block in blocks {
             match &block.kind {
-                BlockKind::Field { id, options, .. } => index.fields.push(FieldInfo {
+                BlockKind::List { items, .. } => {
+                    for item in items {
+                        self.add(&item.blocks, source);
+                    }
+                }
+                BlockKind::Field { id, options, .. } => self.fields.push(FieldInfo {
                     id: id.clone(),
                     src: block.src.clone(),
                     options: options.iter().map(|option| inlines_text(option)).collect(),
                 }),
                 BlockKind::Annotation {
                     target, kind, text, ..
-                } => index.notes.push(SavedNote {
+                } => self.notes.push(SavedNote {
                     src: block.src.clone(),
                     target: target.clone(),
                     kind: *kind,
@@ -110,7 +126,6 @@ impl DocIndex {
                 _ => {}
             }
         }
-        index
     }
 
     pub fn field(&self, id: &str) -> Option<&FieldInfo> {
@@ -417,27 +432,49 @@ fn free_position(source: &str, anchor: &Range<usize>, taken: &HashSet<usize>) ->
 
 struct Splicer<'a> {
     source: &'a str,
-    out: Vec<Block>,
+    index: &'a DocIndex,
+    pending: &'a Pending,
+    editing_reply: Option<&'a str>,
+    editing_comment: Option<&'a str>,
+    /// Where the box for a comment not yet saved goes.
+    new_box_target: Option<&'a Range<usize>>,
+    rows: u16,
+    /// Source spans of the list items in the document.
+    items: HashSet<Range<usize>>,
+    /// Pending comments about a top-level block, by its index.
+    after_block: BTreeMap<usize, Vec<&'a CommentEntry>>,
+    /// Pending comments about a list item, by its span.
+    in_item: HashMap<Range<usize>, Vec<&'a CommentEntry>>,
     synthetic: HashMap<Range<usize>, Synthetic>,
     taken: HashSet<usize>,
+    box_placed: bool,
+}
+
+/// The spans of every list item in `blocks`, nested lists included.
+fn collect_items(blocks: &[Block], out: &mut HashSet<Range<usize>>) {
+    for block in blocks {
+        let BlockKind::List { items, .. } = &block.kind else {
+            continue;
+        };
+        for item in items {
+            out.insert(item_source(&item.blocks, &block.src));
+            collect_items(&item.blocks, out);
+        }
+    }
 }
 
 impl Splicer<'_> {
-    fn push_real(&mut self, block: &Block) {
-        self.out.push(block.clone());
-    }
-
-    fn push_synthetic(
+    fn synthetic_block(
         &mut self,
         anchor: &Range<usize>,
         kind: AnnotationKind,
         text: String,
         what: Synthetic,
-    ) {
+    ) -> Block {
         let src = free_position(self.source, anchor, &self.taken);
         self.taken.insert(src.start);
         self.synthetic.insert(src.clone(), what);
-        self.out.push(Block {
+        Block {
             kind: BlockKind::Annotation {
                 target: anchor.clone(),
                 kind,
@@ -446,25 +483,194 @@ impl Splicer<'_> {
             },
             src,
             id: None,
-        });
+        }
     }
 
-    fn push_comment(&mut self, anchor: &Range<usize>, entry: &CommentEntry) {
-        self.push_synthetic(
+    fn comment_block(&mut self, anchor: &Range<usize>, entry: &CommentEntry) -> Block {
+        self.synthetic_block(
             anchor,
             AnnotationKind::Comment,
             entry.text.clone(),
             Synthetic::Comment(entry.key.clone()),
-        );
+        )
     }
 
-    fn push_box(&mut self, anchor: &Range<usize>, rows: u16) {
-        self.push_synthetic(
+    fn box_block(&mut self, anchor: &Range<usize>) -> Block {
+        self.box_placed = true;
+        self.synthetic_block(
             anchor,
             AnnotationKind::Comment,
-            box_text(rows),
+            box_text(self.rows),
             Synthetic::Box,
-        );
+        )
+    }
+
+    /// The comments about the block or item at `anchor`, as blocks, and the
+    /// box when one is being written for it.
+    fn comments_about(
+        &mut self,
+        anchor: &Range<usize>,
+        entries: &[&CommentEntry],
+        out: &mut Vec<Block>,
+    ) {
+        for entry in entries {
+            if self.editing_comment == Some(entry.key.as_str()) {
+                let block = self.box_block(anchor);
+                out.push(block);
+                continue;
+            }
+            let block = self.comment_block(anchor, entry);
+            out.push(block);
+        }
+    }
+
+    /// `block`, with the answer a reply gives marked on a question and the
+    /// comments about list items spliced into the items.
+    fn real(&mut self, block: &Block) -> Block {
+        match &block.kind {
+            BlockKind::Field {
+                id,
+                prompt,
+                options,
+            } => self.field(block, id, prompt, options),
+            BlockKind::List {
+                ordered,
+                start,
+                items,
+            } => {
+                let items = items.iter().map(|item| self.item(block, item)).collect();
+                Block {
+                    kind: BlockKind::List {
+                        ordered: *ordered,
+                        start: *start,
+                        items,
+                    },
+                    src: block.src.clone(),
+                    id: block.id.clone(),
+                }
+            }
+            _ => block.clone(),
+        }
+    }
+
+    fn item(&mut self, list: &Block, item: &ListItem) -> ListItem {
+        let span = item_source(&item.blocks, &list.src);
+        let mut blocks = self.splice(&item.blocks, false);
+        let entries = self.in_item.get(&span).cloned().unwrap_or_default();
+        self.comments_about(&span, &entries, &mut blocks);
+        if !self.box_placed && self.new_box_target == Some(&span) {
+            let block = self.box_block(&span);
+            blocks.push(block);
+        }
+        ListItem {
+            checked: item.checked,
+            blocks,
+        }
+    }
+
+    fn field(&self, block: &Block, id: &str, prompt: &[Inline], options: &[Vec<Inline>]) -> Block {
+        let reply = match self.pending.reply(id) {
+            Some(text) => text.trim(),
+            None => self
+                .index
+                .saved_reply(id)
+                .map_or("", |note| note.text.trim()),
+        };
+        let chosen = self
+            .index
+            .field(id)
+            .filter(|_| !reply.is_empty())
+            .and_then(|field| field.options.iter().position(|option| option == reply));
+        let Some(chosen) = chosen.filter(|&at| at < options.len()) else {
+            return block.clone();
+        };
+        let mut options = options.to_vec();
+        options[chosen].insert(0, Inline::Html(CHOSEN_MARK.to_owned()));
+        Block {
+            kind: BlockKind::Field {
+                id: id.to_owned(),
+                prompt: prompt.to_vec(),
+                options,
+            },
+            src: block.src.clone(),
+            id: block.id.clone(),
+        }
+    }
+
+    /// One level of blocks. `top` is the document's own list, whose blocks
+    /// are the ones comments and replies follow.
+    fn splice(&mut self, base: &[Block], top: bool) -> Vec<Block> {
+        let mut out = Vec::with_capacity(base.len());
+        for (at, block) in base.iter().enumerate() {
+            if let BlockKind::Annotation { kind, .. } = &block.kind {
+                match kind {
+                    AnnotationKind::Reply => {
+                        let answered = self
+                            .index
+                            .notes
+                            .iter()
+                            .find(|note| note.src == block.src)
+                            .and_then(|note| note.field.as_deref());
+                        let hidden = answered.is_some_and(|id| {
+                            self.pending.reply(id).is_some() || self.editing_reply == Some(id)
+                        });
+                        if hidden {
+                            continue;
+                        }
+                    }
+                    AnnotationKind::Comment => {
+                        let key = file_key(&block.src);
+                        if self.pending.deletions.contains(&key) {
+                            continue;
+                        }
+                        if self.editing_comment == Some(key.as_str()) {
+                            let boxed = self.box_block(&block.src);
+                            out.push(boxed);
+                            continue;
+                        }
+                        if let Some(entry) = self.pending.comments.get(&key) {
+                            let comment = self.comment_block(&block.src, entry);
+                            out.push(comment);
+                            continue;
+                        }
+                    }
+                }
+            }
+            let real = self.real(block);
+            out.push(real);
+            if !top {
+                continue;
+            }
+            if let BlockKind::Field { id, .. } = &block.kind {
+                if self.editing_reply == Some(id.as_str()) {
+                    let boxed = self.box_block(&block.src);
+                    out.push(boxed);
+                } else if let Some(text) = self
+                    .pending
+                    .reply(id)
+                    .filter(|text| !text.trim().is_empty())
+                {
+                    let reply = self.synthetic_block(
+                        &block.src,
+                        AnnotationKind::Reply,
+                        text.to_owned(),
+                        Synthetic::Reply(id.clone()),
+                    );
+                    out.push(reply);
+                }
+            }
+            let entries = self.after_block.remove(&at).unwrap_or_default();
+            self.comments_about(&block.src, &entries, &mut out);
+            if !self.box_placed
+                && let Some(target) = self.new_box_target
+                && !self.items.contains(target)
+                && self.index.block_containing(target) == Some(at)
+            {
+                let boxed = self.box_block(&block.src);
+                out.push(boxed);
+            }
+        }
+        out
     }
 }
 
@@ -476,12 +682,6 @@ pub fn overlay(
     editing: Option<&BoxPlan>,
     source: &str,
 ) -> Overlay {
-    let mut splicer = Splicer {
-        source,
-        out: Vec::with_capacity(base.len() + pending.comments.len() + 2),
-        synthetic: HashMap::new(),
-        taken: HashSet::new(),
-    };
     let editing_reply = editing.and_then(|plan| match &plan.target {
         BoxTarget::Reply { field } => Some(field.as_str()),
         BoxTarget::Comment { .. } => None,
@@ -490,87 +690,50 @@ pub fn overlay(
         BoxTarget::Comment { key, .. } => Some(key.as_str()),
         BoxTarget::Reply { .. } => None,
     });
-    let rows = editing.map_or(1, |plan| plan.rows);
-    let mut box_placed = false;
+    let new_box_target = editing.and_then(|plan| match &plan.target {
+        BoxTarget::Comment { key, target }
+            if !pending.comments.contains_key(key) && !key.starts_with(FILE_KEY_PREFIX) =>
+        {
+            Some(target)
+        }
+        _ => None,
+    });
+    let mut items = HashSet::new();
+    collect_items(base, &mut items);
 
     // Comments that are not replacing an annotation in the file go after the
-    // block they are about.
+    // block they are about, or at the end of the list item.
     let mut after_block: BTreeMap<usize, Vec<&CommentEntry>> = BTreeMap::new();
+    let mut in_item: HashMap<Range<usize>, Vec<&CommentEntry>> = HashMap::new();
     for entry in pending.comments.values() {
         if entry.key.starts_with(FILE_KEY_PREFIX) {
             continue;
         }
-        if let Some(at) = index.block_containing(&entry.target) {
+        if items.contains(&entry.target) {
+            in_item.entry(entry.target.clone()).or_default().push(entry);
+        } else if let Some(at) = index.block_containing(&entry.target) {
             after_block.entry(at).or_default().push(entry);
         }
     }
 
-    for (at, block) in base.iter().enumerate() {
-        if let BlockKind::Annotation { kind, .. } = &block.kind {
-            match kind {
-                AnnotationKind::Reply => {
-                    let answered = index
-                        .notes
-                        .iter()
-                        .find(|note| note.src == block.src)
-                        .and_then(|note| note.field.as_deref());
-                    let hidden = answered
-                        .is_some_and(|id| pending.reply(id).is_some() || editing_reply == Some(id));
-                    if hidden {
-                        continue;
-                    }
-                }
-                AnnotationKind::Comment => {
-                    let key = file_key(&block.src);
-                    if pending.deletions.contains(&key) {
-                        continue;
-                    }
-                    if editing_comment == Some(key.as_str()) {
-                        splicer.push_box(&block.src, rows);
-                        box_placed = true;
-                        continue;
-                    }
-                    if let Some(entry) = pending.comments.get(&key) {
-                        splicer.push_comment(&block.src, entry);
-                        continue;
-                    }
-                }
-            }
-        }
-        splicer.push_real(block);
-        if let BlockKind::Field { id, .. } = &block.kind {
-            if editing_reply == Some(id.as_str()) {
-                splicer.push_box(&block.src, rows);
-                box_placed = true;
-            } else if let Some(text) = pending.reply(id).filter(|text| !text.trim().is_empty()) {
-                splicer.push_synthetic(
-                    &block.src,
-                    AnnotationKind::Reply,
-                    text.to_owned(),
-                    Synthetic::Reply(id.clone()),
-                );
-            }
-        }
-        for entry in after_block.get(&at).into_iter().flatten() {
-            if editing_comment == Some(entry.key.as_str()) {
-                splicer.push_box(&block.src, rows);
-                box_placed = true;
-                continue;
-            }
-            splicer.push_comment(&block.src, entry);
-        }
-        if !box_placed
-            && let Some(BoxTarget::Comment { key, target }) = editing.map(|plan| &plan.target)
-            && !pending.comments.contains_key(key)
-            && !key.starts_with(FILE_KEY_PREFIX)
-            && index.block_containing(target) == Some(at)
-        {
-            splicer.push_box(&block.src, rows);
-            box_placed = true;
-        }
-    }
+    let mut splicer = Splicer {
+        source,
+        index,
+        pending,
+        editing_reply,
+        editing_comment,
+        new_box_target,
+        rows: editing.map_or(1, |plan| plan.rows),
+        items,
+        after_block,
+        in_item,
+        synthetic: HashMap::new(),
+        taken: HashSet::new(),
+        box_placed: false,
+    };
+    let blocks = splicer.splice(base, true);
     Overlay {
-        blocks: splicer.out,
+        blocks,
         synthetic: splicer.synthetic,
     }
 }
@@ -983,5 +1146,144 @@ mod tests {
         pending.set_comment(entry("0-1", 0..1, "x"));
         let overlay = overlay(&doc.blocks, &index, &pending, None, &doc.source);
         assert!(overlay.blocks.is_empty());
+    }
+    fn item_blocks(block: &Block, at: usize) -> &[Block] {
+        let BlockKind::List { items, .. } = &block.kind else {
+            panic!("not a list");
+        };
+        &items[at].blocks
+    }
+
+    fn item_span(doc: &limpid_core::doc::Doc, at: usize) -> Range<usize> {
+        let BlockKind::List { items, .. } = &doc.blocks[0].kind else {
+            panic!("not a list");
+        };
+        item_source(&items[at].blocks, &doc.blocks[0].src)
+    }
+
+    #[test]
+    fn should_put_a_comment_on_a_list_item_inside_the_item_when_overlaying() {
+        let doc = doc("- one\n- two\n- three\n");
+        let index = DocIndex::from_blocks(&doc.blocks, &doc.source);
+        let target = item_span(&doc, 1);
+        let key = range_text(&target);
+        let mut pending = Pending::default();
+        pending.set_comment(entry(&key, target, "about two"));
+        let overlay = overlay(&doc.blocks, &index, &pending, None, &doc.source);
+        assert_eq!(overlay.blocks.len(), 1, "no block follows the list");
+        assert_eq!(item_blocks(&overlay.blocks[0], 0).len(), 1);
+        let second = item_blocks(&overlay.blocks[0], 1);
+        assert_eq!(second.len(), 2);
+        assert!(matches!(
+            second[1].kind,
+            BlockKind::Annotation {
+                kind: AnnotationKind::Comment,
+                ..
+            }
+        ));
+        assert_eq!(overlay.synthetic[&second[1].src], Synthetic::Comment(key));
+        assert_eq!(item_blocks(&overlay.blocks[0], 2).len(), 1);
+    }
+
+    #[test]
+    fn should_put_the_box_inside_the_item_when_starting_a_comment_on_a_list_item() {
+        let doc = doc("- one\n- two\n");
+        let index = DocIndex::from_blocks(&doc.blocks, &doc.source);
+        let target = item_span(&doc, 0);
+        let plan = BoxPlan {
+            target: BoxTarget::Comment {
+                key: range_text(&target),
+                target,
+            },
+            rows: 3,
+        };
+        let overlay = overlay(
+            &doc.blocks,
+            &index,
+            &Pending::default(),
+            Some(&plan),
+            &doc.source,
+        );
+        assert_eq!(overlay.blocks.len(), 1);
+        let first = item_blocks(&overlay.blocks[0], 0);
+        assert_eq!(overlay.synthetic[&first[1].src], Synthetic::Box);
+        assert_eq!(item_blocks(&overlay.blocks[0], 1).len(), 1);
+    }
+
+    #[test]
+    fn should_find_a_saved_comment_inside_a_list_item_when_indexing() {
+        let doc = doc("- one\n\n  <!-- limpid comment\n  note\n  -->\n- two\n");
+        let index = DocIndex::from_blocks(&doc.blocks, &doc.source);
+        assert_eq!(index.notes.len(), 1);
+        let note = &index.notes[0];
+        assert_eq!(note.kind, AnnotationKind::Comment);
+        assert!(index.saved_comment(&note.src).is_some());
+    }
+
+    #[test]
+    fn should_replace_a_saved_comment_inside_a_list_item_when_it_is_edited() {
+        let doc = doc("- one\n\n  <!-- limpid comment\n  note\n  -->\n- two\n");
+        let index = DocIndex::from_blocks(&doc.blocks, &doc.source);
+        let saved = index.notes[0].src.clone();
+        let mut pending = Pending::default();
+        pending.set_comment(entry(&file_key(&saved), saved, "changed"));
+        let overlay = overlay(&doc.blocks, &index, &pending, None, &doc.source);
+        let first = item_blocks(&overlay.blocks[0], 0);
+        let BlockKind::Annotation { text, .. } = &first[1].kind else {
+            panic!("no comment");
+        };
+        assert_eq!(text, "changed");
+    }
+
+    fn chosen(block: &Block, at: usize) -> bool {
+        let BlockKind::Field { options, .. } = &block.kind else {
+            panic!("not a field");
+        };
+        matches!(options[at].first(), Some(Inline::Html(mark)) if mark == CHOSEN_MARK)
+    }
+
+    #[test]
+    fn should_mark_the_chosen_option_when_a_pending_reply_matches_it() {
+        let doc = doc(ONE_QUESTION);
+        let index = DocIndex::from_blocks(&doc.blocks, &doc.source);
+        let mut pending = Pending::default();
+        pending.set_reply("q1", "Postgres", false);
+        let overlay = overlay(&doc.blocks, &index, &pending, None, &doc.source);
+        let field = overlay
+            .blocks
+            .iter()
+            .find(|block| matches!(block.kind, BlockKind::Field { .. }))
+            .unwrap();
+        assert!(!chosen(field, 0));
+        assert!(chosen(field, 1));
+    }
+
+    #[test]
+    fn should_mark_the_chosen_option_when_the_file_already_holds_the_reply() {
+        let source = format!("{ONE_QUESTION}\n<!-- limpid reply q1\nSQLite\n-->\n");
+        let doc = doc(&source);
+        let index = DocIndex::from_blocks(&doc.blocks, &doc.source);
+        let overlay = overlay(&doc.blocks, &index, &Pending::default(), None, &doc.source);
+        let field = overlay
+            .blocks
+            .iter()
+            .find(|block| matches!(block.kind, BlockKind::Field { .. }))
+            .unwrap();
+        assert!(chosen(field, 0));
+    }
+
+    #[test]
+    fn should_mark_nothing_when_the_reply_is_free_text() {
+        let doc = doc(ONE_QUESTION);
+        let index = DocIndex::from_blocks(&doc.blocks, &doc.source);
+        let mut pending = Pending::default();
+        pending.set_reply("q1", "neither of those", false);
+        let overlay = overlay(&doc.blocks, &index, &pending, None, &doc.source);
+        let field = overlay
+            .blocks
+            .iter()
+            .find(|block| matches!(block.kind, BlockKind::Field { .. }))
+            .unwrap();
+        assert!(!chosen(field, 0) && !chosen(field, 1));
     }
 }
