@@ -103,3 +103,34 @@ The content cost is almost entirely the code-highlighting path (tree-sitter
 query compilation plus the doubled HTML render inside `doc::parse`), and the
 startup time is the parse running before the window is created. Both are the
 first items on the fix list in MINIMAL.md.
+
+### After FX-V4 (window first, worker-thread parse)
+
+Release build of this branch, `target/release/limpid-view --separate FILE`,
+window class `limpid-test`, re-measured on 2026-10-26 with
+`bench/measure_memory.py` (private = Pss_Anon, MiB, view process only) and
+`bench/measure_startup.py` (time until Hyprland lists the window).
+
+| Page | PSS | Private | Window (s) |
+|---|---|---|---|
+| `# Empty` + one line | 37.8 | 9.1 | 0.025 0.023 0.020 0.024 0.020 0.025 |
+| `bench/small.md` | 67.0 | 25.6 | 0.029 0.044 0.021 0.023 0.026 0.023 |
+| `bench/sample.md` | 69.7 | 28.0 | 0.025 0.019 0.025 0.022 0.026 0.024 |
+
+The `small.md` and empty-page window times are from the review pass; only
+`sample.md` was re-timed here.
+
+Time to window is met: the window is listed 20-45 ms after the command starts
+(was 270-310 ms; target 60 ms warm, 100 ms cold). It is mapped with the theme
+background and the file stem as its title; the text follows when the worker
+thread has parsed it.
+
+The memory target is NOT met on this branch: `sample.md` uses 28.0 MiB private
+(target 15, was 29.1) and `small.md` 25.6. The remaining cost is in
+`limpid-core`: the first Rust block loads every grammar Rust can inject, and
+SQL alone costs about 15 MiB private to compile its highlight query. A
+scratch build whose `Highlighter` loads injected grammars lazily (a change to
+`crates/limpid-core/src/highlight.rs`, which belongs to FX-C1 and is not on
+this branch) measured 13.3 MiB for `sample.md` and 12.2 MiB for `small.md`.
+The 13 MiB figure therefore depends on that pending limpid-core change. The
+three-windows-in-one-view figure was not re-measured.
