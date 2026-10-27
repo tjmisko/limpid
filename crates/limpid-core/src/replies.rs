@@ -683,7 +683,14 @@ fn list_indent(source: &str, start: usize) -> usize {
         return 0;
     };
     let line = before.rsplit('\n').next().unwrap_or("");
-    if line.contains('>') { 0 } else { line.len() }
+    if line.contains('>') {
+        return 0;
+    }
+    let marker = ["[ ] ", "[x] ", "[X] "]
+        .iter()
+        .find(|marker| line.ends_with(*marker))
+        .map_or(0, |marker| marker.len());
+    line.len() - marker
 }
 
 /// `text` with `indent` spaces before every line that has text, the first
@@ -1312,7 +1319,8 @@ mod tests {
     fn does_not_indent_a_comment_when_the_block_starts_at_the_left_margin() {
         assert_eq!(list_indent("para\n\nnext\n", 6), 0);
         assert_eq!(list_indent("> quoted\n", 2), 0);
-        assert_eq!(list_indent("- [ ] task\n", 6), 6);
+        assert_eq!(list_indent("- [ ] task\n", 6), 2);
+        assert_eq!(list_indent("  - [x] task\n", 8), 4);
         assert_eq!(list_indent("short", 99), 0);
     }
 

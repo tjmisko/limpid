@@ -1,8 +1,8 @@
 //! Behaviour of [`Feedback`] against a scripted editor, so none of it needs
 //! nvim or a display.
 
-use super::*;
 use super::boxes::EditorPort;
+use super::*;
 use crate::editor::{Cell, EditorError, Grid};
 use limpid_core::{
     doc::{Doc, Mode, parse},
@@ -283,6 +283,19 @@ fn should_start_the_box_from_the_saved_reply_when_the_file_has_one() {
 }
 
 #[test]
+fn should_open_a_reply_box_when_a_comment_is_requested_on_a_question() {
+    let mut h = harness(QUESTIONS, false);
+    let src = h.field_src("q1");
+    h.fb.act(FeedbackAction::PickOption(1), Some(&src));
+    let result = h.fb.act(FeedbackAction::OpenComment, Some(&src));
+    assert!(matches!(result, ActionResult::Done(_)), "{result:?}");
+    assert_eq!(
+        h.script.borrow().opened,
+        [("SQLite".to_owned(), BoxKind::Reply)]
+    );
+}
+
+#[test]
 fn should_refuse_a_reply_box_when_the_stop_is_not_a_question() {
     let mut h = harness(QUESTIONS, false);
     let src = h.paragraph_src();
@@ -442,7 +455,11 @@ fn should_forward_keys_to_the_editor_when_a_box_is_open() {
     h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
     h.fb.input("<Esc>");
     h.fb.input("");
-    assert_eq!(h.script.borrow().inputs, ["<Esc>"], "empty keys are not sent");
+    assert_eq!(
+        h.script.borrow().inputs,
+        ["<Esc>"],
+        "empty keys are not sent"
+    );
 }
 
 #[test]
@@ -725,16 +742,13 @@ fn should_remove_a_comment_that_is_saved_empty() {
 }
 
 #[test]
-fn should_comment_on_a_question_as_a_block_when_c_is_pressed_on_a_field() {
+fn should_save_a_reply_not_a_comment_when_c_is_pressed_on_a_field() {
     let mut h = harness(QUESTIONS, false);
     let src = h.field_src("q1");
     h.fb.act(FeedbackAction::OpenComment, Some(&src));
     h.say(EditorEvent::Save("Neither, use files.".into()));
-    assert!(
-        h.fb.pending()
-            .comments
-            .contains_key(&Feedback::comment_key(&src))
-    );
+    assert!(h.fb.pending().comments.is_empty());
+    assert_eq!(h.fb.pending().reply("q1"), Some("Neither, use files."));
 }
 
 #[test]

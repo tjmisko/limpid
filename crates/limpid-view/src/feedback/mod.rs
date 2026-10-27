@@ -766,11 +766,8 @@ impl Feedback {
                     None => return ActionResult::Nothing("no block here".into()),
                 }
             }
-            StopRef::Reply(id) => match self.index.field(&id) {
-                Some(field) => self.comment_on(field.src.clone()),
-                None => return ActionResult::Nothing("no block here".into()),
-            },
-            StopRef::Field(_) | StopRef::Plain(_) => self.comment_on(stop.clone()),
+            StopRef::Field(_) | StopRef::Reply(_) => return self.open_reply(Some(stop)),
+            StopRef::Plain(_) => self.comment_on(stop.clone()),
         };
         self.begin_box(BoxTarget::Comment { key, target }, &text, BoxKind::Comment)
     }

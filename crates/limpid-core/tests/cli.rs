@@ -170,7 +170,11 @@ fn pi_page_path_is_stable_and_session_specific() {
             .write_all(&serde_json::to_vec(&input).unwrap())
             .unwrap();
         let output = child.wait_with_output().unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
     };
     let first = run("s1", false);
@@ -214,7 +218,11 @@ fn feedback_reads_agent_pages_and_file_annotations() {
             .unwrap()
     };
     let output = run(&[page.to_str().unwrap()]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap().trim(),
         "re: Plan (pi, turn 2)\nq1: SQLite"
@@ -230,7 +238,11 @@ fn feedback_reads_agent_pages_and_file_annotations() {
     )
     .unwrap();
     let output = run(&[markdown.to_str().unwrap()]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("q1: Postgres"));
     assert!(text.contains("This leaks."));
@@ -276,7 +288,11 @@ fn feedback_resolves_sessions_and_reports_empty_and_unknown() {
             .unwrap()
     };
     let output = run(&["--session", "s1"]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(String::from_utf8_lossy(&output.stdout).contains("No feedback"));
     let output = run(&["--session", "s1", "--spec", "0"]);
     assert!(String::from_utf8_lossy(&output.stdout).contains("pi-old"));
@@ -359,7 +375,11 @@ fn should_print_view_saved_replies_when_pulling_feedback_for_an_agent_page() {
             .output()
             .unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert!(stdout.contains("q1: SQLite"), "{target}: {stdout}");
         assert!(stdout.contains("Pick a store"), "{target}: {stdout}");
     }

@@ -306,11 +306,12 @@ pub fn paint(paint: &PaintCx, canvas: &mut Canvas, fonts: &mut Fonts, block: &La
     let Content::Table(table) = &block.content else {
         return;
     };
-    paint_square(paint, canvas, fonts, block);
     let theme = paint.theme;
     let area = paint.window_rect(&block.rect);
     let radius = RADIUS * paint.scale;
-    canvas.cut_corners(area, radius, theme.bg);
+    canvas.with_round_corners(area, radius, |canvas| {
+        paint_square(paint, canvas, fonts, block);
+    });
     canvas.stroke_round_rect(area, radius, table.border, theme.rule);
 }
 

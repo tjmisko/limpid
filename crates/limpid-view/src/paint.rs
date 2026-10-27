@@ -324,6 +324,65 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Run `draw`, then put back what was under the four corners of `rect`
+    /// that lie outside a rounding of `radius` pixels, so whatever `draw`
+    /// paints gets rounded corners over any background.
+    pub fn with_round_corners(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        draw: impl FnOnce(&mut Canvas<'a>),
+    ) {
+        let Some((snapped, radius)) = snap_round(rect, radius) else {
+            draw(self);
+            return;
+        };
+        if radius < 1.0 {
+            draw(self);
+            return;
+        }
+        let mut saved = Vec::new();
+        for (square, _) in corners(snapped, radius) {
+            for y in square.y as i32..square.bottom() as i32 {
+                for x in square.x as i32..square.right() as i32 {
+                    saved.push(self.pixel_at(x, y));
+                }
+            }
+        }
+        draw(self);
+        let mut saved = saved.into_iter();
+        for (square, centre) in corners(snapped, radius) {
+            for y in square.y as i32..square.bottom() as i32 {
+                for x in square.x as i32..square.right() as i32 {
+                    let Some(Some(under)) = saved.next() else {
+                        continue;
+                    };
+                    let d = distance(centre, x as f32 + 0.5, y as f32 + 0.5);
+                    let outside = 1.0 - coverage(radius, d);
+                    if outside <= 0.0 {
+                        continue;
+                    }
+                    let alpha = (outside * 255.0).round() as u8;
+                    self.blend_at(
+                        x,
+                        y,
+                        (under >> 16) as u8,
+                        (under >> 8) as u8,
+                        under as u8,
+                        alpha,
+                    );
+                }
+            }
+        }
+    }
+
+    fn pixel_at(&self, x: i32, y: i32) -> Option<u32> {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return None;
+        }
+        Some(self.pixels[y as usize * self.width as usize + x as usize])
+    }
+
     /// Blend what `shade` returns for the centre of each pixel in `square`.
     fn corner_pixels(&mut self, square: Rect, shade: impl Fn(f32, f32) -> Option<(Color, f32)>) {
         let (x0, y0) = (square.x as i32, square.y as i32);
@@ -649,6 +708,19 @@ mod tests {
         assert_eq!(canvas.pixel(0, 10), Some(0xff0000));
         assert_eq!(canvas.pixel(10, 10), Some(0));
         assert_ne!(canvas.pixel(2, 2), Some(0), "the arc passes near (2, 2)");
+    }
+
+    #[test]
+    fn should_restore_the_background_in_the_corners_when_drawing_with_round_corners() {
+        let mut pixels = vec![0x00ff00; 400];
+        let mut canvas = Canvas::new(&mut pixels, 20, 20);
+        canvas.with_round_corners(Rect::new(0.0, 0.0, 20.0, 20.0), 6.0, |canvas| {
+            canvas.fill_rect(Rect::new(0.0, 0.0, 20.0, 20.0), Color::rgb(255, 0, 0));
+        });
+        assert_eq!(canvas.pixel(0, 0), Some(0x00ff00));
+        assert_eq!(canvas.pixel(19, 19), Some(0x00ff00));
+        assert_eq!(canvas.pixel(10, 10), Some(0xff0000));
+        assert_eq!(canvas.pixel(10, 0), Some(0xff0000));
     }
 
     #[test]
