@@ -81,15 +81,47 @@ impl Query {
     }
 }
 
+/// Whether the math cache holds a drawable formula for `hash`: the same test
+/// the layout applies before it reserves space for typeset math.
+pub fn math_is_typeset(hash: &str) -> bool {
+    let valid = |value: f32| value.is_finite() && value > 0.0;
+    limpid_core::math::cached(hash)
+        .is_some_and(|rendered| valid(rendered.width) && valid(rendered.height))
+}
+
 /// The searchable text of the leaves of `block`, in document order. Mirrors
 /// what the layout shows: markers and callout titles are not searched.
 pub fn leaf_texts(doc: &Doc, block: &Block) -> Vec<String> {
+    visible_block_text(doc, block, &math_is_typeset)
+}
+
+/// The text the page shows, one entry per top-level block, each a list of its
+/// leaves. The one place that decides what search sees:
+///
+/// - inline HTML is never drawn, so it is skipped;
+/// - a formula shown as a typeset picture (`typeset(hash)` is true) has no
+///   text, and one shown as source contributes its LaTeX;
+/// - raw HTML blocks are drawn as source and stay searchable.
+pub fn visible_text(doc: &Doc, typeset: &dyn Fn(&str) -> bool) -> Vec<Vec<String>> {
+    doc.blocks
+        .iter()
+        .map(|block| visible_block_text(doc, block, typeset))
+        .collect()
+}
+
+/// [`visible_text`] for one top-level block.
+pub fn visible_block_text(doc: &Doc, block: &Block, typeset: &dyn Fn(&str) -> bool) -> Vec<String> {
     let mut out = Vec::new();
-    collect_leaf_texts(doc, block, &mut out);
+    collect_leaf_texts(doc, block, typeset, &mut out);
     out
 }
 
-fn collect_leaf_texts(doc: &Doc, block: &Block, out: &mut Vec<String>) {
+fn collect_leaf_texts(
+    doc: &Doc,
+    block: &Block,
+    typeset: &dyn Fn(&str) -> bool,
+    out: &mut Vec<String>,
+) {
     let slice = || {
         doc.source
             .get(block.src.clone())
@@ -99,11 +131,15 @@ fn collect_leaf_texts(doc: &Doc, block: &Block, out: &mut Vec<String>) {
     };
     match &block.kind {
         BlockKind::Heading { inlines, .. } | BlockKind::Paragraph(inlines) => {
-            out.push(plain_text(inlines));
+            out.push(plain_text_with(inlines, typeset));
         }
         BlockKind::Code { text, .. } => out.push(text.clone()),
         BlockKind::Html(html) => out.push(html.trim_end().to_owned()),
-        BlockKind::Math { latex, .. } => out.push(latex.clone()),
+        BlockKind::Math { latex, hash } => {
+            if !typeset(hash) {
+                out.push(latex.clone());
+            }
+        }
         BlockKind::Mermaid { source, .. } => out.push(source.clone()),
         BlockKind::Annotation { text, .. } => out.push(text.clone()),
         BlockKind::Table { .. } | BlockKind::Image { .. } | BlockKind::Field { .. } => {
@@ -112,13 +148,13 @@ fn collect_leaf_texts(doc: &Doc, block: &Block, out: &mut Vec<String>) {
         BlockKind::List { items, .. } => {
             for item in items {
                 for child in &item.blocks {
-                    collect_leaf_texts(doc, child, out);
+                    collect_leaf_texts(doc, child, typeset, out);
                 }
             }
         }
         BlockKind::Quote { blocks, .. } | BlockKind::FootnoteDef { blocks, .. } => {
             for child in blocks {
-                collect_leaf_texts(doc, child, out);
+                collect_leaf_texts(doc, child, typeset, out);
             }
         }
         BlockKind::Rule => {}
@@ -127,23 +163,33 @@ fn collect_leaf_texts(doc: &Doc, block: &Block, out: &mut Vec<String>) {
 
 /// The text of inline content as the layout flattens it.
 pub fn plain_text(inlines: &[Inline]) -> String {
+    plain_text_with(inlines, &math_is_typeset)
+}
+
+/// [`plain_text`] with an explicit test for which formulas are typeset.
+pub fn plain_text_with(inlines: &[Inline], typeset: &dyn Fn(&str) -> bool) -> String {
     let mut out = String::new();
-    push_plain(inlines, &mut out);
+    push_plain(inlines, typeset, &mut out);
     out
 }
 
-fn push_plain(inlines: &[Inline], out: &mut String) {
+fn push_plain(inlines: &[Inline], typeset: &dyn Fn(&str) -> bool, out: &mut String) {
     for inline in inlines {
         match inline {
-            Inline::Text(text) | Inline::Code(text) | Inline::Html(text) => out.push_str(text),
+            Inline::Text(text) | Inline::Code(text) => out.push_str(text),
+            Inline::Html(_) => {}
             Inline::SoftBreak => out.push(' '),
             Inline::HardBreak => out.push('\n'),
             Inline::Emph(inner) | Inline::Strong(inner) | Inline::Strike(inner) => {
-                push_plain(inner, out);
+                push_plain(inner, typeset, out);
             }
-            Inline::Link { inlines, .. } => push_plain(inlines, out),
+            Inline::Link { inlines, .. } => push_plain(inlines, typeset, out),
             Inline::Image { alt, .. } => out.push_str(alt),
-            Inline::Math { latex, .. } => out.push_str(latex),
+            Inline::Math { latex, hash } => {
+                if !typeset(hash) {
+                    out.push_str(latex);
+                }
+            }
             Inline::FootnoteRef(label) => out.push_str(label),
         }
     }
@@ -170,13 +216,18 @@ pub struct Search {
 impl Search {
     /// Search `doc` for `query`, forgetting the current match.
     pub fn run(&mut self, doc: &Doc, query: Option<Query>) {
+        self.run_with(doc, query, &math_is_typeset);
+    }
+
+    /// [`run`](Self::run) with an explicit test for typeset formulas.
+    pub fn run_with(&mut self, doc: &Doc, query: Option<Query>, typeset: &dyn Fn(&str) -> bool) {
         self.counts.clear();
         self.totals.clear();
         self.current = None;
         if let Some(query) = &query {
             let mut total = 0;
             for (index, block) in doc.blocks.iter().enumerate() {
-                let found: usize = leaf_texts(doc, block)
+                let found: usize = visible_block_text(doc, block, typeset)
                     .iter()
                     .map(|text| query.count_in(text))
                     .sum();
@@ -817,6 +868,53 @@ mod tests {
         assert_eq!(search.len(), 1);
         let (_, search) = searched("$$\nneedle^2\n$$\n", "needle");
         assert_eq!(search.len(), 1);
+    }
+
+    fn searched_with(markdown: &str, needle: &str, typeset: bool) -> usize {
+        let mut search = Search::default();
+        search.run_with(&doc(markdown), Some(query(needle)), &|_| typeset);
+        search.len()
+    }
+
+    #[test]
+    fn should_not_search_inline_html_when_the_layout_does_not_draw_it() {
+        assert_eq!(
+            searched_with("a <span class=\"needle\">b</span> c\n", "needle", false),
+            0
+        );
+        assert_eq!(
+            searched_with("a <span>needle</span> c\n", "needle", false),
+            1
+        );
+    }
+
+    #[test]
+    fn should_search_html_blocks_when_the_layout_draws_their_source() {
+        assert_eq!(searched_with("<div>\nneedle\n</div>\n", "needle", false), 1);
+    }
+
+    #[test]
+    fn should_search_math_source_only_when_the_formula_is_not_typeset() {
+        let inline = "text $needle_1$ more\n";
+        assert_eq!(searched_with(inline, "needle", false), 1);
+        assert_eq!(searched_with(inline, "needle", true), 0);
+        let display = "$$\nneedle^2\n$$\n";
+        assert_eq!(searched_with(display, "needle", false), 1);
+        assert_eq!(searched_with(display, "needle", true), 0);
+    }
+
+    #[test]
+    fn should_keep_surrounding_text_searchable_when_inline_math_is_typeset() {
+        assert_eq!(searched_with("needle $x$ needle\n", "needle", true), 2);
+    }
+
+    #[test]
+    fn should_list_visible_text_per_top_level_block() {
+        let doc = doc("# head\n\n$$\nx\n$$\n\npara <b>x</b>\n");
+        let shown = visible_text(&doc, &|_| false);
+        assert_eq!(shown, vec![vec!["head"], vec!["\nx\n"], vec!["para x"]]);
+        let typeset = visible_text(&doc, &|_| true);
+        assert_eq!(typeset[1], Vec::<String>::new());
     }
 
     fn laid(markdown: &str, width: f32) -> (Doc, Layout) {
