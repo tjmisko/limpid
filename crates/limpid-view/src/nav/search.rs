@@ -446,6 +446,14 @@ pub fn leaves<'a>(block: &'a LaidBlock, scale: f32, out: &mut Vec<Leaf<'a>>) {
                 y: rect.y + rule_px + pending.pad_y,
                 clip: rect,
             });
+            for part in &pending.parts {
+                out.push(Leaf {
+                    text: &part.text,
+                    x: rect.x + rule_px + pending.padding + part.dx,
+                    y: rect.y + rule_px + pending.pad_y + part.dy,
+                    clip: rect,
+                });
+            }
         }
         Content::Children(children)
         | Content::Item { children, .. }

@@ -25,6 +25,8 @@ pub struct Cx<'a> {
     pub source: &'a str,
     pub fonts: &'a mut Fonts,
     pub viewport_css_width: f32,
+    /// Width of the reading column, device pixels.
+    pub column_width: f32,
 }
 
 impl Cx<'_> {
@@ -365,6 +367,7 @@ pub fn pending_with(
             border: None,
             hash,
             fill,
+            parts: Vec::new(),
         }),
         depth: flow.depth,
     }
@@ -395,6 +398,17 @@ pub fn paint_pending(
         theme,
         paint.scale,
     );
+    for part in &pending.parts {
+        inline::paint(
+            canvas,
+            fonts,
+            &part.text,
+            area.x + border + pending.padding + part.dx,
+            area.y + border + pending.pad_y + part.dy,
+            theme,
+            paint.scale,
+        );
+    }
 }
 
 #[cfg(test)]

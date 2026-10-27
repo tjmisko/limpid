@@ -79,6 +79,16 @@ pub struct PendingBox {
     pub hash: Option<String>,
     /// Background instead of `surface` (math source uses `code_bg`).
     pub fill: Option<crate::theme::Color>,
+    /// The paragraphs and list items of a comment or reply body, which
+    /// `text` leaves empty.
+    pub parts: Vec<NotePart>,
+}
+
+/// One shaped piece of a note body, placed from the box's text origin.
+pub struct NotePart {
+    pub text: RichText,
+    pub dx: f32,
+    pub dy: f32,
 }
 
 /// How a list item is marked.
@@ -412,15 +422,29 @@ impl Layout {
             source: &doc.source,
             fonts,
             viewport_css_width: self.state.viewport_css_width,
+            column_width: self.column_width,
         };
-        let laid = block::lay_block(
-            &mut cx,
-            block,
-            self.state.next,
-            self.state.bottom + gap,
-            flow,
-        );
-        self.state.bottom = laid.rect.bottom();
+        let nested = match self.blocks.last_mut() {
+            Some(field) if field::answers(doc, self.state.next, field) => {
+                field::nest_reply(&mut cx, block, field, self.state.next)
+            }
+            _ => None,
+        };
+        // A reply sits inside its question box, which has grown to hold it.
+        let inside = nested.is_some();
+        let laid = nested.unwrap_or_else(|| {
+            block::lay_block(
+                &mut cx,
+                block,
+                self.state.next,
+                self.state.bottom + gap,
+                flow,
+            )
+        });
+        self.state.bottom = match self.blocks.last() {
+            Some(field) if inside => field.rect.bottom(),
+            _ => laid.rect.bottom(),
+        };
         self.state.prev_margin = margin_bottom;
         self.state.margins.push(margin_bottom);
         self.state.next += 1;
@@ -428,6 +452,13 @@ impl Layout {
         self.height = self.state.bottom;
         if self.state.next >= doc.blocks.len() {
             self.finish();
+            return;
+        }
+        // Lay a question's reply with it, so the box never grows later.
+        if let Some(field) = self.blocks.last()
+            && field::answers(doc, self.state.next, field)
+        {
+            self.lay_next(doc, fonts);
         }
     }
 

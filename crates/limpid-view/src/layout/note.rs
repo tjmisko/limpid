@@ -47,52 +47,60 @@ fn item_rest(rest: &str) -> Option<&str> {
     (body.len() < rest.len()).then_some(body)
 }
 
-/// `text` as inlines: paragraphs and list items on lines of their own.
-pub fn inlines(text: &str) -> Vec<Inline> {
+/// One block of a note body.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Piece {
+    /// Lines of a paragraph, joined by hard breaks.
+    Paragraph(Vec<Inline>),
+    /// A list item, its marker apart from its text.
+    Item {
+        marker: String,
+        inlines: Vec<Inline>,
+    },
+}
+
+/// `text` as paragraphs and list items.
+pub fn pieces(text: &str) -> Vec<Piece> {
     let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
-    let mut out: Vec<Inline> = Vec::new();
+    let mut out: Vec<Piece> = Vec::new();
     let mut at = 0;
     while at < lines.len() {
         if lines[at].trim().is_empty() {
             at += 1;
             continue;
         }
-        if !out.is_empty() {
-            out.push(Inline::HardBreak);
-        }
         let ordered = numbered(lines[at]).is_some();
         if ordered || bullet(lines[at]).is_some() {
             let pick = if ordered { numbered } else { bullet };
             let mut count = 0;
             while let Some(body) = lines.get(at).copied().and_then(pick) {
-                if count > 0 {
-                    out.push(Inline::HardBreak);
-                }
                 count += 1;
                 let marker = if ordered {
-                    format!("{count}. ")
+                    format!("{count}.")
                 } else {
-                    "\u{2022} ".to_owned()
+                    "\u{2022}".to_owned()
                 };
-                out.push(Inline::Text(marker));
-                out.extend(parse(body, 0));
+                out.push(Piece::Item {
+                    marker,
+                    inlines: parse(body, 0),
+                });
                 at += 1;
             }
             continue;
         }
-        let mut first = true;
+        let mut paragraph: Vec<Inline> = Vec::new();
         while at < lines.len()
             && !lines[at].trim().is_empty()
             && numbered(lines[at]).is_none()
             && bullet(lines[at]).is_none()
         {
-            if !first {
-                out.push(Inline::HardBreak);
+            if !paragraph.is_empty() {
+                paragraph.push(Inline::HardBreak);
             }
-            first = false;
-            out.extend(parse(lines[at], 0));
+            paragraph.extend(parse(lines[at], 0));
             at += 1;
         }
+        out.push(Piece::Paragraph(paragraph));
     }
     out
 }
@@ -287,51 +295,65 @@ mod tests {
         assert_eq!(inlines("a ** b"), vec![text("a ** b")]);
     }
 
+    /// The inlines of the first paragraph of `text`.
+    fn inlines(text: &str) -> Vec<Inline> {
+        match pieces(text).into_iter().next() {
+            Some(Piece::Paragraph(inlines)) => inlines,
+            _ => Vec::new(),
+        }
+    }
+
+    fn item(marker: &str, body: &str) -> Piece {
+        Piece::Item {
+            marker: marker.into(),
+            inlines: vec![text(body)],
+        }
+    }
+
     #[test]
     fn should_number_items_from_one_when_lines_are_a_numbered_list() {
-        let list = inlines("3) first\n7. second");
         assert_eq!(
-            list,
-            vec![
-                text("1. "),
-                text("first"),
-                Inline::HardBreak,
-                text("2. "),
-                text("second"),
-            ]
+            pieces("3) first\n7. second"),
+            vec![item("1.", "first"), item("2.", "second")]
         );
     }
 
     #[test]
     fn should_bullet_items_when_lines_start_with_a_dash_star_or_plus() {
-        let list = inlines("- a\n* b\n+ c");
-        assert_eq!(list.iter().filter(|i| **i == text("\u{2022} ")).count(), 3);
+        let list = pieces("- a\n* b\n+ c");
+        assert_eq!(
+            list,
+            vec![
+                item("\u{2022}", "a"),
+                item("\u{2022}", "b"),
+                item("\u{2022}", "c")
+            ]
+        );
     }
 
     #[test]
     fn should_not_treat_emphasis_as_a_bullet_when_no_space_follows_the_star() {
-        assert_eq!(inlines("*word*"), vec![Inline::Emph(vec![text("word")])]);
+        assert_eq!(
+            pieces("*word*"),
+            vec![Piece::Paragraph(vec![Inline::Emph(vec![text("word")])])]
+        );
     }
 
     #[test]
-    fn should_break_lines_and_separate_blocks_when_text_has_paragraphs() {
+    fn should_split_pieces_and_break_lines_when_text_has_paragraphs() {
         assert_eq!(
-            inlines("one\ntwo\n\n- x"),
+            pieces("one\ntwo\n\n- x"),
             vec![
-                text("one"),
-                Inline::HardBreak,
-                text("two"),
-                Inline::HardBreak,
-                text("\u{2022} "),
-                text("x"),
+                Piece::Paragraph(vec![text("one"), Inline::HardBreak, text("two")]),
+                item("\u{2022}", "x"),
             ]
         );
     }
 
     #[test]
     fn should_return_nothing_when_the_text_is_blank() {
-        assert!(inlines("").is_empty());
-        assert!(inlines("\n \n").is_empty());
+        assert!(pieces("").is_empty());
+        assert!(pieces("\n \n").is_empty());
     }
 
     #[test]
