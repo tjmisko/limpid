@@ -723,8 +723,8 @@ impl Feedback {
         };
         if matches!(result, ActionResult::Done(_)) {
             match at {
-                EditAt::Keep => {}
-                EditAt::Start => self.input("<C-\\><C-n>ggI"),
+                EditAt::Keep if on_question => {}
+                EditAt::Keep | EditAt::Start => self.input("<C-\\><C-n>ggI"),
                 EditAt::End => self.input("<C-\\><C-n>GA"),
             }
         }

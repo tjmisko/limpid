@@ -10,7 +10,11 @@ use super::{
     block::{Cx, Flow},
     inline::{self, RichText},
 };
-use crate::{editor::paint::{EDITOR_FONT_SIZE, GRID_LINE_HEIGHT}, paint::Rect, text::TextStyle};
+use crate::{
+    editor::paint::{EDITOR_FONT_SIZE, GRID_LINE_HEIGHT},
+    paint::Rect,
+    text::TextStyle,
+};
 use limpid_core::doc::{AnnotationKind, Block, Inline};
 
 /// Marks an annotation block as the editor box. The text after the prefix is

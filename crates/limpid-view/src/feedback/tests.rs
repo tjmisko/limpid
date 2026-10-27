@@ -1251,12 +1251,28 @@ fn should_send_append_at_end_keys_when_capital_a_opens_a_reply() {
 }
 
 #[test]
-fn should_send_no_keys_when_plain_i_opens_a_box() {
+fn should_send_no_keys_when_plain_i_opens_a_reply() {
     let mut h = harness(QUESTIONS, false);
-    let src = h.paragraph_src();
+    let src = h.field_src("q2");
     h.fb.act(FeedbackAction::Edit(EditAt::Keep), Some(&src));
     assert!(h.fb.box_open());
     assert!(h.script.borrow().inputs.is_empty());
+}
+
+#[test]
+fn should_insert_at_start_when_plain_i_opens_a_saved_comment() {
+    let mut h = harness(QUESTIONS, false);
+    let src = h.paragraph_src();
+    h.fb.act(FeedbackAction::OpenComment, Some(&src));
+    h.say(EditorEvent::Save("Vague.".into()));
+    h.say(EditorEvent::Quit { discard: false });
+    h.rebuild();
+    let key = Feedback::comment_key(&src);
+    let shown = h.fb.resolve_focus(&Focus::Comment(key)).unwrap();
+    h.script.borrow_mut().inputs.clear();
+    h.fb.act(FeedbackAction::Edit(EditAt::Keep), Some(&shown));
+    assert!(h.fb.box_open());
+    assert_eq!(h.script.borrow().inputs, ["<C-\\><C-n>ggI"]);
 }
 
 #[test]

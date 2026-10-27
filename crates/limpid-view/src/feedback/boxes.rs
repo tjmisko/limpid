@@ -195,10 +195,16 @@ fn rounded_path(rect: Rect, radius: f32) -> Option<tiny_skia::Path> {
     path.finish()
 }
 
-/// The surface fill with rounded corners, a teal border and a teal ring.
+const SHADOW_REACH: f32 = 10.0;
+const SHADOW_DROP: f32 = 6.0;
+const SHADOW_LAYERS: u32 = 10;
+const SHADOW_LAYER_ALPHA: u8 = 6;
+
+/// The surface fill with rounded corners, a teal border, a teal ring and
+/// the soft drop shadow.
 fn paint_frame(canvas: &mut Canvas, theme: &Theme, scale: f32, outer: Rect) {
     let border = scale.round().max(1.0);
-    let room = border.ceil() + 1.0;
+    let room = border.ceil() + 1.0 + SHADOW_REACH * scale;
     let width = (outer.w + 2.0 * room).ceil();
     let height = (outer.h + 2.0 * room).ceil();
     if width < 1.0 || height < 1.0 {
@@ -215,6 +221,25 @@ fn paint_frame(canvas: &mut Canvas, theme: &Theme, scale: f32, outer: Rect) {
         anti_alias: true,
         ..tiny_skia::Paint::default()
     };
+    for layer in 0..SHADOW_LAYERS {
+        let grow = SHADOW_REACH * scale * (1.0 - layer as f32 / SHADOW_LAYERS as f32);
+        let rect = Rect::new(
+            inset.x - grow,
+            inset.y + SHADOW_DROP * scale - grow,
+            inset.w + 2.0 * grow,
+            inset.h + 2.0 * grow,
+        );
+        if let Some(shadow) = rounded_path(rect, BOX_RADIUS * scale + grow) {
+            paint.set_color_rgba8(0, 0, 0, SHADOW_LAYER_ALPHA);
+            pixmap.fill_path(
+                &shadow,
+                &paint,
+                tiny_skia::FillRule::Winding,
+                tiny_skia::Transform::identity(),
+                None,
+            );
+        }
+    }
     let fill = theme.surface;
     paint.set_color_rgba8(fill.r, fill.g, fill.b, 255);
     pixmap.fill_path(
@@ -230,7 +255,13 @@ fn paint_frame(canvas: &mut Canvas, theme: &Theme, scale: f32, outer: Rect) {
         width: border * 2.0,
         ..tiny_skia::Stroke::default()
     };
-    pixmap.stroke_path(&path, &paint, &stroke, tiny_skia::Transform::identity(), None);
+    pixmap.stroke_path(
+        &path,
+        &paint,
+        &stroke,
+        tiny_skia::Transform::identity(),
+        None,
+    );
     canvas.draw_pixmap(&pixmap, outer.x - room, outer.y - room);
 }
 
@@ -461,8 +492,22 @@ mod tests {
         paint_frame(&mut canvas, &theme, 1.0, outer);
         assert_eq!(canvas.pixel(100, 60), Some(theme.surface.to_pixel()));
         assert_eq!(canvas.pixel(100, 20), Some(theme.teal.to_pixel()));
-        // The very corner lies outside a radius of 10 and keeps what was there.
-        assert_eq!(canvas.pixel(20, 20), Some(theme.rule.to_pixel()));
+        // The very corner lies outside a radius of 10, so only the shadow touches it.
+        assert_ne!(canvas.pixel(20, 20), Some(theme.surface.to_pixel()));
+        assert_ne!(canvas.pixel(20, 20), Some(theme.teal.to_pixel()));
+    }
+
+    #[test]
+    fn should_darken_the_page_below_the_box_when_painting_the_frame_shadow() {
+        let theme = Theme::dark();
+        let mut pixels = scene(200, 160);
+        let mut canvas = Canvas::new(&mut pixels, 200, 160);
+        let outer = Rect::new(20.0, 20.0, 160.0, 80.0);
+        canvas.fill_rect(Rect::new(0.0, 0.0, 200.0, 160.0), theme.bg);
+        paint_frame(&mut canvas, &theme, 1.0, outer);
+        let below = canvas.pixel(100, 105).unwrap();
+        assert_ne!(below, theme.bg.to_pixel());
+        assert_eq!(canvas.pixel(100, 150), Some(theme.bg.to_pixel()));
     }
 
     #[test]
@@ -477,7 +522,15 @@ mod tests {
             rows: 3,
         });
         open.cmdline = Some(":wq".into());
-        paint(&mut canvas, &mut fonts, &theme, 1.0, outer, &Grid::new(10, 3), &open);
+        paint(
+            &mut canvas,
+            &mut fonts,
+            &theme,
+            1.0,
+            outer,
+            &Grid::new(10, 3),
+            &open,
+        );
         assert_eq!(canvas.pixel(30, 140), Some(theme.code_bg.to_pixel()));
     }
 
