@@ -235,6 +235,17 @@ impl Feedback {
         std::mem::take(&mut self.reload)
     }
 
+    /// The title replies are subjected with.
+    #[cfg(test)]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// The document's title changed; replies name it in their subject.
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+    }
+
     /// The file was read again; keep the revision check in step with it.
     pub fn source_reloaded(&mut self, bytes: &[u8]) {
         if self.file_backed {
