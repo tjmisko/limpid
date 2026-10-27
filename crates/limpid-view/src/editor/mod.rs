@@ -687,6 +687,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn should_still_save_the_box_when_focus_tries_to_leave_with_control_w() {
+        let Some(mut editor) = started() else { return };
+        editor.open("box", BoxKind::Reply).unwrap();
+        editor.input("<C-w>w");
+        editor.input("A!<Esc>:w<CR>");
+        collect_until(&mut editor, |_, seen| {
+            seen.contains(&EditorEvent::Save("box!".into()))
+        });
+    }
+
+    #[test]
+    fn should_still_save_the_box_when_enew_replaces_its_buffer() {
+        let Some(mut editor) = started() else { return };
+        editor.open("box", BoxKind::Reply).unwrap();
+        editor.input(":enew<CR>");
+        editor.input("A?<Esc>:w<CR>");
+        let events = collect_until(&mut editor, |_, seen| {
+            seen.iter().any(|e| matches!(e, EditorEvent::Save(_)))
+        });
+        assert!(
+            events.contains(&EditorEvent::Save("box?".into())),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn should_keep_the_box_buffer_when_enew_and_edit_are_refused() {
+        let Some(mut editor) = started() else { return };
+        editor.open("box", BoxKind::Reply).unwrap();
+        editor.input(":enew<CR>");
+        editor.input(":edit /nonexistent/limpid-other<CR>");
+        editor.input("A?<Esc>:w<CR>");
+        let events = collect_until(&mut editor, |_, seen| {
+            seen.iter().any(|e| matches!(e, EditorEvent::Save(_)))
+        });
+        assert!(
+            events.contains(&EditorEvent::Save("box?".into())),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn should_never_write_a_file_when_w_names_a_path() {
+        let Some(mut editor) = started() else { return };
+        editor.open("box", BoxKind::Reply).unwrap();
+        let target = std::env::temp_dir().join(format!("limpid-lock-{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&target);
+        editor.input(&format!(":w {}<CR>", target.display()));
+        collect_until(&mut editor, |_, seen| {
+            seen.contains(&EditorEvent::Save("box".into()))
+        });
+        assert!(!target.exists(), "a file was written outside the box");
+    }
+
     fn user_mode_with_border(name: &str) -> Option<Editor> {
         if !nvim_available() {
             eprintln!("skipping: nvim is not installed");

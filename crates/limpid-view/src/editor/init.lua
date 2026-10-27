@@ -77,17 +77,14 @@ function limpid.open(text, kind)
   local win = vim.api.nvim_open_win(buf, true, float_config())
   limpid.win = win
   style_window(win)
+  -- Absent before nvim 0.10; the box is then only protected from focus loss.
+  pcall(function()
+    vim.wo[win].winfixbuf = true
+  end)
   if previous and previous ~= buf and vim.api.nvim_buf_is_valid(previous) then
     pcall(vim.api.nvim_buf_delete, previous, { force = true })
   end
 
-  vim.api.nvim_create_autocmd("BufWriteCmd", {
-    buffer = buf,
-    callback = function()
-      vim.rpcnotify(chan, "limpid", "save", buffer_text(buf))
-      vim.bo[buf].modified = false
-    end,
-  })
   -- The box ends when its window closes. A buffer still modified at this
   -- point was abandoned (:q!); one that was saved was not.
   vim.api.nvim_create_autocmd("WinClosed", {
@@ -112,6 +109,36 @@ function limpid.open(text, kind)
   end
   return true
 end
+
+-- Writes are intercepted for every buffer, so no :w ever reaches a file. Only
+-- the box buffer reports a save; any other buffer is refused.
+vim.api.nvim_create_autocmd("BufWriteCmd", {
+  callback = function(args)
+    if args.buf ~= limpid.buf then
+      vim.notify("limpid: only the box can be written", vim.log.levels.ERROR)
+      return
+    end
+    vim.rpcnotify(chan, "limpid", "save", buffer_text(args.buf))
+    vim.bo[args.buf].modified = false
+  end,
+})
+
+-- Lock the box: while it is open, focus cannot leave it (<C-w>w) and its
+-- window cannot show another buffer (:enew, :e; 'winfixbuf' on the window,
+-- set in limpid.open), or the user would be stranded somewhere that cannot
+-- save.
+local function box_is_open()
+  return limpid.win ~= nil and vim.api.nvim_win_is_valid(limpid.win)
+end
+
+vim.api.nvim_create_autocmd("WinEnter", {
+  callback = function()
+    if not box_is_open() or vim.api.nvim_get_current_win() == limpid.win then
+      return
+    end
+    pcall(vim.api.nvim_set_current_win, limpid.win)
+  end,
+})
 
 -- :qa, :wqa, :xa and friends end nvim without closing the float first, so
 -- report the quit from VimLeavePre too (once; the WinClosed path clears
