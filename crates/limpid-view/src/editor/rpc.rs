@@ -58,7 +58,10 @@ pub enum Incoming {
 type Waiter = Sender<Response>;
 type Response = Result<Value, Value>;
 type Sent = (u64, Option<Receiver<Response>>);
-type Pending = Arc<Mutex<HashMap<u64, Waiter>>>;
+/// The waiting callers by request id; `None` once the reader has ended, so a
+/// request issued after the hang-up fails at once instead of waiting for a
+/// response nobody can send.
+type Pending = Arc<Mutex<Option<HashMap<u64, Waiter>>>>;
 
 pub struct Rpc {
     writer: Box<dyn Write + Send>,
@@ -69,7 +72,7 @@ pub struct Rpc {
 
 impl Rpc {
     pub fn new(reader: impl Read + Send + 'static, writer: impl Write + Send + 'static) -> Rpc {
-        let pending: Pending = Arc::default();
+        let pending: Pending = Arc::new(Mutex::new(Some(HashMap::new())));
         let (sender, incoming) = mpsc::channel();
         let reader_pending = Arc::clone(&pending);
         thread::spawn(move || read_loop(reader, reader_pending, sender));
@@ -101,7 +104,7 @@ impl Rpc {
             Ok(Err(error)) => Err(RpcError::Remote(describe_error(&error))),
             Err(RecvTimeoutError::Disconnected) => Err(RpcError::Closed),
             Err(RecvTimeoutError::Timeout) => {
-                self.pending.lock().unwrap().remove(&id);
+                self.forget(id);
                 Err(RpcError::Timeout)
             }
         }
@@ -120,11 +123,17 @@ impl Rpc {
     ) -> Result<Sent, RpcError> {
         let id = self.next_id;
         self.next_id += 1;
-        let receiver = wait.then(|| {
+        let receiver = if wait {
             let (sender, receiver) = mpsc::channel();
-            self.pending.lock().unwrap().insert(id, sender);
-            receiver
-        });
+            let mut pending = self.pending.lock().unwrap();
+            let Some(waiters) = pending.as_mut() else {
+                return Err(RpcError::Closed);
+            };
+            waiters.insert(id, sender);
+            Some(receiver)
+        } else {
+            None
+        };
         let message = Value::Array(vec![
             Value::from(0),
             Value::from(id),
@@ -135,10 +144,16 @@ impl Rpc {
             .map_err(|error| RpcError::Io(std::io::Error::other(error.to_string())))
             .and_then(|()| self.writer.flush().map_err(RpcError::Io));
         if let Err(error) = written {
-            self.pending.lock().unwrap().remove(&id);
+            self.forget(id);
             return Err(error);
         }
         Ok((id, receiver))
+    }
+
+    fn forget(&self, id: u64) {
+        if let Some(waiters) = self.pending.lock().unwrap().as_mut() {
+            waiters.remove(&id);
+        }
     }
 
     /// Everything the reader thread has delivered, without blocking.
@@ -171,7 +186,7 @@ fn read_loop(mut reader: impl Read, pending: Pending, sender: Sender<Incoming>) 
         dispatch(parts, &pending, &sender);
     }
     // Dropping the waiters disconnects every blocked caller.
-    pending.lock().unwrap().clear();
+    *pending.lock().unwrap() = None;
     let _ = sender.send(Incoming::Closed);
 }
 
@@ -182,7 +197,12 @@ fn dispatch(parts: Vec<Value>, pending: &Pending, sender: &Sender<Incoming>) {
             let Some(id) = parts[1].as_u64() else {
                 return;
             };
-            let Some(waiter) = pending.lock().unwrap().remove(&id) else {
+            let waiter = pending
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(|waiters| waiters.remove(&id));
+            let Some(waiter) = waiter else {
                 return;
             };
             let outcome = if parts[2].is_nil() {
@@ -322,7 +342,26 @@ mod tests {
     #[test]
     fn should_fail_with_closed_when_the_peer_hangs_up_before_answering() {
         let mut rpc = Rpc::new(Cursor::new(Vec::new()), Sink::default());
+        // Wait for the reader to see the hang-up, so the request is certainly
+        // issued after it; the other order is covered by the gated test below.
+        assert!(matches!(
+            rpc.next_incoming(Duration::from_secs(5)),
+            Some(Incoming::Closed)
+        ));
         let outcome = rpc.request("nvim_eval", vec![]);
+        assert!(matches!(outcome, Err(RpcError::Closed)), "{outcome:?}");
+    }
+
+    #[test]
+    fn should_fail_with_closed_when_the_peer_hangs_up_while_a_request_waits() {
+        let (reader, hang_up) = gated(Vec::new());
+        let mut rpc = Rpc::new(reader, Sink::default());
+        let releaser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            drop(hang_up);
+        });
+        let outcome = rpc.request("nvim_eval", vec![]);
+        releaser.join().unwrap();
         assert!(matches!(outcome, Err(RpcError::Closed)), "{outcome:?}");
     }
 
