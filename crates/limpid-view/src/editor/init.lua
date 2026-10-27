@@ -110,7 +110,8 @@ function limpid.open(text, kind)
   return true
 end
 
--- Writes are intercepted for every buffer, so no :w ever reaches a file. Only
+-- Writes are intercepted for every buffer, so no :w ever reaches a file. Range
+-- writes (:1w path) and appends go through other events, refused below. Only
 -- the box buffer reports a save; any other buffer is refused.
 vim.api.nvim_create_autocmd("BufWriteCmd", {
   callback = function(args)
@@ -120,6 +121,12 @@ vim.api.nvim_create_autocmd("BufWriteCmd", {
     end
     vim.rpcnotify(chan, "limpid", "save", buffer_text(args.buf))
     vim.bo[args.buf].modified = false
+  end,
+})
+
+vim.api.nvim_create_autocmd({ "FileWriteCmd", "FileAppendCmd" }, {
+  callback = function()
+    vim.notify("limpid: partial writes are not allowed", vim.log.levels.ERROR)
   end,
 })
 

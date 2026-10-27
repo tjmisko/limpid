@@ -743,6 +743,25 @@ mod tests {
     }
 
     #[test]
+    fn should_never_write_a_file_when_a_range_write_or_append_names_a_path() {
+        let Some(mut editor) = started() else { return };
+        editor.open("box", BoxKind::Reply).unwrap();
+        let id = std::process::id();
+        let part = std::env::temp_dir().join(format!("limpid-range-{id}.txt"));
+        let appended = std::env::temp_dir().join(format!("limpid-append-{id}.txt"));
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(&appended);
+        editor.input(&format!(":1w {}<CR>", part.display()));
+        editor.input(&format!(":1w >> {}<CR>", appended.display()));
+        editor.input(":w<CR>");
+        collect_until(&mut editor, |_, seen| {
+            seen.contains(&EditorEvent::Save("box".into()))
+        });
+        assert!(!part.exists(), "a range write created a file");
+        assert!(!appended.exists(), "a range append created a file");
+    }
+
+    #[test]
     fn should_type_committed_ime_text_literally_when_sent_through_nvim_input() {
         let Some(mut editor) = started() else { return };
         editor.open("", BoxKind::Comment).unwrap();
