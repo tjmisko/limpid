@@ -333,3 +333,35 @@ fn render_command_writes_cached_page_with_shared_assets() {
     assert!(temp.join("limpid/assets").is_dir());
     fs::remove_dir_all(temp).unwrap();
 }
+
+#[test]
+fn should_print_view_saved_replies_when_pulling_feedback_for_an_agent_page() {
+    let temp = std::env::temp_dir().join(format!("limpid-feedback-view-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&temp);
+    fs::create_dir_all(&temp).unwrap();
+    let page = temp.join("claude-abc.html");
+    fs::write(&page, "<html><body></body></html>").unwrap();
+    fs::write(temp.join("claude-abc.md"), "# Q\n").unwrap();
+    fs::write(
+        temp.join("claude-abc.meta.json"),
+        r#"{"agent":"claude","turn_spec":"2","title":"Pick a store"}"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.join("claude-abc.replies.json"),
+        r#"{"replies":{"q1":"SQLite"}}"#,
+    )
+    .unwrap();
+    for target in ["claude-abc.html", "claude-abc.md"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_limpid-core"))
+            .arg("feedback")
+            .arg(temp.join(target))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(stdout.contains("q1: SQLite"), "{target}: {stdout}");
+        assert!(stdout.contains("Pick a store"), "{target}: {stdout}");
+    }
+    fs::remove_dir_all(temp).unwrap();
+}

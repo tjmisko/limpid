@@ -316,7 +316,7 @@ fn prune_agent_pages(cache: &Path, preserve: &Path) -> Result<(), Box<dyn Error>
             continue;
         }
         std::fs::remove_file(&page)?;
-        for extension in ["meta.json", "md"] {
+        for extension in ["meta.json", "md", "replies.json"] {
             let mut associated = page.clone();
             associated.set_extension(extension);
             if associated.exists() {
@@ -327,8 +327,23 @@ fn prune_agent_pages(cache: &Path, preserve: &Path) -> Result<(), Box<dyn Error>
     Ok(())
 }
 
+/// Annotations of an agent page: those embedded in the HTML plus those the
+/// native viewer saved to the `<page>.replies.json` sidecar. The sidecar is
+/// newer, so its entries win.
+fn agent_page_annotations(
+    page: &Path,
+) -> Result<limpid_core::replies::AgentReplies, Box<dyn Error>> {
+    let mut merged = limpid_core::replies::read_annotations_file(page)?;
+    let sidecar = limpid_core::replies::AgentReplies::load(
+        &limpid_core::replies::sidecar_path(page),
+    )?;
+    merged.replies.extend(sidecar.replies);
+    merged.comments.extend(sidecar.comments);
+    Ok(merged)
+}
+
 fn page_has_feedback(page: &Path) -> bool {
-    match limpid_core::replies::read_annotations_file(page) {
+    match agent_page_annotations(page) {
         Ok(replies) => !replies.replies.is_empty() || !replies.comments.is_empty(),
         Err(_) => false,
     }
@@ -417,6 +432,14 @@ fn feedback(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
     } else {
         parsed.page.ok_or("feedback requires a page or --session")?
     };
+    let is_agent_markdown = page.extension().and_then(|extension| extension.to_str())
+        == Some("md")
+        && page.with_extension("meta.json").exists();
+    let page = if is_agent_markdown {
+        page.with_extension("html")
+    } else {
+        page
+    };
     let (title, agent, context, replies) =
         if page.extension().and_then(|extension| extension.to_str()) == Some("md") {
             let source = std::fs::read_to_string(&page)?;
@@ -455,7 +478,7 @@ fn feedback(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
                 title,
                 meta.agent.clone(),
                 context,
-                limpid_core::replies::read_annotations_file(&page)?,
+                agent_page_annotations(&page)?,
             )
         };
     if parsed.json {
@@ -616,6 +639,98 @@ mod tests {
         assert!(!cache.join("pi-01.html").exists());
         assert!(!cache.join("pi-02.html").exists());
         assert!(cache.join("pi-06.html").exists());
+        std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    fn write_agent_page_set(cache: &Path, name: &str, sidecar: Option<&str>) -> PathBuf {
+        let page = cache.join(format!("{name}.html"));
+        std::fs::write(&page, "<html><body></body></html>").unwrap();
+        std::fs::write(page.with_extension("md"), "# Q\n").unwrap();
+        std::fs::write(
+            page.with_extension("meta.json"),
+            r#"{"agent":"claude","turn_spec":"2","title":"Pick a store"}"#,
+        )
+        .unwrap();
+        if let Some(sidecar) = sidecar {
+            std::fs::write(page.with_extension("replies.json"), sidecar).unwrap();
+        }
+        page
+    }
+
+    #[test]
+    fn should_read_view_saved_replies_when_the_page_has_a_sidecar() {
+        let cache = std::env::temp_dir().join(format!("limpid-side-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        std::fs::create_dir_all(&cache).unwrap();
+        let page = write_agent_page_set(
+            &cache,
+            "claude-abc",
+            Some(r#"{"replies":{"q1":"SQLite"}}"#),
+        );
+        let from_html = agent_page_annotations(&page).unwrap();
+        assert_eq!(from_html.replies.get("q1").map(String::as_str), Some("SQLite"));
+        assert!(page_has_feedback(&page));
+        let args = vec![page.with_extension("md").into_os_string(), "--json".into()];
+        feedback(&args).unwrap();
+        let args = vec![page.clone().into_os_string(), "--json".into()];
+        feedback(&args).unwrap();
+        std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    #[test]
+    fn should_prefer_the_sidecar_when_html_and_sidecar_answer_the_same_question() {
+        let cache = std::env::temp_dir().join(format!("limpid-side2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        std::fs::create_dir_all(&cache).unwrap();
+        let page = write_agent_page_set(&cache, "claude-def", Some(r#"{"replies":{"q1":"new"}}"#));
+        std::fs::write(
+            &page,
+            r#"<html><body><script type="application/json" id="limpid-annotations">{"replies":{"q1":"old","q2":"kept"},"comments":{}}</script></body></html>"#,
+        )
+        .unwrap();
+        let merged = agent_page_annotations(&page).unwrap();
+        assert_eq!(merged.replies["q1"], "new");
+        assert_eq!(merged.replies["q2"], "kept");
+        std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    #[test]
+    fn should_keep_and_clean_sidecars_when_pruning_agent_pages() {
+        use std::fs::{File, FileTimes};
+        let cache = std::env::temp_dir().join(format!("limpid-side3-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        std::fs::create_dir_all(&cache).unwrap();
+        let base = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let answered = write_agent_page_set(
+            &cache,
+            "claude-000",
+            Some(r#"{"replies":{"q1":"keep"}}"#),
+        );
+        let blank = write_agent_page_set(&cache, "claude-001", Some(r#"{}"#));
+        File::open(&answered)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(base))
+            .unwrap();
+        File::open(&blank)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(base + std::time::Duration::from_secs(1)))
+            .unwrap();
+        let mut newest = blank.clone();
+        for index in 0..KEEP_AGENT_PAGES {
+            newest = write_agent_page_set(&cache, &format!("claude-1{index:02}"), None);
+            File::open(&newest)
+                .unwrap()
+                .set_times(
+                    FileTimes::new()
+                        .set_modified(base + std::time::Duration::from_secs(10 + index as u64)),
+                )
+                .unwrap();
+        }
+        prune_agent_pages(&cache, &newest).unwrap();
+        assert!(answered.exists());
+        assert!(answered.with_extension("replies.json").exists());
+        assert!(!blank.exists());
+        assert!(!blank.with_extension("replies.json").exists(), "no orphan sidecar");
         std::fs::remove_dir_all(&cache).unwrap();
     }
 
