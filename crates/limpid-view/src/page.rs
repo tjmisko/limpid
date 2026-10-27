@@ -1073,7 +1073,13 @@ impl Page for DocPage {
         }
         if let Some((rows, scroll)) = self.nav.help_view() {
             let mut fonts = self.fonts.borrow_mut();
-            help::paint(canvas, &mut fonts, &self.theme, scale, bar, &rows, scroll);
+            let hint = self.nav.help_hint();
+            let view = help::View {
+                rows: &rows,
+                scroll,
+                hint: &hint,
+            };
+            help::paint(canvas, &mut fonts, &self.theme, scale, bar, &view);
         }
         status::paint(
             canvas,

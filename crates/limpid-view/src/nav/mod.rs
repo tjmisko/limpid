@@ -316,6 +316,11 @@ impl Nav {
         (self.mode == Mode::Help).then(|| (help::rows(&self.keymap), self.help_scroll))
     }
 
+    /// The footer of the key reference, naming the keys that close it.
+    pub fn help_hint(&self) -> String {
+        help::hint(&self.keymap.bindings_of(Action::Help))
+    }
+
     fn search_summary(&self) -> String {
         let (true, Some(query)) = (self.show_search, &self.search.query) else {
             return String::new();
@@ -1405,6 +1410,7 @@ mod tests {
             .find(|row| row.what == "Toggle this keymap")
             .unwrap();
         assert_eq!(row.keys, "F2");
+        assert_eq!(world.nav.help_hint(), "F2 or Esc to close");
         world.press("f2");
         assert_eq!(world.nav.state(), StateName::Page);
     }

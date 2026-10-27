@@ -8,6 +8,13 @@ use crate::{
     theme::{Color, Theme},
 };
 
+/// What the reference shows: the rows from `scroll` on, and the footer line.
+pub struct View<'a> {
+    pub rows: &'a [Row],
+    pub scroll: usize,
+    pub hint: &'a str,
+}
+
 /// One line of the reference: the keys and what they do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -19,7 +26,18 @@ pub struct Row {
 const PAGE_ROWS: usize = 8;
 
 const HEADING: &str = "KEYS";
-const HINT: &str = "? or Esc to close";
+
+/// The footer line, naming whatever keys currently toggle the reference.
+pub fn hint(close: &[String]) -> String {
+    if close.is_empty() {
+        return "Esc to close".to_owned();
+    }
+    let keys: Vec<String> = close
+        .iter()
+        .map(|binding| pretty_binding(binding))
+        .collect();
+    format!("{} or Esc to close", keys.join(" or "))
+}
 
 fn describe(action: Action) -> &'static str {
     match action {
@@ -202,8 +220,7 @@ pub fn paint(
     theme: &Theme,
     scale: f32,
     reserved: f32,
-    rows: &[Row],
-    scroll: usize,
+    view: &View,
 ) {
     let (width, total) = (canvas.width() as f32, canvas.height() as f32 - reserved);
     if width < 80.0 || total < 80.0 {
@@ -223,6 +240,7 @@ pub fn paint(
     let foot_height = small * 1.4 + 16.0 * scale;
     let room = 0.8 * total - 2.0 * pad_y - head_height - foot_height;
     let capacity = ((room / row_height).floor() as usize).max(1);
+    let View { rows, scroll, hint } = *view;
     let shown: Vec<&Row> = rows.iter().skip(scroll).take(capacity).collect();
     let panel_height = 2.0 * pad_y + head_height + foot_height + shown.len() as f32 * row_height;
     let panel = Rect::new(
@@ -280,7 +298,7 @@ pub fn paint(
         canvas.draw_text(fonts, &what, what_x, y, theme.ink);
         y += row_height;
     }
-    let hint = shape(fonts, theme, small, HINT, TextStyle::sans(theme.faint));
+    let hint = shape(fonts, theme, small, hint, TextStyle::sans(theme.faint));
     canvas.draw_text(fonts, &hint, panel.x + pad_x, y + 16.0 * scale, theme.faint);
 }
 
@@ -294,6 +312,13 @@ mod tests {
             .find(|row| row.what == what)
             .map(|row| row.keys.clone())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn should_name_the_remapped_key_when_building_the_hint() {
+        assert_eq!(hint(&["?".to_owned()]), "? or Esc to close");
+        assert_eq!(hint(&["F2".to_owned()]), "F2 or Esc to close");
+        assert_eq!(hint(&[]), "Esc to close");
     }
 
     #[test]
@@ -347,12 +372,34 @@ mod tests {
         for (w, h) in [(1u32, 1u32), (50, 50), (300, 200), (900, 700)] {
             let mut pixels = vec![0u32; (w * h) as usize];
             let mut canvas = Canvas::new(&mut pixels, w, h);
-            paint(&mut canvas, &mut fonts, &theme, 1.0, 20.0, &rows, 0);
+            paint(
+                &mut canvas,
+                &mut fonts,
+                &theme,
+                1.0,
+                20.0,
+                &View {
+                    rows: &rows,
+                    scroll: 0,
+                    hint: "? or Esc to close",
+                },
+            );
         }
         let mut pixels = vec![0u32; 900 * 700];
         let mut canvas = Canvas::new(&mut pixels, 900, 700);
         canvas.clear(theme.bg);
-        paint(&mut canvas, &mut fonts, &theme, 1.0, 20.0, &rows, 0);
+        paint(
+            &mut canvas,
+            &mut fonts,
+            &theme,
+            1.0,
+            20.0,
+            &View {
+                rows: &rows,
+                scroll: 0,
+                hint: "? or Esc to close",
+            },
+        );
         assert_ne!(canvas.pixel(450, 350), Some(theme.bg.to_pixel()));
         assert_ne!(
             canvas.pixel(5, 5),
