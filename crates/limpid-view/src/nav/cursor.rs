@@ -13,6 +13,7 @@ use std::ops::Range;
 
 /// Distance kept between a revealed stop and the window edge, CSS px.
 pub const REVEAL_MARGIN: f32 = 12.0;
+pub const ALIGN_MARGIN: f32 = 8.0;
 /// How far the focus band reaches past the text column, CSS px.
 pub const BLEED_INSET: f32 = 10.0;
 /// Space kept above a heading when a section jump puts it at the top, CSS px.
@@ -38,6 +39,10 @@ impl Env<'_> {
 
     pub fn margin(&self) -> f32 {
         REVEAL_MARGIN * self.scale()
+    }
+
+    pub fn align_margin(&self) -> f32 {
+        ALIGN_MARGIN * self.scale()
     }
 
     /// Lay out one more top-level block. False once the document is done.
@@ -274,7 +279,7 @@ impl Cursor {
         let Some(stop) = self.stop(env.layout) else {
             return false;
         };
-        let margin = env.margin();
+        let margin = env.align_margin();
         let target = match align {
             Align::Top => stop.rect.y - margin,
             Align::Center => stop.rect.y - (env.viewport - stop.rect.h) / 2.0,
@@ -716,13 +721,13 @@ mod tests {
         let stop = cursor.stop(&fixture.layout).unwrap();
 
         assert!(cursor.align(&mut fixture.env(), Align::Top));
-        assert!((fixture.scroll - (stop.rect.y - REVEAL_MARGIN)).abs() < 1.0);
+        assert!((fixture.scroll - (stop.rect.y - ALIGN_MARGIN)).abs() < 1.0);
         assert!(cursor.align(&mut fixture.env(), Align::Center));
         let middle = stop.rect.y + stop.rect.h / 2.0 - fixture.scroll;
         assert!((middle - 150.0).abs() < 1.0, "{middle}");
         assert!(cursor.align(&mut fixture.env(), Align::Bottom));
         let gap = fixture.scroll + 300.0 - stop.rect.bottom();
-        assert!((gap - REVEAL_MARGIN).abs() < 1.0, "{gap}");
+        assert!((gap - ALIGN_MARGIN).abs() < 1.0, "{gap}");
     }
 
     #[test]
@@ -735,7 +740,7 @@ mod tests {
         cursor.to_bottom(&mut fixture.env(), None);
         cursor.align(&mut fixture.env(), Align::Top);
         let stop = cursor.stop(&fixture.layout).unwrap();
-        assert!((fixture.scroll - (stop.rect.y - REVEAL_MARGIN)).abs() < 1.0);
+        assert!((fixture.scroll - (stop.rect.y - ALIGN_MARGIN)).abs() < 1.0);
     }
 
     #[test]
@@ -747,14 +752,14 @@ mod tests {
         let stop = cursor.stop(&fixture.layout).unwrap();
         let resting = fixture.scroll;
         assert!(cursor.align(&mut fixture.env(), Align::Top));
-        assert!((fixture.scroll - (stop.rect.y - REVEAL_MARGIN)).abs() < 1.0);
+        assert!((fixture.scroll - (stop.rect.y - ALIGN_MARGIN)).abs() < 1.0);
         assert!(fixture.scroll > resting, "the last line rises to the top");
         assert!(cursor.align(&mut fixture.env(), Align::Center));
         let middle = stop.rect.y + stop.rect.h / 2.0 - fixture.scroll;
         assert!((middle - 150.0).abs() < 1.0, "{middle}");
         assert!(cursor.align(&mut fixture.env(), Align::Bottom));
         let gap = fixture.scroll + 300.0 - stop.rect.bottom();
-        assert!((gap - REVEAL_MARGIN).abs() < 1.0, "{gap}");
+        assert!((gap - ALIGN_MARGIN).abs() < 1.0, "{gap}");
     }
 
     #[test]
