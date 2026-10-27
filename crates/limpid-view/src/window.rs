@@ -24,6 +24,10 @@ pub trait Page {
     /// repaint.
     fn key(&mut self, event: &KeyEvent) -> bool;
     fn modifiers_changed(&mut self, _modifiers: ModifiersState) {}
+    /// The mouse moved, clicked or scrolled. Returns whether the page changed.
+    fn pointer(&mut self) -> bool {
+        false
+    }
     /// An input-method event (committed text, uncommitted preedit text, or
     /// the method turning on or off). Returns whether the page changed.
     fn ime(&mut self, _event: &Ime) -> bool {
@@ -283,6 +287,13 @@ impl ApplicationHandler<UserEvent> for App {
                     open.request_redraw();
                 }
                 self.reap_closing(event_loop);
+            }
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. } => {
+                if open.page.pointer() {
+                    open.request_redraw();
+                }
             }
             WindowEvent::Ime(ime) if open.page.ime(&ime) => open.request_redraw(),
             _ => {}
