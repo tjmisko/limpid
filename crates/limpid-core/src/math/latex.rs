@@ -126,27 +126,38 @@ impl Backend for LatexBackend {
         })?;
         let work = out.join("latex");
         std::fs::create_dir_all(&work)?;
-        std::fs::write(work.join(format!("{JOB}.tex")), build_document(batch))?;
-
-        let mut compile = Command::new(&tools.engine_path);
-        compile.args([
-            "-interaction=nonstopmode",
-            "-halt-on-error",
-            "-no-shell-escape",
-            &format!("{JOB}.tex"),
-        ]);
-        let compiled = self.run(compile, &work)?;
-        if !compiled.success {
-            let log = std::fs::read_to_string(work.join(format!("{JOB}.log"))).unwrap_or_default();
-            let detail = error_lines(&log).unwrap_or_else(|| tail(&compiled.stdout, 6));
-            return Err(BackendError(format!(
-                "{} failed: {detail}",
-                tools.engine_path.display()
-            )));
+        // A display formula wider than the line is cut off at the page edge
+        // (the snippet width is capped by \hsize), so a display whose snippet
+        // is exactly as wide as its \hsize is set again with a wider line.
+        let mut line_widths = vec![DEFAULT_LINE_WIDTH_PT; batch.len()];
+        let mut log;
+        loop {
+            std::fs::write(
+                work.join(format!("{JOB}.tex")),
+                build_document_with_widths(batch, &line_widths),
+            )?;
+            let mut compile = Command::new(&tools.engine_path);
+            compile.args([
+                "-interaction=nonstopmode",
+                "-halt-on-error",
+                "-no-shell-escape",
+                &format!("{JOB}.tex"),
+            ]);
+            let compiled = self.run(compile, &work)?;
+            log = std::fs::read_to_string(work.join(format!("{JOB}.log"))).unwrap_or_default();
+            if !compiled.success {
+                let detail = error_lines(&log).unwrap_or_else(|| tail(&compiled.stdout, 6));
+                return Err(BackendError(format!(
+                    "{} failed: {detail}",
+                    tools.engine_path.display()
+                )));
+            }
+            if !widen_clipped_displays(batch, &mut line_widths, &parse_snippet_log(&log)) {
+                break;
+            }
         }
 
         let pages = self.split_pages(&tools, &work, batch.len())?;
-        let log = std::fs::read_to_string(work.join(format!("{JOB}.log"))).unwrap_or_default();
         let boxes = parse_box_log(&log);
         let snippets = parse_snippet_log(&log);
         let mut results = Vec::with_capacity(batch.len());
@@ -259,8 +270,50 @@ impl LatexBackend {
     }
 }
 
+/// The article class text width in TeX points, the first line width tried for
+/// a display formula.
+const DEFAULT_LINE_WIDTH_PT: f32 = 345.0;
+
+/// The widest line a display may be given, just under TeX's `\maxdimen`.
+const MAX_LINE_WIDTH_PT: f32 = 16000.0;
+
+/// Double the line width of every display whose snippet fills it entirely,
+/// which is how a clipped formula shows in the log. Returns whether any width
+/// changed, i.e. whether the batch must be compiled again.
+fn widen_clipped_displays(
+    batch: &[&Formula],
+    line_widths: &mut [f32],
+    snippets: &HashMap<usize, BoxMetrics>,
+) -> bool {
+    let mut widened = false;
+    for (index, formula) in batch.iter().enumerate() {
+        if !formula.display || line_widths[index] >= MAX_LINE_WIDTH_PT {
+            continue;
+        }
+        let Some(snippet) = snippets.get(&index) else {
+            continue;
+        };
+        let line_px = svgmeta::tex_dimension_to_px(&format!("{}pt", line_widths[index]));
+        let Some(line_px) = line_px else {
+            continue;
+        };
+        if snippet.width < line_px - 0.05 {
+            continue;
+        }
+        line_widths[index] = (line_widths[index] * 2.0).min(MAX_LINE_WIDTH_PT);
+        widened = true;
+    }
+    widened
+}
+
 /// The `.tex` source for one batch. Page `i` (from 0) holds `batch[i]`.
 pub fn build_document(batch: &[&Formula]) -> String {
+    build_document_with_widths(batch, &vec![DEFAULT_LINE_WIDTH_PT; batch.len()])
+}
+
+/// Like [`build_document`], with the line width in TeX points for each
+/// formula's display (ignored for inline formulas).
+pub fn build_document_with_widths(batch: &[&Formula], line_widths: &[f32]) -> String {
     let mut document = String::from(
         "\\documentclass{article}\n\
          \\usepackage[active,tightpage,lyx]{preview}\n\
@@ -278,7 +331,13 @@ pub fn build_document(batch: &[&Formula]) -> String {
         // the baseline.
         let latex = formula.latex.trim_end();
         let layout = if formula.display {
-            Layout::Bare(display_body(latex))
+            Layout::Bare {
+                body: display_body(latex),
+                line_width_pt: line_widths
+                    .get(index)
+                    .copied()
+                    .unwrap_or(DEFAULT_LINE_WIDTH_PT),
+            }
         } else {
             Layout::Boxed {
                 open: "\\(",
@@ -292,9 +351,17 @@ pub fn build_document(batch: &[&Formula]) -> String {
                  \\typeout{{limpid-box {index} \\the\\ht\\limpidbox\\space\\the\\dp\\limpidbox\\space\\the\\wd\\limpidbox}}\
                  \\unhbox\\limpidbox\\end{{preview}}\n"
             )),
-            Layout::Bare(body) => {
-                document.push_str(&format!("\\begin{{preview}}\n{body}\n\\end{{preview}}\n"))
-            }
+            // The counter is reset so a formula's number depends on the formula
+            // alone, not on the formulas before it in the batch. `\noindent`
+            // starts the paragraph without the empty indent line, which TeX
+            // would otherwise set above the display with its skips.
+            Layout::Bare {
+                body,
+                line_width_pt,
+            } => document.push_str(&format!(
+                "\\begin{{preview}}\\setcounter{{equation}}{{0}}\\hsize={line_width_pt:.3}pt\\noindent%\n\
+                 {body}\n\\end{{preview}}\n"
+            )),
         }
     }
     document.push_str("\\end{document}\n");
@@ -302,7 +369,7 @@ pub fn build_document(batch: &[&Formula]) -> String {
 }
 
 /// How one formula is placed on its page.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Layout {
     /// Inline math, set in an `\hbox` (so its metrics are logged) between the
     /// delimiters.
@@ -313,7 +380,7 @@ enum Layout {
     },
     /// Display math, emitted as is inside the `preview` environment, in
     /// paragraph mode.
-    Bare(String),
+    Bare { body: String, line_width_pt: f32 },
 }
 
 /// Environments that are display math by themselves and must stay top-level.
@@ -507,6 +574,10 @@ mod tests {
     use super::*;
     use crate::math::{Backend, Formula, MathSettings};
 
+    /// What opens a display formula's preview at the default line width.
+    const DISPLAY_OPEN: &str =
+        "\\begin{preview}\\setcounter{equation}{0}\\hsize=345.000pt\\noindent%\n";
+
     #[test]
     fn should_build_one_preview_per_formula_when_batching() {
         let inline = Formula::new("x^2", false);
@@ -518,7 +589,9 @@ mod tests {
         assert!(document.contains("\\PreviewBorder=0pt"));
         assert!(document.contains("\\hbox{\\(x^2\n\\)}"));
         assert!(document.contains("limpid-box 0 "));
-        assert!(document.contains("\\begin{preview}\n\\[\\int_0^1 f\n\\]\n\\end{preview}"));
+        assert!(document.contains(&format!(
+            "{DISPLAY_OPEN}\\[\\int_0^1 f\n\\]\n\\end{{preview}}"
+        )));
         assert!(!document.contains("limpid-box 1 "));
         assert!(!document.contains("displaystyle"));
         assert!(document.ends_with("\\end{document}\n"));
@@ -600,7 +673,7 @@ mod tests {
     fn should_keep_split_inside_its_equation_when_formula_is_equation_with_split() {
         let latex = "\\begin{equation}\\begin{split}a&=b\\\\&=c\\end{split}\\end{equation}";
         let document = build_document(&[&Formula::new(latex, true)]);
-        assert!(document.contains(&format!("\\begin{{preview}}\n{latex}\n\\end{{preview}}")));
+        assert!(document.contains(&format!("{DISPLAY_OPEN}{latex}\n\\end{{preview}}")));
         assert!(!document.contains("aligned") && !document.contains("\\["));
     }
 
@@ -615,7 +688,7 @@ mod tests {
     fn should_keep_starred_gather_bare_when_formula_is_gather_star() {
         let latex = "\\begin{gather*}a\\\\b\\end{gather*}";
         let document = build_document(&[&Formula::new(latex, true)]);
-        assert!(document.contains(&format!("\\begin{{preview}}\n{latex}\n\\end{{preview}}")));
+        assert!(document.contains(&format!("{DISPLAY_OPEN}{latex}\n\\end{{preview}}")));
         assert!(!document.contains("gathered"));
     }
 
@@ -623,7 +696,7 @@ mod tests {
     fn should_not_box_display_formula_when_it_is_an_environment() {
         let document =
             build_document(&[&Formula::new("\\begin{alignat}{2}a&=b\\end{alignat}", true)]);
-        assert!(document.contains("\\begin{preview}\n\\begin{alignat}"));
+        assert!(document.contains(&format!("{DISPLAY_OPEN}\\begin{{alignat}}")));
         assert!(!document.contains("\\hbox"));
         assert!(!document.contains("limpid-box 0"));
     }
@@ -764,7 +837,7 @@ mod tests {
             .unwrap();
         assert_eq!(rendered.len(), 3);
         assert!(
-            rendered[2].width > 343.7 * 96.0 / 72.27,
+            rendered[2].width > 343.7 * 96.0 / 72.27 * 1.2,
             "a wide display formula must keep its natural width: {:?}",
             rendered[2]
         );
@@ -873,5 +946,144 @@ mod tests {
             return;
         };
         assert!(rendered.height > 15.0, "{rendered:?}");
+    }
+
+    fn snippet(width_pt: f32) -> BoxMetrics {
+        BoxMetrics {
+            height: 10.0,
+            depth: 0.0,
+            width: svgmeta::tex_dimension_to_px(&format!("{width_pt}pt")).unwrap(),
+        }
+    }
+
+    #[test]
+    fn should_widen_line_when_display_snippet_fills_its_line() {
+        let wide = Formula::new("a+b", true);
+        let narrow = Formula::new("c", true);
+        let inline = Formula::new("d", false);
+        let batch = [&wide, &narrow, &inline];
+        let mut widths = vec![345.0, 345.0, 345.0];
+        let snippets = HashMap::from([
+            (0, snippet(345.0)),
+            (1, snippet(100.0)),
+            (2, snippet(345.0)),
+        ]);
+        assert!(widen_clipped_displays(&batch, &mut widths, &snippets));
+        assert_eq!(widths, vec![690.0, 345.0, 345.0]);
+        assert!(!widen_clipped_displays(
+            &batch,
+            &mut widths,
+            &HashMap::from([(0, snippet(500.0))])
+        ));
+    }
+
+    #[test]
+    fn should_stop_widening_when_line_is_at_the_limit() {
+        let formula = Formula::new("a", true);
+        let mut widths = vec![MAX_LINE_WIDTH_PT];
+        let snippets = HashMap::from([(0, snippet(MAX_LINE_WIDTH_PT))]);
+        assert!(!widen_clipped_displays(&[&formula], &mut widths, &snippets));
+        let mut widths = vec![9000.0];
+        assert!(widen_clipped_displays(
+            &[&formula],
+            &mut widths,
+            &HashMap::from([(0, snippet(9000.0))])
+        ));
+        assert_eq!(widths, vec![MAX_LINE_WIDTH_PT]);
+    }
+
+    #[test]
+    fn should_set_given_line_width_when_building_with_widths() {
+        let display = Formula::new("a", true);
+        let document = build_document_with_widths(&[&display], &[690.0]);
+        assert!(document.contains("\\hsize=690.000pt\\noindent%"));
+        let missing = build_document_with_widths(&[&display], &[]);
+        assert!(missing.contains("\\hsize=345.000pt"));
+    }
+
+    #[test]
+    fn should_reset_equation_counter_when_building_each_display() {
+        let first = Formula::new("\\begin{equation}a\\end{equation}", true);
+        let second = Formula::new("\\begin{align}b\\end{align}", true);
+        let document = build_document(&[&first, &second]);
+        assert_eq!(document.matches("\\setcounter{equation}{0}").count(), 2);
+    }
+
+    /// Render one batch of display formulas with real pdflatex; `None` when
+    /// the tools are missing.
+    fn typeset_batch(latex: &[&str], label: &str) -> Option<Vec<Rendered>> {
+        if !real_tools_present() {
+            eprintln!("skipped: pdflatex or pdftocairo missing");
+            return None;
+        }
+        let settings = MathSettings {
+            svg: "pdftocairo".into(),
+            ..MathSettings::default()
+        };
+        let backend = LatexBackend::new(settings, None);
+        let formulas: Vec<Formula> = latex.iter().map(|text| Formula::new(text, true)).collect();
+        let refs: Vec<&Formula> = formulas.iter().collect();
+        let out =
+            std::env::temp_dir().join(format!("limpid-latex-batch-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(&out).unwrap();
+        let rendered = backend.render(&refs, &out).unwrap();
+        std::fs::remove_dir_all(&out).unwrap();
+        Some(rendered)
+    }
+
+    #[test]
+    fn should_not_cut_off_formula_when_display_is_wider_than_the_line() {
+        let terms: Vec<String> = (1..=78).map(|n| format!("a_{{{n}}}")).collect();
+        let sum = terms.join("+");
+        let numbered = format!("\\begin{{align}}{sum}\\end{{align}}");
+        let Some(rendered) = typeset_batch(&[&sum, &numbered], "wide") else {
+            return;
+        };
+        // 78 terms are about 1500px wide; the line is 458px.
+        assert!(rendered[0].width > 1200.0, "{:?}", rendered[0]);
+        assert!(rendered[1].width > 1200.0, "{:?}", rendered[1]);
+    }
+
+    #[test]
+    fn should_set_display_tight_vertically_when_environment_is_top_level() {
+        let cases = [
+            "\\begin{align*}p&=q\\end{align*}",
+            "\\begin{alignat*}{2}p&=q\\end{alignat*}",
+            "\\begin{eqnarray*}p&=&q\\end{eqnarray*}",
+            "\\begin{multline*}p=q\\end{multline*}",
+            "\\begin{equation}p=q\\end{equation}",
+            "p=q",
+        ];
+        let Some(rendered) = typeset_batch(&cases, "tight") else {
+            return;
+        };
+        // One line of text is about 16px; the old blank band added 14px.
+        for (latex, one) in cases.iter().zip(&rendered) {
+            assert!(one.height < 19.0, "{latex}: {one:?}");
+        }
+        let Some(two) = typeset_batch(&["\\begin{gather*}p=q\\\\r=s\\end{gather*}"], "tight2")
+        else {
+            return;
+        };
+        assert!(two[0].height < 40.0, "{:?}", two[0]);
+    }
+
+    #[test]
+    fn should_draw_equation_number_when_environment_is_numbered() {
+        let Some(rendered) = typeset_batch(
+            &[
+                "\\begin{equation*}p=q\\end{equation*}",
+                "\\begin{equation}p=q\\end{equation}",
+                "\\begin{equation}p=q\\end{equation}",
+            ],
+            "number",
+        ) else {
+            return;
+        };
+        // The number sits at the right edge of the line, so the numbered page
+        // is wider, and the counter restarts so equal formulas match.
+        assert!(rendered[1].width > rendered[0].width + 20.0, "{rendered:?}");
+        assert_eq!(rendered[1].width, rendered[2].width);
     }
 }
