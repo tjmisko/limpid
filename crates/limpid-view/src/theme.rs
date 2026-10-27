@@ -113,6 +113,12 @@ pub struct Theme {
     pub focus: Color,
     /// Tint of the visual-mode selection band.
     pub selection: Color,
+    /// The focus band in keyboard mode, and in mouse mode (`faint`).
+    pub focus_soft: Color,
+    pub focus_faint: Color,
+    /// The focus outline in keyboard mode, and in mouse mode (`faint`).
+    pub focus_edge: Color,
+    pub focus_edge_faint: Color,
     pub hl: HighlightPalette,
     /// CSS px at scale 1.
     pub font_size: f32,
@@ -155,7 +161,11 @@ impl Theme {
             code_bg: rgb(0x0e1419),
             rule: rgb(0x27313d),
             focus: Color::rgba(124, 222, 199, 31),
-            selection: Color::rgba(124, 222, 199, 62),
+            selection: Color::rgba(124, 222, 199, 31),
+            focus_soft: Color::rgba(124, 222, 199, 15),
+            focus_faint: Color::rgba(124, 222, 199, 5),
+            focus_edge: Color::rgba(124, 222, 199, 128),
+            focus_edge_faint: Color::rgba(124, 222, 199, 38),
             hl: HighlightPalette {
                 keyword: rgb(0xcba6f7),
                 operator: rgb(0x89dceb),
@@ -194,7 +204,11 @@ impl Theme {
             code_bg: rgb(0xf3f2ee),
             rule: rgb(0xd4d1c8),
             focus: Color::rgba(18, 109, 93, 26),
-            selection: Color::rgba(18, 109, 93, 52),
+            selection: Color::rgba(18, 109, 93, 26),
+            focus_soft: Color::rgba(18, 109, 93, 13),
+            focus_faint: Color::rgba(18, 109, 93, 5),
+            focus_edge: Color::rgba(18, 109, 93, 128),
+            focus_edge_faint: Color::rgba(18, 109, 93, 38),
             hl: HighlightPalette {
                 keyword: rgb(0x6955a5),
                 operator: rgb(0x6955a5),
@@ -258,9 +272,14 @@ impl Theme {
         // The bands are the teal token at a low alpha.
         let teal = theme.teal;
         let alpha = |fraction: f32| (fraction * 255.0).round() as u8;
-        let focus_alpha = style.focus_alpha.map_or(theme.focus.a, alpha);
+        let tinted = |base: Color| Color::rgba(teal.r, teal.g, teal.b, base.a);
+        theme.focus = tinted(theme.focus);
+        theme.focus_faint = tinted(theme.focus_faint);
+        theme.focus_edge = tinted(theme.focus_edge);
+        theme.focus_edge_faint = tinted(theme.focus_edge_faint);
+        let focus_alpha = style.focus_alpha.map_or(theme.focus_soft.a, alpha);
         let selection_alpha = style.selection_alpha.map_or(theme.selection.a, alpha);
-        theme.focus = Color::rgba(teal.r, teal.g, teal.b, focus_alpha);
+        theme.focus_soft = Color::rgba(teal.r, teal.g, teal.b, focus_alpha);
         theme.selection = Color::rgba(teal.r, teal.g, teal.b, selection_alpha);
         theme
     }
@@ -318,7 +337,8 @@ mod tests {
         assert_eq!(theme.content_width, 700.0);
         assert_eq!(theme.bg, Color::rgb(1, 2, 3));
         assert_eq!(theme.raised, Color::rgb(4, 5, 6));
-        assert_eq!(theme.focus, Color::rgba(10, 11, 12, 128));
+        assert_eq!(theme.focus_soft, Color::rgba(10, 11, 12, 128));
+        assert_eq!(theme.focus_edge, Color::rgba(10, 11, 12, 128));
         assert_eq!(theme.selection, Color::rgba(10, 11, 12, 255));
         assert_eq!(theme.surface, Theme::dark().surface);
     }
@@ -326,7 +346,7 @@ mod tests {
     #[test]
     fn should_keep_the_default_bands_when_no_alpha_is_set() {
         let theme = Theme::from_settings(&Settings::default(), Scheme::Dark);
-        assert_eq!(theme.focus, Theme::dark().focus);
+        assert_eq!(theme.focus_soft, Theme::dark().focus_soft);
         assert_eq!(theme.selection, Theme::dark().selection);
     }
 
@@ -380,5 +400,16 @@ mod tests {
         let palette = Theme::dark().hl;
         assert_eq!(palette.for_class("hl-nonsense"), None);
         assert_eq!(palette.for_class(""), None);
+    }
+
+    #[test]
+    fn should_use_the_page_css_focus_alphas_when_built_with_defaults() {
+        let dark = Theme::dark();
+        assert_eq!(dark.focus_soft, Color::rgba(124, 222, 199, 15));
+        assert_eq!(dark.focus_faint.a, 5);
+        assert_eq!(dark.focus_edge.a, 128);
+        assert_eq!(dark.focus_edge_faint.a, 38);
+        let light = Theme::light();
+        assert_eq!(light.focus_soft, Color::rgba(18, 109, 93, 13));
     }
 }

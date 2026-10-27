@@ -26,13 +26,13 @@ use fields::{
     BoxPlan, BoxTarget, CommentEntry, DocIndex, FILE_KEY_PREFIX, Pending, QUOTE_CHARS, Synthetic,
     file_key, line_of, quote_of, range_text,
 };
+use host::{BeginError, EditorHost, OwnerId, SharedEditor};
 use limpid_core::{
     doc::Block,
     replies::{self, AgentReplies},
     settings::Settings,
     transport::Handoff,
 };
-use host::{BeginError, EditorHost, OwnerId, SharedEditor};
 use review::Review;
 use std::{
     cell::RefCell,
@@ -574,9 +574,7 @@ impl Feedback {
     pub fn tick(&mut self, now: Instant) -> bool {
         let handled = self.drain_editor();
         if self.open.is_none() {
-            self.host
-                .borrow_mut()
-                .stop_if_idle(now, self.options.idle);
+            self.host.borrow_mut().stop_if_idle(now, self.options.idle);
         }
         handled || self.stale
     }
@@ -617,9 +615,7 @@ impl Feedback {
         let scale = layout.scale();
         let size = boxes::grid_size(outer, theme, scale, fonts);
         self.grid_size = size;
-        self.host
-            .borrow_mut()
-            .resize(self.owner, size.0, size.1);
+        self.host.borrow_mut().resize(self.owner, size.0, size.1);
         let host = self.host.borrow();
         let Some(grid) = host.grid() else {
             return;

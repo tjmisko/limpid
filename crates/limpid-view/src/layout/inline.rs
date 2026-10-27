@@ -461,6 +461,23 @@ pub fn paint(
     theme: &Theme,
     scale: f32,
 ) {
+    paint_ink(canvas, fonts, text, x, y, theme, scale, theme.ink, false);
+}
+
+/// [`paint`] with `ink` for text that has no colour of its own, or for all
+/// of it when `force` is set.
+#[allow(clippy::too_many_arguments)]
+pub fn paint_ink(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    text: &RichText,
+    x: f32,
+    y: f32,
+    theme: &Theme,
+    scale: f32,
+    ink: Color,
+    force: bool,
+) {
     let size = text.font_size;
     let line = scale.max(1.0).round();
     // Typeset formulas replace the box drawn for their reserved space.
@@ -482,8 +499,8 @@ pub fn paint(
         canvas.fill_rect(rect, raised(theme));
         canvas.stroke_rect(rect, line, theme.rule);
     }
-    canvas.draw_text(fonts, &text.block, x, y, theme.ink);
-    crate::layout::boxes::paint_typeset_math(canvas, text, x, y, &typeset, theme.ink);
+    canvas.draw_text_with(fonts, &text.block, x, y, ink, force);
+    crate::layout::boxes::paint_typeset_math(canvas, text, x, y, &typeset, ink);
     for deco in &text.decorations {
         if deco.kind != DecorationKind::Strike {
             continue;

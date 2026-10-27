@@ -21,7 +21,7 @@ use crate::{
     theme::{Color, Theme},
 };
 use command::{COMMAND_PLACEHOLDER, Command, LineEditor};
-use cursor::{Align, Cursor, Env, collect_stops};
+use cursor::{Align, Cursor, Env, StopKind, collect_stops};
 use keymap::{Action, KeyInput, Keymap, Resolved};
 use limpid_core::doc::Doc;
 use search::{Hit, Query, Search};
@@ -163,10 +163,18 @@ enum Mode {
 }
 
 /// Rectangles to paint behind the text, in document coordinates.
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Bands {
     pub focus: Option<Rect>,
+    pub focus_kind: StopKind,
+    /// The one rectangle behind a visual selection. Empty for a lone
+    /// heading, which shows only as text colour.
     pub selection: Option<Rect>,
+    /// Code, diagrams, tables and questions inside the selection, which are
+    /// outlined above it.
+    pub outlined: Vec<(StopKind, Rect)>,
+    /// The focused heading, whose text turns teal.
+    pub heading: Option<Range<usize>>,
 }
 
 pub struct Nav {
@@ -350,22 +358,37 @@ impl Nav {
             return Bands::default();
         };
         let focus = stops[at].rect;
-        let selection = self.visual_anchor.as_ref().and_then(|anchor| {
-            let from = stops.iter().position(|stop| &stop.src == anchor)?;
+        let focus_kind = stops[at].kind;
+        let mut selection = None;
+        let mut outlined = Vec::new();
+        let anchor = self
+            .visual_anchor
+            .as_ref()
+            .and_then(|anchor| stops.iter().position(|stop| &stop.src == anchor));
+        if let Some(from) = anchor {
             let (low, high) = (from.min(at), from.max(at));
-            let top = stops[low..=high]
-                .iter()
-                .map(|s| s.rect.y)
-                .fold(f32::MAX, f32::min);
-            let bottom = stops[low..=high]
+            let covered = &stops[low..=high];
+            let lone_heading = covered.len() == 1 && focus_kind == StopKind::Heading;
+            let top = covered.iter().map(|s| s.rect.y).fold(f32::MAX, f32::min);
+            let bottom = covered
                 .iter()
                 .map(|s| s.rect.bottom())
                 .fold(f32::MIN, f32::max);
-            Some(Rect::new(focus.x, top, focus.w, bottom - top))
-        });
+            if !lone_heading {
+                selection = Some(Rect::new(focus.x, top, focus.w, bottom - top));
+            }
+            outlined = covered
+                .iter()
+                .filter(|s| matches!(s.kind, StopKind::Special | StopKind::Question))
+                .map(|s| (s.kind, s.rect))
+                .collect();
+        }
         Bands {
             focus: Some(focus),
+            focus_kind,
             selection,
+            outlined,
+            heading: (focus_kind == StopKind::Heading).then(|| stops[at].src.clone()),
         }
     }
 
@@ -861,7 +884,7 @@ impl Nav {
     }
 }
 
-/// The tint of the visual selection: the focus colour, stronger.
+/// The tint of the visual selection.
 pub fn selection_tint(theme: &Theme) -> Color {
     theme.selection
 }

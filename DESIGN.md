@@ -150,8 +150,8 @@ watch_interval_ms = 300        # 0 turns watching off
 # line_height = 1.65           # 1 to 3
 # content_width = 860          # px
 # bg surface raised rule ink muted faint teal blue amber = "#rrggbb"
-# focus_alpha = 0.12           # 0 to 1, the focus band (teal)
-# selection_alpha = 0.24       # 0 to 1, the visual-mode band
+# focus_alpha = 0.06           # 0 to 1, the focus band (teal)
+# selection_alpha = 0.12       # 0 to 1, the visual-mode band
 # css is read by the WebKit host only; the native viewer ignores it.
 
 [view.keys]                    # remaps by action name: next_block = "n"

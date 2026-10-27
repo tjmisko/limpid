@@ -12,8 +12,8 @@ use crate::{
     },
     layout::{Layout, LayoutOptions, lay_out_with, rail::RailFollow},
     nav::{
-        CloseKind, Io, Nav, NavOptions, NoActions, PageActions, Request, ZoomStep,
-        cursor::{self, Env},
+        Bands, CloseKind, Io, Nav, NavOptions, NoActions, PageActions, Request, ZoomStep,
+        cursor::{self, Env, StopKind},
         help,
         keymap::{KeyInput, Keymap},
         search, selection_tint, status,
@@ -176,7 +176,7 @@ fn find_block_like(doc: &Doc, text: &str, near: usize) -> Option<usize> {
 
 /// Which kind of input moved last: a key press or the pointer. The rail
 /// follows the focused block after a key and the scroll position after the
-/// pointer.
+/// pointer, and the focus look quiets down while the pointer leads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InputMode {
     #[default]
@@ -226,6 +226,43 @@ pub struct DocPage {
     loading: bool,
     /// Parses made on the calling thread (the loader counts the others).
     sync_parses: usize,
+}
+
+/// The outlines of focus: code, diagrams and tables in `edge`, a question
+/// in teal, and everything special inside a visual selection in teal.
+fn paint_outlines(
+    canvas: &mut Canvas,
+    layout: &Layout,
+    theme: &Theme,
+    bands: &Bands,
+    visual: bool,
+    mouse: bool,
+    scroll: f32,
+) {
+    let teal = theme.teal;
+    if visual {
+        for (kind, rect) in &bands.outlined {
+            cursor::paint_outline(canvas, layout, *kind, *rect, scroll, teal);
+        }
+        return;
+    }
+    let Some(focus) = bands.focus else {
+        return;
+    };
+    let edge = if mouse {
+        theme.focus_edge_faint
+    } else {
+        theme.focus_edge
+    };
+    match bands.focus_kind {
+        StopKind::Special => {
+            cursor::paint_outline(canvas, layout, bands.focus_kind, focus, scroll, edge)
+        }
+        StopKind::Question => {
+            cursor::paint_outline(canvas, layout, bands.focus_kind, focus, scroll, teal)
+        }
+        StopKind::Text | StopKind::Heading => {}
+    }
 }
 
 impl DocPage {
@@ -465,6 +502,11 @@ impl DocPage {
         &self.nav
     }
 
+    /// Whether the keyboard or the mouse moved last.
+    pub fn input_mode(&self) -> InputMode {
+        self.input_mode
+    }
+
     pub fn doc(&self) -> &Doc {
         &self.doc
     }
@@ -475,10 +517,6 @@ impl DocPage {
 
     pub fn scroll(&self) -> f32 {
         self.scroll
-    }
-
-    pub fn input_mode(&self) -> InputMode {
-        self.input_mode
     }
 
     pub fn set_input_mode(&mut self, mode: InputMode) {
@@ -1009,18 +1047,30 @@ impl Page for DocPage {
                 viewport: self.viewport_height,
             },
         };
-        if self.chrome {
-            let bands = self.nav.bands(layout);
-            if let Some(selection) = bands.selection {
-                let tint = selection_tint(&self.theme);
-                cursor::paint_band(canvas, layout, &self.theme, selection, scroll, tint, false);
-            }
-            if let Some(focus) = bands.focus {
-                let tint = self.theme.focus;
-                cursor::paint_band(canvas, layout, &self.theme, focus, scroll, tint, true);
-            }
+        let bands = if self.chrome {
+            self.nav.bands(layout)
+        } else {
+            Bands::default()
+        };
+        let mouse = self.input_mode == InputMode::Mouse;
+        let visual = bands.selection.is_some() || !bands.outlined.is_empty();
+        if let Some(selection) = bands.selection {
+            let tint = selection_tint(&self.theme);
+            cursor::paint_band(canvas, layout, selection, scroll, tint);
+        } else if let (Some(focus), false, StopKind::Text) = (bands.focus, visual, bands.focus_kind)
+        {
+            let tint = if mouse {
+                self.theme.focus_faint
+            } else {
+                self.theme.focus_soft
+            };
+            cursor::paint_band(canvas, layout, focus, scroll, tint);
         }
+        layout.heading_tint = bands.heading.clone();
         layout.paint(canvas, &mut self.fonts.borrow_mut(), scroll);
+        if self.chrome {
+            paint_outlines(canvas, layout, &self.theme, &bands, visual, mouse, scroll);
+        }
         if let Some(feedback) = &self.feedback {
             feedback.borrow_mut().paint_box(
                 canvas,
@@ -1094,6 +1144,7 @@ impl Page for DocPage {
         if event.state != ElementState::Pressed {
             return false;
         }
+        self.input_mode = InputMode::Keyboard;
         if self.box_open() {
             return self.editor_key(&event.logical_key, event.text.as_deref(), self.modifiers);
         }
@@ -1103,6 +1154,12 @@ impl Page for DocPage {
 
     fn modifiers_changed(&mut self, modifiers: ModifiersState) {
         self.modifiers = modifiers;
+    }
+
+    fn pointer(&mut self) -> bool {
+        let changed = self.input_mode != InputMode::Mouse;
+        self.input_mode = InputMode::Mouse;
+        changed
     }
 
     fn ime(&mut self, event: &Ime) -> bool {
@@ -1850,6 +1907,156 @@ mod tests {
         let visual = paint(&mut page, 800, 400, 1.0);
         let changed = plain.iter().zip(&visual).filter(|(a, b)| a != b).count();
         assert!(changed > 1000, "{changed}");
+    }
+
+    // Focus look.
+
+    fn blend(base: crate::theme::Color, over: crate::theme::Color, alpha: u32) -> u32 {
+        let mix = |b: u8, o: u8| (u32::from(o) * alpha + u32::from(b) * (255 - alpha) + 127) / 255;
+        (mix(base.r, over.r) << 16) | (mix(base.g, over.g) << 8) | mix(base.b, over.b)
+    }
+
+    #[test]
+    fn should_paint_a_soft_rounded_band_without_a_bar_when_a_text_block_is_focused() {
+        let mut page = chrome_page("one\n\ntwo\n");
+        let pixels = paint(&mut page, 800, 600, 1.0);
+        let theme = Theme::dark();
+        let layout = page.layout().unwrap();
+        let rect = layout.blocks[0].rect;
+        let y = (rect.y + rect.h / 2.0) as usize;
+        let left = (layout.column_x - 9.0) as usize;
+        let soft = blend(theme.bg, theme.teal, 15);
+        assert_eq!(pixels[y * 800 + left], soft, "no bar on the left edge");
+        let corner = (rect.y as usize) * 800 + (layout.column_x - 10.0) as usize;
+        assert_eq!(pixels[corner], theme.bg.to_pixel(), "corner is rounded");
+    }
+
+    #[test]
+    fn should_drop_the_band_to_faint_when_the_mouse_moves() {
+        let mut page = chrome_page("one\n\ntwo\n");
+        assert!(page.pointer());
+        assert!(!page.pointer(), "already in mouse mode");
+        assert_eq!(page.input_mode(), InputMode::Mouse);
+        let pixels = paint(&mut page, 800, 600, 1.0);
+        let theme = Theme::dark();
+        let layout = page.layout().unwrap();
+        let rect = layout.blocks[0].rect;
+        let y = (rect.y + rect.h / 2.0) as usize;
+        let left = (layout.column_x - 9.0) as usize;
+        assert_eq!(pixels[y * 800 + left], blend(theme.bg, theme.teal, 5));
+    }
+
+    #[test]
+    fn should_return_to_keyboard_mode_when_a_key_is_pressed() {
+        let mut page = chrome_page("one\n\ntwo\n");
+        page.pointer();
+        press(&mut page, "j");
+        assert_eq!(page.input_mode(), InputMode::Keyboard);
+    }
+
+    #[test]
+    fn should_outline_a_code_block_and_leave_the_gutter_bare_when_it_is_focused() {
+        let mut page = chrome_page("```\ncode\n```\n\ntext\n");
+        let pixels = paint(&mut page, 800, 600, 1.0);
+        let theme = Theme::dark();
+        let layout = page.layout().unwrap();
+        let rect = layout.blocks[0].rect;
+        let mid = (rect.y + rect.h / 2.0) as usize;
+        let gutter = (layout.column_x - 5.0) as usize;
+        assert_eq!(pixels[mid * 800 + gutter], theme.bg.to_pixel(), "no band");
+        let edge = blend(theme.bg, theme.teal, 128);
+        let x = (layout.column_x + rect.x + rect.w / 2.0) as usize;
+        let above = (rect.y - 3.0) as usize;
+        assert_eq!(pixels[above * 800 + x], edge, "outline above the block");
+    }
+
+    #[test]
+    fn should_paint_the_outline_fainter_when_the_mouse_leads() {
+        let mut page = chrome_page("```\ncode\n```\n\ntext\n");
+        page.pointer();
+        let pixels = paint(&mut page, 800, 600, 1.0);
+        let theme = Theme::dark();
+        let layout = page.layout().unwrap();
+        let rect = layout.blocks[0].rect;
+        let x = (layout.column_x + rect.x + rect.w / 2.0) as usize;
+        let above = (rect.y - 3.0) as usize;
+        assert_eq!(pixels[above * 800 + x], blend(theme.bg, theme.teal, 38));
+    }
+
+    #[test]
+    fn should_paint_a_heading_teal_when_it_is_the_tinted_heading() {
+        let mut page = chrome_page("## Title\n\ntext\n");
+        let plain = paint(&mut page, 800, 600, 1.0);
+        let theme = Theme::dark();
+        let teal = theme.teal.to_pixel();
+        assert!(!plain.contains(&teal), "heading is ink by default");
+        let src = page.layout().unwrap().blocks[0].src.clone();
+        let mut pixels = vec![0; 800 * 600];
+        let layout = page.layout.as_mut().unwrap();
+        layout.heading_tint = Some(src);
+        let mut canvas = Canvas::new(&mut pixels, 800, 600);
+        layout.paint(&mut canvas, &mut page.fonts.borrow_mut(), 0.0);
+        assert!(pixels.contains(&teal), "heading text is teal");
+    }
+
+    #[test]
+    fn should_outline_a_question_in_solid_teal_when_it_is_focused() {
+        let mut page = chrome_page("## Questions\n\n1. Which?\n   - A\n   - B\n");
+        press(&mut page, "j");
+        let pixels = paint(&mut page, 800, 600, 1.0);
+        let theme = Theme::dark();
+        let layout = page.layout().unwrap();
+        let field = layout
+            .blocks
+            .iter()
+            .find(|block| matches!(block.content, crate::layout::Content::Pending(ref p) if p.kind == crate::layout::PendingKind::Field))
+            .unwrap()
+            .rect;
+        let x = (layout.column_x + field.x + field.w / 2.0) as usize;
+        let above = (field.y - 1.0) as usize;
+        assert_eq!(pixels[above * 800 + x], theme.teal.to_pixel());
+        let mid = ((field.y + field.h / 2.0) as usize) * 800;
+        assert_eq!(
+            pixels[mid + (layout.column_x - 5.0) as usize],
+            theme.bg.to_pixel(),
+            "no band"
+        );
+    }
+
+    #[test]
+    fn should_paint_the_selection_at_the_plain_tint_when_in_visual_mode() {
+        let mut page = chrome_page("one\n\ntwo\n\nthree\n");
+        paint(&mut page, 800, 600, 1.0);
+        press(&mut page, "v");
+        press(&mut page, "j");
+        let pixels = paint(&mut page, 800, 600, 1.0);
+        let theme = Theme::dark();
+        let layout = page.layout().unwrap();
+        let top = layout.blocks[0].rect;
+        let y = (top.y + top.h / 2.0) as usize;
+        let left = (layout.column_x - 9.0) as usize;
+        assert_eq!(pixels[y * 800 + left], blend(theme.bg, theme.teal, 31));
+        let gap = ((top.bottom() + layout.blocks[1].rect.y) / 2.0) as usize;
+        assert_eq!(
+            pixels[gap * 800 + left],
+            blend(theme.bg, theme.teal, 31),
+            "continuous"
+        );
+    }
+
+    #[test]
+    fn should_outline_a_code_block_in_teal_above_the_selection_when_in_visual_mode() {
+        let mut page = chrome_page("text\n\n```\ncode\n```\n\nafter\n");
+        paint(&mut page, 800, 600, 1.0);
+        press(&mut page, "v");
+        press(&mut page, "j");
+        let pixels = paint(&mut page, 800, 600, 1.0);
+        let theme = Theme::dark();
+        let layout = page.layout().unwrap();
+        let rect = layout.blocks[1].rect;
+        let x = (layout.column_x + rect.x + rect.w / 2.0) as usize;
+        let above = (rect.y - 3.0) as usize;
+        assert_eq!(pixels[above * 800 + x], theme.teal.to_pixel());
     }
 
     // Zoom, rail, reload.

@@ -230,6 +230,8 @@ pub struct Layout {
     pub rail_follow: rail::RailFollow,
     pub column_x: f32,
     pub column_width: f32,
+    /// The heading (by source range) whose text paints teal.
+    pub heading_tint: Option<std::ops::Range<usize>>,
     state: State,
 }
 
@@ -311,6 +313,7 @@ pub fn lay_out_in(
         rail_follow: rail::RailFollow::default(),
         column_x: geometry.column_x,
         column_width: geometry.column_width,
+        heading_tint: None,
         state: State {
             theme,
             scale,
@@ -516,6 +519,7 @@ impl Layout {
             origin_x: self.column_x,
             origin_y: -scroll,
             viewport,
+            heading_tint: self.heading_tint.as_ref(),
         };
         for block in &self.blocks[start..] {
             if block.rect.y - scroll > viewport {
@@ -617,6 +621,8 @@ pub struct PaintCx<'a> {
     /// Window y of document y = 0.
     pub origin_y: f32,
     pub viewport: f32,
+    /// The heading painted in teal instead of ink.
+    pub heading_tint: Option<&'a std::ops::Range<usize>>,
 }
 
 impl PaintCx<'_> {
@@ -651,6 +657,8 @@ pub fn paint_block(paint: &PaintCx, canvas: &mut Canvas, fonts: &mut Fonts, bloc
             pad_top,
             ..
         } => {
+            let tinted = paint.heading_tint == Some(&block.src);
+            let ink = if tinted { theme.teal } else { theme.ink };
             let mut top = area.y;
             if *rule {
                 canvas.fill_rect(
@@ -659,7 +667,7 @@ pub fn paint_block(paint: &PaintCx, canvas: &mut Canvas, fonts: &mut Fonts, bloc
                 );
                 top += paint.scale.round().max(1.0);
             }
-            inline::paint(
+            inline::paint_ink(
                 canvas,
                 fonts,
                 text,
@@ -667,6 +675,8 @@ pub fn paint_block(paint: &PaintCx, canvas: &mut Canvas, fonts: &mut Fonts, bloc
                 top + pad_top,
                 theme,
                 paint.scale,
+                ink,
+                tinted,
             );
         }
         Content::Code { .. } => code::paint(paint, canvas, fonts, block),

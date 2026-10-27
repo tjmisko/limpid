@@ -3,10 +3,9 @@
 //! moves put it where the key table says.
 
 use crate::{
-    layout::{LaidBlock, Layout},
+    layout::{Content, LaidBlock, Layout, PendingKind},
     paint::{Canvas, Rect},
     text::Fonts,
-    theme::Theme,
 };
 use limpid_core::doc::{BlockKind, Doc};
 use std::ops::Range;
@@ -18,8 +17,15 @@ pub const ALIGN_MARGIN: f32 = 8.0;
 pub const BLEED_INSET: f32 = 10.0;
 /// Space kept above a heading when a section jump puts it at the top, CSS px.
 const HEADING_SCROLL_MARGIN: f32 = 24.0;
-/// Width of the accent bar on the band's left edge, CSS px.
-const BAR_WIDTH: f32 = 3.0;
+/// Corner radius of the focus band and the selection, CSS px.
+const BAND_RADIUS: f32 = 6.0;
+/// Corner radius of the outline around code, tables and diagrams, CSS px.
+const BLOCK_RADIUS: f32 = 10.0;
+/// Corner radius of the outline around a question, CSS px.
+const QUESTION_RADIUS: f32 = 8.0;
+/// Outline thickness and distance from the block, CSS px.
+const OUTLINE_WIDTH: f32 = 2.0;
+const OUTLINE_OFFSET: f32 = 2.0;
 
 /// Everything a cursor move reads or changes.
 pub struct Env<'a> {
@@ -111,6 +117,36 @@ pub struct Stop {
     pub src: Range<usize>,
     /// Document geometry: x is relative to the text column.
     pub rect: Rect,
+    pub kind: StopKind,
+}
+
+/// How a stop shows focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StopKind {
+    /// A band behind the text.
+    #[default]
+    Text,
+    /// The text turns teal; no band, no outline.
+    Heading,
+    /// Code, a diagram or a table: an outline, no band.
+    Special,
+    /// A question: a teal outline around its box.
+    Question,
+}
+
+impl StopKind {
+    fn of(block: &LaidBlock) -> Self {
+        match &block.content {
+            Content::Heading { .. } => Self::Heading,
+            Content::Code { .. } | Content::Table(_) | Content::Media(_) => Self::Special,
+            Content::Pending(pending) => match pending.kind {
+                PendingKind::Field => Self::Question,
+                PendingKind::Annotation => Self::Text,
+                _ => Self::Special,
+            },
+            _ => Self::Text,
+        }
+    }
 }
 
 /// Every stop laid out so far, in document order. A container's own stop
@@ -122,6 +158,7 @@ pub fn collect_stops(layout: &Layout) -> Vec<Stop> {
                 top,
                 src: block.src.clone(),
                 rect: block.rect,
+                kind: StopKind::of(block),
             });
         }
         for child in block.children() {
@@ -441,29 +478,51 @@ pub fn band_rect(layout: &Layout, rect: Rect, scroll: f32) -> Rect {
     )
 }
 
-/// Paint the band behind `rect` (document coordinates) in `color`, with an
-/// accent bar down its left edge so it still shows behind opaque blocks.
+/// Paint the band behind `rect` (document coordinates) in `tint`.
 pub fn paint_band(
     canvas: &mut Canvas,
     layout: &Layout,
-    theme: &Theme,
     rect: Rect,
     scroll: f32,
     tint: crate::theme::Color,
-    bar: bool,
 ) {
     let band = band_rect(layout, rect, scroll);
-    canvas.fill_rect(band, tint);
-    if bar {
-        let width = (BAR_WIDTH * layout.scale()).round().max(1.0);
-        canvas.fill_rect(Rect::new(band.x, band.y, width, band.h), theme.teal);
-    }
+    canvas.fill_rounded_rect(band, BAND_RADIUS * layout.scale(), tint);
+}
+
+/// Outline the stop at `rect` (document coordinates): `color`, 2 px wide,
+/// 2 px outside the block and following its corners.
+pub fn paint_outline(
+    canvas: &mut Canvas,
+    layout: &Layout,
+    kind: StopKind,
+    rect: Rect,
+    scroll: f32,
+    color: crate::theme::Color,
+) {
+    let scale = layout.scale();
+    let reach = OUTLINE_OFFSET * scale + OUTLINE_WIDTH * scale;
+    let (offset, radius) = match kind {
+        StopKind::Question => (
+            OUTLINE_WIDTH * scale,
+            QUESTION_RADIUS * scale + OUTLINE_WIDTH * scale,
+        ),
+        _ => (reach, BLOCK_RADIUS * scale + reach),
+    };
+    let outer = Rect::new(
+        layout.column_x + rect.x - offset,
+        rect.y - scroll - offset,
+        rect.w + 2.0 * offset,
+        rect.h + 2.0 * offset,
+    );
+    canvas.stroke_rounded_rect(outer, radius, OUTLINE_WIDTH * scale, color);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::layout::lay_out;
+    use crate::theme::Theme;
     use limpid_core::{
         doc::{Mode, parse},
         settings::Settings,
@@ -975,5 +1034,31 @@ mod tests {
         assert_eq!(band.w, fixture.layout.column_width + 2.0 * BLEED_INSET);
         assert_eq!(band.y, rect.y - 10.0);
         assert_eq!(band.h, rect.h);
+    }
+
+    fn kinds(markdown: &str) -> Vec<StopKind> {
+        let fixture = Fixture::new(markdown, 400.0);
+        collect_stops(&fixture.layout)
+            .iter()
+            .map(|stop| stop.kind)
+            .collect()
+    }
+
+    #[test]
+    fn should_classify_stops_by_how_they_show_focus_when_collecting() {
+        let all = kinds(
+            "## Title\n\ntext\n\n```rust\nlet a = 1;\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n## Questions\n\n1. Which?\n",
+        );
+        assert_eq!(all[0], StopKind::Text);
+        assert_eq!(all[1], StopKind::Special, "code");
+        assert_eq!(all[2], StopKind::Special, "table");
+        assert!(all.contains(&StopKind::Question));
+    }
+
+    #[test]
+    fn should_classify_a_heading_block_as_a_heading_when_it_is_laid_out() {
+        let fixture = Fixture::new("## Title\n\ntext\n", 400.0);
+        assert_eq!(StopKind::of(&fixture.layout.blocks[0]), StopKind::Heading);
+        assert_eq!(StopKind::of(&fixture.layout.blocks[1]), StopKind::Text);
     }
 }
