@@ -576,3 +576,198 @@ the view's socket; `install.sh --dry-run` prints the commands for both modes.
 machine, `bench/RESULTS.md` has the final numbers for the view (one and three
 windows, cold and warm), and `cargo test --workspace` passes without the
 `webkit` feature.
+
+---
+
+# Fix waves (review pass of 2026-10-26)
+
+Findings from the Fable review of waves 1–5, each as a work unit. The global
+rules at the top apply. Two additions for these units:
+
+- Your worktree may be based on an old commit. Before anything else, run
+  `git merge --ff-only main` in it (or `git reset --hard main` when the branch
+  has no commits of its own) so you build on current main. This is the one
+  permitted use of merge or reset.
+- Scratch builds and probes go under your worktree's `target/` directory or
+  the session scratchpad, never under `~/.cache` or `/tmp`.
+- Commit trailers: end each commit message with the `Co-Authored-By` line your
+  own session's attribution reminder specifies.
+
+## Fix wave A
+
+### FX-C1: Parse without rendering, span-returning highlighter, lazy spans, settings ranges (`limpid-core`)
+
+**Owns:** `crates/limpid-core/src/doc.rs`, `src/html.rs`, `src/render.rs`,
+`src/highlight.rs`, `src/settings.rs`, `src/lib.rs`, `crates/limpid-core/tests/**`.
+
+Measured today: `doc::parse` on `bench/sample.md` takes 568 ms in release and
+adds ~16 MiB to the viewer, because `parse` first runs
+`render::render_raw_with_state` (full HTML, MathML, ammonia, highlighting) and
+then re-highlights every code block by rendering highlight HTML and parsing it
+back (`doc.rs:213-260`, `doc.rs:617-620`).
+
+- `doc::parse` must build the `Doc` straight from the pulldown-cmark events
+  and never produce HTML. Remove `Doc.body`. `html::emit(&Doc, ...)` either
+  walks the `Doc` or calls the existing renderer on `doc.source`; the goldens
+  and fixture tests must stay byte-identical either way. Target: `parse` on
+  `bench/sample.md` under 15 ms in release with highlighting deferred.
+- Highlighting becomes lazy. `BlockKind::Code { lang, text, spans }` keeps
+  `spans: Vec<HlSpan>` but `parse` leaves it empty; add
+  `pub fn highlight_spans(language: &str, source: &str, highlighter: &mut Highlighter) -> Vec<HlSpan>`
+  in `highlight.rs` (byte ranges over `source` plus the class name, produced
+  directly from `tree-sitter-highlight` events, no HTML round trip) and
+  `pub struct Highlighter` that caches compiled configurations per language
+  for the process lifetime and drops parse trees after each call. The HTML
+  emitter calls it eagerly so the HTML page is unchanged; the viewer calls it
+  per block on demand (FX-V4).
+- Add `Doc::code_block_count()` and a `parse` benchmark-style test asserting
+  no highlighter is constructed during `parse` (inject or count).
+- `BlockKind::Annotation` gains `field: Option<String>` (the question id the
+  reply belongs to) and `Inline::Html`/`BlockKind::Html` in agent mode hold
+  the raw text, not an HTML-escaped copy; document it on the enum.
+- Settings: range-check `view.font_size` (6..=72), `view.line_height`
+  (1.0..=3.0), `view.content_width` and `view.rail_width` (100..=4000),
+  `view.scroll_fraction` (0.05..=1.0), `editor.idle_seconds` (0..=86400),
+  `mermaid.timeout_seconds` and `math.timeout_seconds` (0.1..=3600). Out of
+  range is an error naming the key and the allowed range. Add
+  `math.timeout_seconds` (default 60) if it is not in `settings.rs` yet.
+
+**Tests:** goldens unchanged; `parse` leaves code spans empty; `highlight_spans`
+on a Rust snippet yields the same classes the HTML emitter prints (compare
+against `render` output for one fence); a timing test is not required, but
+record the measured `parse` time in the commit body; each settings range.
+
+### FX-C2: Display math environments in the latex backend (`limpid-core`)
+
+**Owns:** `crates/limpid-core/src/math/latex.rs`, `src/math/mod.rs` (tests
+only).
+
+Reproduced: `$$E = mc^2 \tag{1}$$` fails with "\tag not allowed here" and
+`\begin{equation}\begin{split}...` fails with "\begin{split} won't work
+here", because every display formula is placed in `\hbox{$\displaystyle ...$}`
+(`display_layout`, `latex.rs:330`). Put display formulas in a real display
+environment: wrap bare display math in `\[ ... \]` inside the `preview`
+environment; keep top-level `align`, `gather`, `multline`, `equation`,
+`alignat`, `flalign`, `eqnarray` (starred or not) as themselves, not
+rewritten to `aligned`/`gathered`; `split` stays inside its `equation`.
+Keep the baseline measurement working for display math (the preview snippet
+depth). Numbered environments may show their number; that is correct TeX.
+Add tests for `\tag`, `equation+split`, `align` with `\tag`, `alignat`,
+`gather*`, and a plain display integral, each gated on `pdflatex` being
+present, plus unit tests of the generated `.tex` for each case.
+
+### FX-V1: Math colour and search text (`limpid-view`)
+
+**Owns:** `crates/limpid-view/src/layout/svg.rs`, `src/layout/boxes.rs`,
+`src/layout/inline.rs` (the math paint call only), `src/nav/search.rs`,
+and new fixtures/snapshots under `crates/limpid-view/tests/`.
+
+- TeX SVGs from `pdftocairo` and `dvisvgm` carry explicit black fills and
+  are near-invisible on the dark theme (confirmed by snapshot). MathJax SVGs
+  use `currentColor`. Paint math (inline and display) as a mask: rasterize
+  the SVG, take its coverage (alpha, or luminance inverted when the SVG has
+  no alpha), and fill with the theme ink colour. Cache rasters by (hash,
+  size, scale, colour). Mermaid diagrams keep their own colours.
+- `nav/search.rs` must search what the page shows: skip `Inline::Html` and
+  `BlockKind::Html` when the layout does not draw them, and for math search
+  the LaTeX source only when the formula is shown as source (not cached as
+  SVG); expose a small `visible_text(doc, &dyn Fn(hash) -> bool)` helper so
+  the rule lives in one place and matches `layout/inline.rs`.
+
+**Tests:** snapshot of a seeded-cache math fixture on the dark and light
+themes asserting ink-coloured pixels inside the formula box and no black
+pixels; search counts with HTML and math fixtures.
+
+### FX-V2: Helpers and routing hardening (`limpid-view`, `limpid`)
+
+**Owns:** `crates/limpid-view/src/helpers.rs`, `crates/limpid/src/main.rs`,
+`crates/limpid/tests/**`.
+
+- `helpers.rs:156`: build durations with `Duration::try_from_secs_f64` and
+  saturating adds; settings now bound the values (FX-C1) but the code must
+  not panic on any finite value regardless.
+- Use `settings.math.timeout_seconds` instead of `MATH_TIME_LIMIT`.
+- Helper stderr: capture it; on a non-zero exit, log one line to the view's
+  stderr and surface the first error line in the page status
+  (`Page::flash` or an equivalent hook already used by helpers), so a failing
+  TeX run is visible.
+- Pass the page mode to the helpers (agent pages parse in `Mode::Agent`; see
+  FX-V4 for the view side). Until FX-V4 lands, add a `mode` parameter with
+  `Mode::File` default at the call site.
+- `limpid`: treat `.htm` like `.html`; an invalid `LIMPID_VIEWER` must not
+  break `--help` or `--out` (validate only when a viewer is about to be
+  chosen); prune `stdin-*.md` pages beyond the newest 50 the way agent pages
+  are pruned.
+
+**Tests:** duration building at the extremes; a fake helper that exits 1
+with stderr text produces the flash; `.htm` routing; `LIMPID_VIEWER=bogus
+limpid --help` exits 0; stdin pruning.
+
+### FX-V3: Editor process, idle tick, key routing details (`limpid-view`)
+
+**Owns:** `crates/limpid-view/src/feedback/**`, `src/editor/**`,
+`src/main.rs` (the per-process editor handle only).
+
+- One nvim per view process, shared by every window's `Feedback` (an
+  `Rc<RefCell<Editor>>` or an owner in `main.rs` handed to each window),
+  as MINIMAL.md specifies. The idle timer is process-wide.
+- Remove the `KEY_SETTLE` busy wait (`feedback/mod.rs:335-347`): send the key,
+  return, and let `tick` drain editor output. Keystroke latency must not
+  depend on a sleep loop.
+- Idle ticking: `Page::tick_period` returns the time to the idle deadline
+  (or a long period) when no box is open, and 16 ms only while a box is
+  open, so the window does not wake 60 times a second for 300 s after a
+  box closes. The trait hook exists in `window.rs:40`; do not edit
+  `window.rs`.
+- Forward IME commits (`winit::event::Ime::Commit`) to nvim with
+  `nvim_input` of the text (escape `<` as `<lt>`); `Ime::Preedit` is shown in
+  the box status line.
+- Lock the box: in `init.lua`, a `WinLeave`/`WinEnter` guard that refocuses
+  the box window (so `<C-w>w`, `:enew`, `:e` cannot strand the user in a
+  buffer that cannot save), and `BufWriteCmd` on any buffer in the editor
+  reports `Save` for the box buffer only.
+- Make the nvim RPC hang-up test deterministic (it failed once in the review
+  run and passed on rerun): no timing assumptions, use a synchronisation
+  point.
+
+**Tests:** two windows share one editor (spawn count 1); no sleep in the key
+path (a fake editor port that answers late must not delay `input`); the
+idle `tick_period` values; IME commit reaches `nvim_input`; the lock guard
+(nvim-gated: `<C-w>w` then typing then `:w` still yields `Save`).
+
+## Fix wave B
+
+### FX-V4: Window first, parse off the UI thread, lazy highlighting, agent mode, watch (`limpid-view`)
+
+**Owns:** `crates/limpid-view/src/page.rs`, `src/main.rs`, `src/window.rs`,
+`src/watch.rs`, `src/layout/code.rs`, `src/layout/mod.rs`, `src/layout/block.rs`,
+`src/snapshot.rs`, `crates/limpid-view/tests/**`, `bench/RESULTS.md`.
+
+Measured: 0.27–0.31 s from command to window on `bench/sample.md` (the
+prototype did it in 25 ms) and 29 MiB private, because the page is parsed
+and fully highlighted before the window exists.
+
+- Create and show the window first with the theme background and the title
+  from the file stem; parse on a worker thread (`std::thread`), hand the
+  `Doc` back through a channel, lay out and paint on arrival. A `--snapshot`
+  run keeps the synchronous path.
+- Lazy highlighting: `layout/code.rs` requests spans through FX-C1's
+  `Highlighter` only when a code block is laid out (which is lazy by
+  viewport), and keeps one `Highlighter` per process. Blocks beyond the
+  viewport are never highlighted until scrolled to.
+- Agent pages parse in `Mode::Agent`: the handoff already carries
+  `source_backed`/the sidecar; derive the mode in `page.rs` and pass it to
+  `helpers` (FX-V2 added the parameter) and to `watch.rs`.
+- `watch.rs:157-163` reads and parses the file twice on a reload; read once,
+  compare the hash, parse once, on the worker thread.
+- Re-measure and record in `bench/RESULTS.md` under the limpid-view heading:
+  private memory and time to window for the empty page, `small.md` and
+  `sample.md`, one and three windows. Targets: ≤ 15 MiB private for
+  `sample.md` with the first screen highlighted, ≤ 60 ms to a painted window
+  warm, ≤ 100 ms cold.
+
+**Tests:** parse happens off the UI thread (a slow-parse fixture does not
+delay window creation; measurable in the display-gated test by the title
+appearing before the text, or by a snapshot path flag); only visible code
+blocks are highlighted (count via the `Highlighter`); agent-mode parse of a
+page with raw HTML shows the HTML as text; watch reload parses once.
