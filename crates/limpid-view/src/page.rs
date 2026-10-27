@@ -1065,7 +1065,7 @@ impl Page for DocPage {
         if let Some(selection) = bands.selection {
             let tint = selection_tint(&self.theme);
             cursor::paint_band(canvas, layout, selection, scroll, tint);
-            for (_, rect) in bands
+            for (kind, rect) in bands
                 .outlined
                 .iter()
                 .filter(|(kind, _)| *kind == StopKind::Special)
@@ -1076,7 +1076,8 @@ impl Page for DocPage {
                     rect.w,
                     rect.h,
                 );
-                canvas.fill_rect(block, self.theme.bg);
+                let radius = cursor::block_radius(*kind, layout.scale());
+                canvas.fill_rounded_rect(block, radius, self.theme.bg);
             }
         } else if let (Some(focus), false, StopKind::Text) = (bands.focus, visual, bands.focus_kind)
         {

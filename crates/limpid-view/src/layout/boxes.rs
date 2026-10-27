@@ -168,12 +168,20 @@ pub struct MediaBox {
 }
 
 pub fn paint_media(paint: &PaintCx, canvas: &mut Canvas, area: Rect, media: &MediaBox) {
-    if media.framed {
-        canvas.fill_rect(area, paint.theme.surface);
-        canvas.stroke_rect(area, media.border, paint.theme.rule);
+    if !media.framed {
+        canvas.draw_pixmap(&media.pixmap, area.x + media.x, area.y + media.y);
+        return;
     }
-    canvas.draw_pixmap(&media.pixmap, area.x + media.x, area.y + media.y);
+    let radius = FRAME_RADIUS * paint.scale;
+    canvas.with_round_corners(area, radius, |canvas| {
+        canvas.fill_rect(area, paint.theme.surface);
+        canvas.draw_pixmap(&media.pixmap, area.x + media.x, area.y + media.y);
+    });
+    canvas.stroke_rounded_rect(area, radius, media.border, paint.theme.rule);
 }
+
+/// Corner radius of a framed diagram, CSS px.
+const FRAME_RADIUS: f32 = 10.0;
 
 /// The cache directory Mermaid helpers write to.
 pub fn mermaid_root() -> Option<PathBuf> {
@@ -606,5 +614,33 @@ mod tests {
         assert!(!env.mermaid_enabled);
         assert_eq!(env.document_dir.as_deref(), Some(Path::new("/doc")));
         assert_eq!(env.table_pad, BoxEnv::default().table_pad);
+    }
+
+    #[test]
+    fn should_round_the_corners_of_a_framed_diagram_when_painting() {
+        use crate::{layout::PaintCx, theme::Theme};
+        let theme = Theme::dark();
+        let paint = PaintCx {
+            theme: &theme,
+            scale: 1.0,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            viewport: 100.0,
+            heading_tint: None,
+        };
+        let media = MediaBox {
+            pixmap: pixmap(1, 1),
+            x: 1.0,
+            y: 1.0,
+            framed: true,
+            border: 1.0,
+            hash: None,
+        };
+        let mut pixels = vec![theme.bg.to_pixel(); 60 * 60];
+        let mut canvas = Canvas::new(&mut pixels, 60, 60);
+        paint_media(&paint, &mut canvas, Rect::new(0.0, 0.0, 60.0, 60.0), &media);
+        assert_eq!(canvas.pixel(0, 0), Some(theme.bg.to_pixel()));
+        assert_eq!(canvas.pixel(30, 0), Some(theme.rule.to_pixel()));
+        assert_eq!(canvas.pixel(30, 30), Some(theme.surface.to_pixel()));
     }
 }

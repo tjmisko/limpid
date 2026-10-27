@@ -18,6 +18,8 @@ use std::collections::HashMap;
 
 /// Padding around the rail's content, CSS px.
 const PADDING: f32 = 14.0;
+/// Corner radius of the compact contents box, CSS px.
+const CONTENTS_RADIUS: f32 = 8.0;
 
 /// Window width in CSS px below which the compact contents block replaces the rail.
 pub const COMPACT_BELOW: f32 = 1100.0;
@@ -288,8 +290,9 @@ impl Compact {
         let border = scale.round().max(1.0);
         let box_top = y + self.summary_height + 6.0 * scale;
         let area = Rect::new(x, box_top, self.width, self.box_height);
-        canvas.fill_rect(area, theme.surface);
-        canvas.stroke_rect(area, border, inline::rule_soft(theme));
+        let radius = CONTENTS_RADIUS * scale;
+        canvas.fill_rounded_rect(area, radius, theme.surface);
+        canvas.stroke_rounded_rect(area, radius, border, inline::rule_soft(theme));
         let active = active.filter(|&index| index < self.entries.len());
         if let Some(index) = active {
             let cached = matches!(&self.active_text, Some((cached, _)) if *cached == index);
@@ -771,5 +774,30 @@ mod tests {
         let y = (22.0 + entry.top + entry.height - 2.0) as usize;
         let x = (layout.column_x + 300.0) as usize;
         assert_eq!(pixels[y * 700 + x], theme.surface.to_pixel());
+    }
+
+    #[test]
+    fn should_round_the_corners_of_the_compact_box_when_open() {
+        let doc = parse(DOC, Mode::File, &Settings::default());
+        let theme = Theme::dark();
+        let mut fonts = Fonts::new();
+        let mut layout = lay_out_with(
+            &doc,
+            700.0,
+            &theme,
+            1.0,
+            &mut fonts,
+            LayoutOptions {
+                contents_open: true,
+                ..LayoutOptions::default()
+            },
+        );
+        let mut pixels = vec![theme.bg.to_pixel(); 700 * 300];
+        layout.paint(&mut Canvas::new(&mut pixels, 700, 300), &mut fonts, 0.0);
+        let summary = layout.compact.as_ref().unwrap().summary_height;
+        let top = (22.0 + summary + 6.0) as usize;
+        let left = layout.column_x as usize;
+        assert_eq!(pixels[top * 700 + left], theme.bg.to_pixel(), "corner");
+        assert_ne!(pixels[top * 700 + left + 300], theme.bg.to_pixel(), "edge");
     }
 }

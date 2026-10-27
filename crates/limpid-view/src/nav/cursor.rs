@@ -495,6 +495,14 @@ pub fn band_rect(layout: &Layout, rect: Rect, scroll: f32) -> Rect {
     )
 }
 
+/// Corner radius of the block a visual selection outlines, device pixels.
+pub fn block_radius(kind: StopKind, scale: f32) -> f32 {
+    match kind {
+        StopKind::Question => QUESTION_RADIUS * scale,
+        _ => BLOCK_RADIUS * scale,
+    }
+}
+
 /// Paint the band behind `rect` (document coordinates) in `tint`.
 pub fn paint_band(
     canvas: &mut Canvas,
@@ -1114,5 +1122,11 @@ mod tests {
     fn should_band_a_display_equation_when_it_is_a_stop() {
         let all = kinds("$$\\frac{a}{b}$$\n\ntext\n");
         assert!(!all.contains(&StopKind::Special), "{all:?}");
+    }
+
+    #[test]
+    fn should_round_a_question_by_eight_and_other_blocks_by_ten_when_filling_a_selection() {
+        assert_eq!(block_radius(StopKind::Question, 2.0), 16.0);
+        assert_eq!(block_radius(StopKind::Special, 2.0), 20.0);
     }
 }
