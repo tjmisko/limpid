@@ -97,9 +97,159 @@ impl EditorPort for Editor {
 /// Starts the editor process; replaceable so tests need no nvim.
 pub type EditorSpawner = Box<dyn FnMut(&EditorConfig) -> Result<Box<dyn EditorPort>, EditorError>>;
 
-/// The spawner that starts a real `nvim --embed`.
+/// The spawner that starts a real `nvim --embed`, on a worker thread so the
+/// box opens at once.
 pub fn nvim_spawner() -> EditorSpawner {
-    Box::new(|config| Ok(Box::new(Editor::spawn(config)?) as Box<dyn EditorPort>))
+    Box::new(|config| {
+        let config = config.clone();
+        let (cols, rows) = (config.cols, config.rows);
+        Ok(Box::new(StartingPort::new(cols, rows, move || {
+            Editor::spawn(&config).map(|editor| Box::new(editor) as Box<dyn EditorPort + Send>)
+        })) as Box<dyn EditorPort>)
+    })
+}
+
+/// A port whose editor is still starting on another thread. What the box
+/// asks of it meanwhile is queued and replayed, in order, once it is up.
+pub struct StartingPort {
+    state: Starting,
+    /// Shown until the editor draws its own.
+    blank: Grid,
+    /// The text the box opened with, drawn into `blank`.
+    text: String,
+}
+
+enum Starting {
+    Waiting {
+        ready: std::sync::mpsc::Receiver<Result<Box<dyn EditorPort + Send>, EditorError>>,
+        queued: Vec<Queued>,
+    },
+    Ready(Box<dyn EditorPort + Send>),
+    Failed,
+}
+
+enum Queued {
+    Open(String, BoxKind),
+    Input(String),
+    Resize(u16, u16),
+}
+
+impl StartingPort {
+    pub fn new(
+        cols: u16,
+        rows: u16,
+        start: impl FnOnce() -> Result<Box<dyn EditorPort + Send>, EditorError> + Send + 'static,
+    ) -> StartingPort {
+        let (send, ready) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = send.send(start());
+        });
+        StartingPort {
+            state: Starting::Waiting {
+                ready,
+                queued: Vec::new(),
+            },
+            blank: Grid::new(cols, rows),
+            text: String::new(),
+        }
+    }
+
+    /// Take the editor once it is up and replay the queue. Returns an error
+    /// event when it could not start.
+    fn settle(&mut self) -> Option<EditorEvent> {
+        let Starting::Waiting { ready, queued } = &mut self.state else {
+            return None;
+        };
+        let started = match ready.try_recv() {
+            Ok(started) => started,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(EditorError::Protocol("the editor did not start".into()))
+            }
+        };
+        let queued = std::mem::take(queued);
+        let mut editor = match started {
+            Ok(editor) => editor,
+            Err(error) => {
+                self.state = Starting::Failed;
+                return Some(EditorEvent::Error(error.to_string()));
+            }
+        };
+        for op in queued {
+            match op {
+                Queued::Open(text, kind) => {
+                    if let Err(error) = editor.open(&text, kind) {
+                        self.state = Starting::Failed;
+                        return Some(EditorEvent::Error(error.to_string()));
+                    }
+                }
+                Queued::Input(keys) => editor.input(&keys),
+                Queued::Resize(cols, rows) => editor.resize(cols, rows),
+            }
+        }
+        self.state = Starting::Ready(editor);
+        None
+    }
+}
+
+impl EditorPort for StartingPort {
+    fn open(&mut self, text: &str, kind: BoxKind) -> Result<(), EditorError> {
+        match &mut self.state {
+            Starting::Waiting { queued, .. } => {
+                self.blank.show_text(text);
+                self.text = text.to_owned();
+                queued.push(Queued::Open(text.to_owned(), kind));
+                Ok(())
+            }
+            Starting::Ready(editor) => editor.open(text, kind),
+            Starting::Failed => Err(EditorError::Protocol("the editor did not start".into())),
+        }
+    }
+
+    fn input(&mut self, keys: &str) {
+        match &mut self.state {
+            Starting::Waiting { queued, .. } => queued.push(Queued::Input(keys.to_owned())),
+            Starting::Ready(editor) => editor.input(keys),
+            Starting::Failed => {}
+        }
+    }
+
+    fn resize(&mut self, cols: u16, rows: u16) {
+        match &mut self.state {
+            Starting::Waiting { queued, .. } => {
+                self.blank = Grid::new(cols.max(1), rows.max(1));
+                self.blank.show_text(&self.text);
+                queued.push(Queued::Resize(cols, rows));
+            }
+            Starting::Ready(editor) => editor.resize(cols, rows),
+            Starting::Failed => {}
+        }
+    }
+
+    fn poll(&mut self) -> Vec<EditorEvent> {
+        if let Some(error) = self.settle() {
+            return vec![error];
+        }
+        match &mut self.state {
+            Starting::Ready(editor) => editor.poll(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn grid(&self) -> &Grid {
+        match &self.state {
+            Starting::Ready(editor) => editor.grid(),
+            _ => &self.blank,
+        }
+    }
+
+    fn is_running(&mut self) -> bool {
+        match &mut self.state {
+            Starting::Waiting { .. } => true,
+            Starting::Ready(editor) => editor.is_running(),
+            Starting::Failed => false,
+        }
+    }
 }
 
 /// A box that is open: what it edits and what nvim last said about it.
@@ -568,5 +718,98 @@ mod tests {
         assert!(!stub.is_running());
         assert!(stub.poll().is_empty());
         assert_eq!(stub.grid().cols, 2);
+    }
+
+    /// Records every call so the replay order can be checked.
+    struct Recorder {
+        log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        grid: Grid,
+    }
+
+    impl EditorPort for Recorder {
+        fn open(&mut self, text: &str, _kind: BoxKind) -> Result<(), EditorError> {
+            self.log.lock().unwrap().push(format!("open {text}"));
+            Ok(())
+        }
+        fn input(&mut self, keys: &str) {
+            self.log.lock().unwrap().push(format!("input {keys}"));
+        }
+        fn resize(&mut self, cols: u16, rows: u16) {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("resize {cols}x{rows}"));
+        }
+        fn poll(&mut self) -> Vec<EditorEvent> {
+            vec![EditorEvent::Redraw]
+        }
+        fn grid(&self) -> &Grid {
+            &self.grid
+        }
+        fn is_running(&mut self) -> bool {
+            true
+        }
+    }
+
+    fn poll_until(
+        port: &mut StartingPort,
+        done: impl Fn(&[EditorEvent]) -> bool,
+    ) -> Vec<EditorEvent> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let events = port.poll();
+            if done(&events) {
+                return events;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("the port never settled");
+    }
+
+    #[test]
+    fn should_return_at_once_and_replay_calls_in_order_when_the_editor_starts_slowly() {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (go, gate) = std::sync::mpsc::channel::<()>();
+        let recorder_log = std::sync::Arc::clone(&log);
+        let mut port = StartingPort::new(4, 2, move || {
+            gate.recv().unwrap();
+            Ok(Box::new(Recorder {
+                log: recorder_log,
+                grid: Grid::new(9, 3),
+            }) as Box<dyn EditorPort + Send>)
+        });
+        port.open("hi", BoxKind::Comment).unwrap();
+        port.resize(6, 3);
+        port.input("A!<Esc>");
+        assert!(port.is_running(), "a starting editor counts as running");
+        assert!(port.poll().is_empty());
+        assert_eq!(port.grid().cols, 6, "the blank grid follows resizes");
+        assert_eq!(
+            port.grid().row_text(0),
+            "hi    ",
+            "the text shows before nvim draws"
+        );
+        go.send(()).unwrap();
+        poll_until(&mut port, |events| events.contains(&EditorEvent::Redraw));
+        assert_eq!(
+            *log.lock().unwrap(),
+            ["open hi", "resize 6x3", "input A!<Esc>"]
+        );
+        assert_eq!(port.grid().cols, 9, "the real grid shows once started");
+        port.input("x");
+        assert_eq!(log.lock().unwrap().last().unwrap(), "input x");
+    }
+
+    #[test]
+    fn should_report_an_error_and_stop_when_the_editor_fails_to_start() {
+        let mut port = StartingPort::new(4, 2, || Err(EditorError::Protocol("no nvim".into())));
+        port.open("hi", BoxKind::Reply).unwrap();
+        let events = poll_until(&mut port, |events| !events.is_empty());
+        assert!(
+            matches!(&events[..], [EditorEvent::Error(text)] if text.contains("no nvim")),
+            "{events:?}"
+        );
+        assert!(!port.is_running());
+        assert!(port.open("again", BoxKind::Reply).is_err());
     }
 }

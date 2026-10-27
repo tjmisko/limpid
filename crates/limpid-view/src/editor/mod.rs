@@ -171,6 +171,11 @@ pub struct Editor {
     /// A `Quit` was reported for the current process, so its exit is
     /// expected.
     quit_reported: bool,
+    /// The reply to the last open, until it arrives.
+    opening: Option<std::sync::mpsc::Receiver<Result<Value, Value>>>,
+    /// Keys typed while the buffer was opening.
+    held: String,
+    open_error: Option<String>,
 }
 
 impl Editor {
@@ -183,6 +188,9 @@ impl Editor {
             process: Some(process),
             grid: Grid::new(config.cols, config.rows),
             quit_reported: false,
+            opening: None,
+            held: String::new(),
+            open_error: None,
         })
     }
 
@@ -194,20 +202,52 @@ impl Editor {
             return Err(EditorError::Rpc(RpcError::Closed));
         };
         self.quit_reported = false;
-        process.rpc.request(
+        self.grid.show_text(text);
+        // Not waited on, so the key that opened the box is not held up by the
+        // round trip. nvim_input is handled ahead of queued requests, so keys
+        // wait in `held` until the buffer is open.
+        let reply = process.rpc.request_later(
             "nvim_exec_lua",
             vec![
                 Value::from("return _G.limpid.open(...)"),
                 Value::Array(vec![Value::from(text), Value::from(kind.as_str())]),
             ],
         )?;
+        self.opening = Some(reply);
+        self.held.clear();
         Ok(())
+    }
+
+    /// Release the held keys once nvim has opened the buffer. An error from
+    /// the open is reported by the next [`Editor::poll`].
+    fn settle_open(&mut self) {
+        let Some(reply) = &self.opening else {
+            return;
+        };
+        let result = match reply.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Ok(Value::Nil),
+        };
+        self.opening = None;
+        if let Err(error) = result {
+            self.open_error = Some(rpc::describe_error(&error));
+            self.held.clear();
+            return;
+        }
+        let keys = std::mem::take(&mut self.held);
+        self.input(&keys);
     }
 
     /// Send keys in nvim notation (`<Esc>`, `<C-x>`, `<lt>`). Dropped when
     /// no editor process is running.
     pub fn input(&mut self, keys: &str) {
         if keys.is_empty() {
+            return;
+        }
+        self.settle_open();
+        if self.opening.is_some() {
+            self.held.push_str(keys);
             return;
         }
         let Some(process) = self.process.as_mut() else {
@@ -231,11 +271,17 @@ impl Editor {
 
     /// Everything nvim has reported since the last call; never blocks.
     pub fn poll(&mut self) -> Vec<EditorEvent> {
+        self.settle_open();
+        let mut events: Vec<EditorEvent> = self
+            .open_error
+            .take()
+            .map(EditorEvent::Error)
+            .into_iter()
+            .collect();
         let Some(process) = self.process.as_mut() else {
-            return Vec::new();
+            return events;
         };
         let incoming = process.rpc.drain();
-        let mut events = Vec::new();
         for item in incoming {
             match item {
                 Incoming::Notification { method, params } => {

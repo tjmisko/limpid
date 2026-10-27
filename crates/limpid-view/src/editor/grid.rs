@@ -105,6 +105,34 @@ impl Grid {
             .get(usize::from(row) * usize::from(self.cols) + usize::from(col))
     }
 
+    /// Show `text` as plain cells, wrapped at the grid width, with the cursor
+    /// at the top. Stands in for nvim's first redraw so a box opens showing
+    /// its text instead of a blank or the previous box.
+    pub fn show_text(&mut self, text: &str) {
+        self.cells.fill(Cell::default());
+        self.cursor = (0, 0);
+        let cols = usize::from(self.cols);
+        if cols == 0 {
+            return;
+        }
+        let mut row = 0;
+        for line in text.lines() {
+            let chars: Vec<char> = line.chars().collect();
+            for chunk in chars
+                .chunks(cols)
+                .chain(chars.is_empty().then_some(&[][..]))
+            {
+                if row >= usize::from(self.rows) {
+                    return;
+                }
+                for (col, ch) in chunk.iter().enumerate() {
+                    self.cells[row * cols + col].ch = *ch;
+                }
+                row += 1;
+            }
+        }
+    }
+
     /// The text of one row, continuation cells dropped, trailing blanks kept.
     pub fn row_text(&self, row: u16) -> String {
         (0..self.cols)
@@ -441,6 +469,19 @@ mod tests {
         let mut grid = Grid::new(0, 0);
         grid.apply_redraw(&[event("grid_resize", vec![vec![v(1), v(cols), v(rows)]])]);
         grid
+    }
+
+    #[test]
+    fn should_wrap_and_clip_text_when_showing_it_before_nvim_draws() {
+        let mut grid = Grid::new(4, 3);
+        grid.cursor = (2, 2);
+        grid.show_text("abcdef\n\nxyz\nlost");
+        assert_eq!(grid.row_text(0), "abcd");
+        assert_eq!(grid.row_text(1), "ef  ");
+        assert_eq!(grid.row_text(2), "    ", "an empty line takes a row");
+        assert_eq!(grid.cursor, (0, 0));
+        grid.show_text("");
+        assert!((0..3).all(|row| grid.row_text(row) == "    "));
     }
 
     #[test]

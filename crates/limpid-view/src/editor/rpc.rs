@@ -110,6 +110,19 @@ impl Rpc {
         }
     }
 
+    /// Send a request and return at once; its response arrives on the
+    /// receiver, `Err` holding nvim's error.
+    pub fn request_later(
+        &mut self,
+        method: &str,
+        params: Vec<Value>,
+    ) -> Result<Receiver<Result<Value, Value>>, RpcError> {
+        match self.send_request(method, params, true)? {
+            (_, Some(receiver)) => Ok(receiver),
+            (_, None) => Err(RpcError::Closed),
+        }
+    }
+
     /// Send a request and do not wait; the response is discarded.
     pub fn send(&mut self, method: &str, params: Vec<Value>) -> Result<(), RpcError> {
         self.send_request(method, params, false).map(|_| ())
@@ -167,7 +180,7 @@ impl Rpc {
     }
 }
 
-fn describe_error(error: &Value) -> String {
+pub fn describe_error(error: &Value) -> String {
     match error {
         Value::Array(parts) => parts
             .iter()
