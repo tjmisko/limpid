@@ -9,7 +9,7 @@ use crate::{
     helpers::{self, HelperJob, HelperKind, Helpers, Locate},
     page::DocPage,
     paint::Canvas,
-    window::Page,
+    window::{Page, TICK_INTERVAL},
 };
 use limpid_core::settings::Settings;
 use std::{
@@ -26,6 +26,9 @@ fn stamp_of(path: &Path) -> Option<Stamp> {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.modified().ok()?, meta.len()))
 }
+
+/// How often to look at running helper children while any exist.
+const HELPER_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Polls one file for changes, at most once per `interval`.
 pub struct Watcher {
@@ -206,6 +209,19 @@ impl Page for WatchedPage {
             || !self.deferred.is_empty()
     }
 
+    fn tick_period(&self) -> Duration {
+        let fast = self.page.wants_ticks();
+        if fast {
+            return TICK_INTERVAL;
+        }
+        let working = self.replan || self.helpers.busy() || !self.deferred.is_empty();
+        if working {
+            return HELPER_POLL_INTERVAL;
+        }
+        // Idle: wake only as often as the file is looked at.
+        self.watcher.interval
+    }
+
     fn tick(&mut self) -> bool {
         let mut changed = self.page.tick();
         changed |= self.step(Instant::now());
@@ -348,6 +364,52 @@ mod tests {
 
     fn fast_watch() -> Settings {
         Settings::parse("[view]\nwatch_interval_ms = 1\n").unwrap()
+    }
+
+    #[test]
+    fn should_sleep_for_the_watch_interval_when_the_page_is_idle() {
+        let dir = scratch("idle-period");
+        let path = dir.join("a.md");
+        write_at(&path, "plain\n", 1);
+        let settings = Settings::default();
+        let mut watched = open(&path, &settings);
+        paint(&mut watched, 400, 200);
+        assert!(watched.replan, "a fresh page plans its helpers first");
+        watched.step(Instant::now());
+        assert!(watched.wants_ticks());
+        let period = watched.tick_period();
+        assert_eq!(
+            period,
+            Duration::from_millis(settings.view.watch_interval_ms)
+        );
+        assert!(
+            period > TICK_INTERVAL * 4,
+            "an idle viewer must not wake at the editor's rate"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_poll_quickly_when_a_helper_is_still_running() {
+        let dir = scratch("busy-period");
+        let path = dir.join("a.md");
+        write_at(&path, "plain\n", 1);
+        let watched = open(&path, &Settings::default());
+        assert!(watched.replan);
+        assert_eq!(watched.tick_period(), HELPER_POLL_INTERVAL);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_not_tick_at_all_when_watching_is_off_and_nothing_is_pending() {
+        let dir = scratch("no-ticks");
+        let path = dir.join("a.md");
+        write_at(&path, "plain\n", 1);
+        let settings = Settings::parse("[view]\nwatch_interval_ms = 0\n").unwrap();
+        let mut watched = open(&path, &settings);
+        watched.step(Instant::now());
+        assert!(!watched.wants_ticks());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn block_at_top(page: &WatchedPage) -> String {

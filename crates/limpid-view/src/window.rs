@@ -34,6 +34,12 @@ pub trait Page {
     fn tick(&mut self) -> bool {
         false
     }
+    /// How long the loop may sleep before the next [`Page::tick`] while
+    /// [`Page::wants_ticks`] is true. A page that only polls slowly should
+    /// say so, so an idle window does not wake sixty times a second.
+    fn tick_period(&self) -> Duration {
+        TICK_INTERVAL
+    }
 }
 
 /// How often a page that wants ticks is woken.
@@ -194,20 +200,20 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let mut ticking = false;
+        let mut next_wake: Option<Duration> = None;
         for open in self.windows.values_mut() {
             if !open.page.wants_ticks() {
                 continue;
             }
-            ticking = true;
             if open.page.tick() {
                 open.request_redraw();
             }
+            let period = open.page.tick_period();
+            next_wake = Some(next_wake.map_or(period, |soonest| soonest.min(period)));
         }
-        let flow = if ticking {
-            ControlFlow::WaitUntil(std::time::Instant::now() + TICK_INTERVAL)
-        } else {
-            ControlFlow::Wait
+        let flow = match next_wake {
+            Some(period) => ControlFlow::WaitUntil(std::time::Instant::now() + period),
+            None => ControlFlow::Wait,
         };
         event_loop.set_control_flow(flow);
     }
@@ -260,6 +266,7 @@ mod tests {
         let mut page = Still;
         assert!(!page.wants_ticks());
         assert!(!page.tick());
+        assert_eq!(page.tick_period(), TICK_INTERVAL);
         assert!(TICK_INTERVAL < Duration::from_millis(100));
     }
 
