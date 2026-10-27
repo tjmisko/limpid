@@ -433,3 +433,114 @@ fn opening_markdown_starts_the_view_and_its_socket_when_a_display_exists() {
     );
     let _ = fs::remove_dir_all(runtime);
 }
+
+#[test]
+fn should_print_help_when_the_environment_viewer_is_bogus() {
+    let help = Command::new(env!("CARGO_BIN_EXE_limpid"))
+        .arg("--help")
+        .env("LIMPID_VIEWER", "bogus")
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: limpid"));
+}
+
+#[test]
+fn should_export_when_the_environment_viewer_is_bogus() {
+    let directory = std::env::temp_dir().join(format!("limpid-bogus-out-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("a.md");
+    let out = directory.join("a.html");
+    fs::write(&source, "# Title\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_limpid"))
+        .arg("--out")
+        .arg(&out)
+        .arg(&source)
+        .env("LIMPID_VIEWER", "bogus")
+        .env("XDG_CONFIG_HOME", &directory)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(fs::read_to_string(&out).unwrap().contains("Title"));
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn should_reject_a_bogus_environment_viewer_when_a_viewer_is_needed() {
+    let output = Command::new(env!("CARGO_BIN_EXE_limpid"))
+        .arg("x.md")
+        .env("LIMPID_VIEWER", "bogus")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("LIMPID_VIEWER"), "{stderr}");
+}
+
+#[test]
+fn should_let_the_viewer_flag_win_when_the_environment_viewer_is_bogus() {
+    let output = Command::new(env!("CARGO_BIN_EXE_limpid"))
+        .args(["--viewer", "view", "/nonexistent/x.md"])
+        .env("LIMPID_VIEWER", "bogus")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("LIMPID_VIEWER"), "{stderr}");
+}
+
+#[test]
+fn should_export_an_htm_page_untouched_when_given_one() {
+    let directory = std::env::temp_dir().join(format!("limpid-htm-out-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let page = directory.join("page.htm");
+    let out = directory.join("copy.html");
+    fs::write(&page, "<p>raw page</p>").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_limpid"))
+        .arg("--out")
+        .arg(&out)
+        .arg(&page)
+        .env("XDG_CONFIG_HOME", &directory)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(fs::read_to_string(&out).unwrap(), "<p>raw page</p>");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn should_prune_old_stdin_pages_when_more_than_fifty_exist() {
+    let directory = std::env::temp_dir().join(format!("limpid-stdin-prune-{}", std::process::id()));
+    let cache = directory.join("limpid");
+    fs::create_dir_all(&cache).unwrap();
+    for index in 0..60 {
+        let path = cache.join(format!("stdin-old-{index:02}.md"));
+        fs::write(&path, "old").unwrap();
+        let age = Duration::from_secs(1000 + index);
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - age)
+            .unwrap();
+    }
+    let receiver = receive_view_handoff(&directory, Scheme::Dark);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_limpid"))
+        .arg("-")
+        .env("XDG_RUNTIME_DIR", &directory)
+        .env("XDG_CACHE_HOME", &directory)
+        .env("XDG_CONFIG_HOME", &directory)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"# new\n").unwrap();
+    assert!(child.wait().unwrap().success());
+    let request = receiver.join().unwrap().expect("no handoff received");
+    let remaining = fs::read_dir(&cache)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("stdin-"))
+        .count();
+    assert_eq!(remaining, 50);
+    assert!(request.path.exists());
+    fs::remove_dir_all(directory).unwrap();
+}

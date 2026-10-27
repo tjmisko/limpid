@@ -68,8 +68,7 @@ impl Target {
         if target == Path::new("-") {
             return Self::Stdin;
         }
-        let is_html = target.extension().and_then(|extension| extension.to_str()) == Some("html");
-        if !is_html {
+        if !is_html_path(target) {
             return Self::Markdown(target.to_path_buf());
         }
         Self::Html {
@@ -77,6 +76,15 @@ impl Target {
             sidecar: agent_sidecar(target),
         }
     }
+}
+
+/// `.html` or `.htm`, in any letter case.
+fn is_html_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("htm")
+        })
 }
 
 /// The Markdown beside an agent page: `<page>.md` next to `<page>.html` with
@@ -111,10 +119,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut scheme = Scheme::Dark;
     let mut separate = false;
     let mut source_backed_flag = false;
-    let mut forced = match std::env::var("LIMPID_VIEWER") {
-        Ok(name) if !name.is_empty() => Some(Viewer::parse(&name)?),
-        _ => None,
-    };
+    let mut forced_by_flag = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--out") => out = Some(args.next().ok_or("--out requires a file path")?),
@@ -125,7 +130,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             Some("--light") => scheme = Scheme::Light,
             Some("--viewer") => {
                 let name = args.next().ok_or("--viewer requires view or host")?;
-                forced = Some(Viewer::parse(&name.to_string_lossy())?);
+                forced_by_flag = Some(Viewer::parse(&name.to_string_lossy())?);
             }
             Some("--help" | "-h") => {
                 println!(
@@ -174,6 +179,12 @@ fn run() -> Result<(), Box<dyn Error>> {
     if let Some(out) = out {
         return export(&classified, Path::new(&out));
     }
+    // The environment is read only now: a bad value must not break --help
+    // or --out, which never choose a viewer. A flag beats the environment.
+    let forced = match forced_by_flag {
+        Some(viewer) => Some(viewer),
+        None => forced_from_environment(std::env::var("LIMPID_VIEWER").ok().as_deref())?,
+    };
     let viewer = choose_viewer(&classified, forced)?;
     let source_backed =
         generated || source_backed_flag || !matches!(classified, Target::Html { .. });
@@ -184,6 +195,16 @@ fn run() -> Result<(), Box<dyn Error>> {
         separate,
         source_backed,
     })
+}
+
+/// The viewer named by `LIMPID_VIEWER`; unset or empty names none.
+fn forced_from_environment(value: Option<&str>) -> Result<Option<Viewer>, String> {
+    match value {
+        Some(name) if !name.is_empty() => Viewer::parse(name)
+            .map(Some)
+            .map_err(|error| format!("LIMPID_VIEWER: {error}")),
+        _ => Ok(None),
+    }
 }
 
 /// `--out`: write the rendered HTML page and open nothing.
@@ -275,7 +296,12 @@ fn view_handoff(opening: &Opening, pane: Option<String>) -> Result<Handoff, Box<
             std::fs::create_dir_all(&cache)?;
             let path = cache.join(format!("stdin-{}.md", unique_suffix()?));
             std::fs::write(&path, source)?;
-            (path.canonicalize()?, None, None)
+            let path = path.canonicalize()?;
+            // Housekeeping must not stop the page from opening.
+            if let Err(error) = prune_stdin_pages(&cache, &path, KEEP_STDIN_PAGES) {
+                eprintln!("limpid: could not prune old stdin pages: {error}");
+            }
+            (path, None, None)
         }
     };
     Ok(Handoff {
@@ -321,6 +347,44 @@ fn host_handoff(opening: &Opening, pane: Option<String>) -> Result<Handoff, Box<
         source_hash,
         source_backed: opening.source_backed,
     })
+}
+
+/// How many `stdin-*.md` pages stay in the cache.
+const KEEP_STDIN_PAGES: usize = 50;
+
+/// Delete all but the newest `keep` pages made from standard input. `preserve`
+/// (the page just written) always stays, and a page with replies saved beside
+/// it is the user's work: it stays too, and counts against `keep`.
+fn prune_stdin_pages(cache: &Path, preserve: &Path, keep: usize) -> std::io::Result<()> {
+    let mut pages = std::fs::read_dir(cache)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().and_then(|extension| extension.to_str()) == Some("md")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("stdin-"))
+        })
+        .collect::<Vec<_>>();
+    pages.sort_by_key(|path| {
+        std::cmp::Reverse(
+            std::fs::metadata(path)
+                .and_then(|meta| meta.modified())
+                .ok(),
+        )
+    });
+    let (protected, unprotected): (Vec<_>, Vec<_>) = pages
+        .into_iter()
+        .partition(|page| page.with_extension("replies.json").exists());
+    let allowed = keep.saturating_sub(protected.len());
+    for page in unprotected.into_iter().skip(allowed) {
+        if page == preserve {
+            continue;
+        }
+        std::fs::remove_file(&page)?;
+    }
+    Ok(())
 }
 
 fn unique_suffix() -> Result<String, Box<dyn Error>> {
@@ -590,5 +654,134 @@ mod tests {
         assert!(message.contains("LIMPID_WEBKIT=1"), "{message}");
         let other = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
         assert!(launch_error(Viewer::View, &other).contains("limpid-view"));
+    }
+
+    #[test]
+    fn should_treat_htm_like_html_when_classifying() {
+        for name in [
+            "/nonexistent/p.htm",
+            "/nonexistent/P.HTM",
+            "/nonexistent/p.Html",
+        ] {
+            assert!(
+                matches!(Target::classify(Path::new(name)), Target::Html { .. }),
+                "{name}"
+            );
+        }
+        assert!(matches!(
+            Target::classify(Path::new("notes.htmx")),
+            Target::Markdown(_)
+        ));
+        assert_eq!(
+            choose_viewer(&Target::classify(Path::new("/nonexistent/p.htm")), None),
+            Ok(Viewer::Host)
+        );
+    }
+
+    #[test]
+    fn should_find_the_sidecar_when_an_agent_page_is_named_htm() {
+        let dir = scratch("htm-sidecar");
+        let page = dir.join("claude-1.htm");
+        std::fs::write(&page, "<html>").unwrap();
+        std::fs::write(dir.join("claude-1.md"), "# x").unwrap();
+        std::fs::write(dir.join("claude-1.meta.json"), "{}").unwrap();
+        assert_eq!(
+            Target::classify(&page),
+            Target::Html {
+                path: page,
+                sidecar: Some(dir.join("claude-1.md"))
+            }
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_name_the_variable_when_the_environment_viewer_is_unknown() {
+        let error = forced_from_environment(Some("bogus")).unwrap_err();
+        assert!(error.contains("LIMPID_VIEWER"), "{error}");
+        assert!(error.contains("bogus"), "{error}");
+    }
+
+    #[test]
+    fn should_force_nothing_when_the_environment_viewer_is_unset_or_empty() {
+        assert_eq!(forced_from_environment(None), Ok(None));
+        assert_eq!(forced_from_environment(Some("")), Ok(None));
+        assert_eq!(
+            forced_from_environment(Some("host")),
+            Ok(Some(Viewer::Host))
+        );
+    }
+
+    fn stdin_page(dir: &Path, name: &str, age_seconds: u64) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, "x").unwrap();
+        let modified = std::time::SystemTime::now() - Duration::from_secs(age_seconds);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn should_keep_only_the_newest_stdin_pages_when_pruning() {
+        let dir = scratch("prune-newest");
+        let pages: Vec<PathBuf> = (0..8)
+            .map(|age| stdin_page(&dir, &format!("stdin-{age}.md"), age * 10 + 10))
+            .collect();
+        prune_stdin_pages(&dir, &pages[0], 3).unwrap();
+        let kept: Vec<bool> = pages.iter().map(|page| page.exists()).collect();
+        assert_eq!(kept, [true, true, true, false, false, false, false, false]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_never_touch_other_files_when_pruning_stdin_pages() {
+        let dir = scratch("prune-others");
+        let other_files = [
+            stdin_page(&dir, "notes.md", 1000),
+            stdin_page(&dir, "claude-1.md", 1000),
+            stdin_page(&dir, "stdin-note.html", 1000),
+            stdin_page(&dir, "page-1.html", 1000),
+        ];
+        let newest = stdin_page(&dir, "stdin-new.md", 1);
+        prune_stdin_pages(&dir, &newest, 1).unwrap();
+        for file in other_files {
+            assert!(file.exists(), "{}", file.display());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_keep_the_page_just_written_when_its_mtime_is_old() {
+        let dir = scratch("prune-preserve");
+        let fresh = stdin_page(&dir, "stdin-fresh.md", 99_999);
+        stdin_page(&dir, "stdin-a.md", 10);
+        stdin_page(&dir, "stdin-b.md", 20);
+        prune_stdin_pages(&dir, &fresh, 1).unwrap();
+        assert!(fresh.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_keep_a_stdin_page_with_replies_when_pruning() {
+        let dir = scratch("prune-replies");
+        let answered = stdin_page(&dir, "stdin-answered.md", 5000);
+        std::fs::write(dir.join("stdin-answered.replies.json"), "{}").unwrap();
+        let newest = stdin_page(&dir, "stdin-new.md", 1);
+        let middle = stdin_page(&dir, "stdin-mid.md", 100);
+        prune_stdin_pages(&dir, &newest, 2).unwrap();
+        assert!(answered.exists(), "replies are the user's work");
+        assert!(newest.exists());
+        assert!(!middle.exists(), "the protected page uses one of the slots");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_fail_without_panicking_when_the_cache_is_missing_while_pruning() {
+        let missing = std::env::temp_dir().join("limpid-route-no-such-cache");
+        assert!(prune_stdin_pages(&missing, &missing.join("stdin-x.md"), 3).is_err());
     }
 }
