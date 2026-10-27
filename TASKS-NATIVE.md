@@ -532,6 +532,15 @@ sees the sidecar written.
 `crates/limpid-core/src/settings.rs` (add `mermaid.timeout_seconds`),
 `crates/limpid-host/Cargo.toml` and the workspace `Cargo.toml` (feature),
 `install.sh`, `README.md`, `DESIGN.md`, `TASKS.md`, `.github/workflows/*.yml`.
+Added after review, because the unit cannot work without them:
+`crates/limpid-view/src/lib.rs` (register `helpers` and `watch`),
+`crates/limpid-view/src/page.rs` (`reload_quietly` public, `refresh_pending`
+on `DocPage`), `crates/limpid-view/src/window.rs` (`Page::tick_period`, so an
+idle watched page sleeps for the watch interval instead of waking every
+16 ms), `crates/limpid-core/src/agent_page.rs` and
+`crates/limpid-core/src/main.rs` (the `.md` sidecar for agent pages), and the
+tests `crates/limpid-core/tests/cli.rs`, `crates/limpid/tests/cli.rs`,
+`crates/limpid/tests/install.rs`.
 
 - Watch: poll the source as the host does; on change re-parse, re-lay out,
   and restore the viewport by the `src` range at the top.
