@@ -16,7 +16,6 @@ use tree_sitter_language::LanguageFn;
 struct Grammar {
     // A Language points into the shared object, so it must outlive the config.
     config: HighlightConfiguration,
-    injections: String,
     _library: Library,
 }
 
@@ -162,57 +161,48 @@ impl Highlighter {
         if !self.loaded.contains_key(&name) {
             self.loaded.insert(name.clone(), self.load(&name).ok());
         }
-        let static_injections = self
-            .loaded
-            .get(&name)
-            .and_then(Option::as_ref)
-            .map(|grammar| {
-                grammar
-                    .injections
-                    .split("#set! injection.language \"")
-                    .skip(1)
-                    .filter_map(|tail| tail.split('"').next())
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for injected in static_injections {
-            if let Some(canonical) = self.aliases.get(&injected).cloned()
-                && !self.loaded.contains_key(&canonical)
-            {
-                self.loaded
-                    .insert(canonical.clone(), self.load(&canonical).ok());
+        // Injected grammars load lazily: only a language that an injection in
+        // this source actually asks for is loaded. A Rust grammar can inject a
+        // dozen languages, and compiling the SQL queries alone costs about
+        // 15 MiB, so loading them on the chance a string is SQL is not worth it.
+        // When a run meets an injection whose grammar is not loaded yet, the
+        // grammar is loaded and the run repeats; each language loads once per
+        // process, so the repeat happens at most once per injected language.
+        loop {
+            self.configure_loaded();
+            let (steps, missing) = self.run_loaded(&name, source)?;
+            let unloaded = missing
+                .into_iter()
+                .filter(|canonical| !self.loaded.contains_key(canonical))
+                .collect::<BTreeSet<_>>();
+            if unloaded.is_empty() {
+                return Some(steps);
+            }
+            for canonical in unloaded {
+                let grammar = self.load(&canonical).ok();
+                self.loaded.insert(canonical, grammar);
             }
         }
-        if name == "markdown" {
-            let fenced = source
-                .lines()
-                .filter_map(|line| {
-                    let line = line.trim_start();
-                    let info = line
-                        .strip_prefix("```")
-                        .or_else(|| line.strip_prefix("~~~"))?;
-                    let alias = info.split_whitespace().next()?.to_ascii_lowercase();
-                    self.aliases.get(&alias).cloned()
-                })
-                .collect::<Vec<_>>();
-            for injected in fenced {
-                if !self.loaded.contains_key(&injected) {
-                    self.loaded
-                        .insert(injected.clone(), self.load(&injected).ok());
-                }
-            }
-        }
-        self.configure_loaded();
-        let grammar = self.loaded.get(&name).and_then(Option::as_ref)?;
+    }
+
+    /// One highlight run over the grammars loaded so far. Returns the steps
+    /// and the canonical names of injected languages the run asked for that
+    /// were not loaded.
+    fn run_loaded(&self, name: &str, source: &str) -> Option<(Vec<Step>, Vec<String>)> {
+        let grammar = self.loaded.get(name).and_then(Option::as_ref)?;
+        let missing = std::cell::RefCell::new(Vec::new());
         let mut tree_sitter = TreeSitterHighlighter::new();
         let events = tree_sitter
             .highlight(&grammar.config, source.as_bytes(), None, |injected| {
-                self.aliases
-                    .get(&injected.to_ascii_lowercase())
-                    .and_then(|canonical| self.loaded.get(canonical))
-                    .and_then(Option::as_ref)
-                    .map(|loaded| &loaded.config)
+                let canonical = self.aliases.get(&injected.to_ascii_lowercase())?;
+                match self.loaded.get(canonical) {
+                    Some(Some(loaded)) => Some(&loaded.config),
+                    Some(None) => None,
+                    None => {
+                        missing.borrow_mut().push(canonical.clone());
+                        None
+                    }
+                }
             })
             .ok()?;
         let mut steps = Vec::new();
@@ -223,7 +213,7 @@ impl Highlighter {
                 HighlightEvent::HighlightEnd => Step::Close,
             });
         }
-        Some(steps)
+        Some((steps, missing.into_inner()))
     }
 
     fn configure_loaded(&mut self) {
@@ -270,7 +260,6 @@ impl Highlighter {
         let config = HighlightConfiguration::new(language, name, &highlights, &injections, "")?;
         Ok(Grammar {
             config,
-            injections,
             _library: library,
         })
     }
@@ -279,6 +268,43 @@ impl Highlighter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn loaded_names(highlighter: &Highlighter) -> BTreeSet<String> {
+        highlighter
+            .loaded
+            .iter()
+            .filter(|(_, grammar)| grammar.is_some())
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn should_load_only_the_fence_language_when_no_injection_occurs() {
+        let mut highlighter = Highlighter::new();
+        if highlighter.load("rust").is_err() {
+            eprintln!("skipping: no rust grammar installed");
+            return;
+        }
+        let spans = highlighter.spans("rust", "fn main() { let x = 1; }");
+        assert!(!spans.is_empty());
+        assert_eq!(
+            loaded_names(&highlighter),
+            BTreeSet::from(["rust".to_owned()]),
+            "a Rust snippet without injections must not load the languages Rust can inject"
+        );
+    }
+
+    #[test]
+    fn should_load_an_injected_language_when_the_source_injects_it() {
+        let mut highlighter = Highlighter::new();
+        if highlighter.load("markdown").is_err() || highlighter.load("rust").is_err() {
+            eprintln!("skipping: markdown or rust grammar not installed");
+            return;
+        }
+        let spans = highlighter.spans("markdown", "# Title\n\n```rust\nfn main() {}\n```\n");
+        assert!(spans.iter().any(|span| span.class.starts_with("keyword")));
+        assert!(loaded_names(&highlighter).contains("rust"));
+    }
 
     #[test]
     fn missing_grammar_and_unknown_fence_are_escaped() {
