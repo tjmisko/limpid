@@ -375,9 +375,15 @@ impl Nav {
             if !lone_heading {
                 selection = Some(Rect::new(focus.x, top, focus.w, bottom - top));
             }
+            // Code, tables and diagrams cut through the band; a question
+            // keeps its ring only while it has the cursor, as in client.css.
+            let cursor = &stops[at].src;
             outlined = covered
                 .iter()
-                .filter(|s| matches!(s.kind, StopKind::Special | StopKind::Question))
+                .filter(|s| {
+                    s.kind == StopKind::Special
+                        || (s.kind == StopKind::Question && &s.src == cursor)
+                })
                 .map(|s| (s.kind, s.rect))
                 .collect();
         }
@@ -1845,6 +1851,27 @@ mod tests {
                 .any(|(kind, _)| *kind == StopKind::Question),
             "{:?}",
             bands.outlined
+        );
+    }
+
+    #[test]
+    fn should_ring_only_the_focused_question_when_visual_covers_several() {
+        let mut world = World::new(
+            "## Questions\n\n1. Which?\n   - A\n   - B\n2. Why?\n   - C\n   - D\n",
+            600.0,
+        );
+        world.keys(&["j", "v", "j"]);
+        let bands = world.nav.bands(&world.layout);
+        let rings: Vec<_> = bands
+            .outlined
+            .iter()
+            .filter(|(kind, _)| *kind == StopKind::Question)
+            .collect();
+        assert_eq!(rings.len(), 1, "{:?}", bands.outlined);
+        assert_eq!(
+            rings[0].1,
+            bands.focus.unwrap(),
+            "the ring is on the focused question"
         );
     }
 
