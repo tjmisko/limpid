@@ -17,7 +17,10 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime},
 };
-use winit::{event::KeyEvent, keyboard::ModifiersState};
+use winit::{
+    event::{Ime, KeyEvent},
+    keyboard::ModifiersState,
+};
 
 /// What the file looked like at the last look: modification time and length.
 type Stamp = (SystemTime, u64);
@@ -229,6 +232,10 @@ impl Page for WatchedPage {
 
     fn modifiers_changed(&mut self, modifiers: ModifiersState) {
         self.page.modifiers_changed(modifiers);
+    }
+
+    fn ime(&mut self, event: &Ime) -> bool {
+        self.page.ime(event)
     }
 
     fn wants_ticks(&self) -> bool {

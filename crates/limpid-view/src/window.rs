@@ -8,7 +8,7 @@ use std::{collections::HashMap, num::NonZeroU32, rc::Rc, time::Duration};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
-    event::{KeyEvent, WindowEvent},
+    event::{Ime, KeyEvent, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, OwnedDisplayHandle},
     keyboard::ModifiersState,
     platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11},
@@ -24,6 +24,11 @@ pub trait Page {
     /// repaint.
     fn key(&mut self, event: &KeyEvent) -> bool;
     fn modifiers_changed(&mut self, _modifiers: ModifiersState) {}
+    /// An input-method event (committed text, uncommitted preedit text, or
+    /// the method turning on or off). Returns whether the page changed.
+    fn ime(&mut self, _event: &Ime) -> bool {
+        false
+    }
     /// Whether the page needs [`Page::tick`] calls (an embedded editor is
     /// running); the event loop then wakes up every [`TICK_INTERVAL`].
     fn wants_ticks(&self) -> bool {
@@ -170,6 +175,9 @@ impl App {
                 .create_window(attributes)
                 .map_err(|error| error.to_string())?,
         );
+        // Input methods deliver committed and preedit text as Ime events,
+        // which the editor box forwards to nvim.
+        window.set_ime_allowed(true);
         let context = match self.context.take() {
             Some(context) => context,
             None => Context::new(event_loop.owned_display_handle())
@@ -260,6 +268,7 @@ impl ApplicationHandler<UserEvent> for App {
                     open.request_redraw();
                 }
             }
+            WindowEvent::Ime(ime) if open.page.ime(&ime) => open.request_redraw(),
             _ => {}
         }
     }

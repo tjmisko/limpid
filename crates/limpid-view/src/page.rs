@@ -35,7 +35,7 @@ use std::{
     time::{Duration, Instant},
 };
 use winit::{
-    event::{ElementState, KeyEvent},
+    event::{ElementState, Ime, KeyEvent},
     keyboard::{Key, ModifiersState},
 };
 
@@ -1044,6 +1044,23 @@ impl Page for DocPage {
 
     fn modifiers_changed(&mut self, modifiers: ModifiersState) {
         self.modifiers = modifiers;
+    }
+
+    fn ime(&mut self, event: &Ime) -> bool {
+        let Some(feedback) = self.feedback.clone() else {
+            return false;
+        };
+        let mut feedback = feedback.borrow_mut();
+        match event {
+            Ime::Commit(text) => {
+                feedback.ime_commit(text);
+                feedback.ime_preedit(None);
+                true
+            }
+            Ime::Preedit(text, _) => feedback.ime_preedit(Some(text)),
+            Ime::Enabled => false,
+            Ime::Disabled => feedback.ime_preedit(None),
+        }
     }
 
     fn wants_ticks(&self) -> bool {
