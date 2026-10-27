@@ -9,6 +9,7 @@
 
 pub mod boxes;
 pub mod fields;
+pub mod host;
 pub mod review;
 
 use crate::{
@@ -18,8 +19,9 @@ use crate::{
     paint::{Canvas, Rect},
     text::Fonts,
     theme::Theme,
+    window::TICK_INTERVAL,
 };
-use boxes::{BoxLimits, EditorPort, EditorSpawner, OpenBox, nvim_spawner};
+use boxes::{BoxLimits, EditorSpawner, OpenBox};
 use fields::{
     BoxPlan, BoxTarget, CommentEntry, DocIndex, FILE_KEY_PREFIX, Pending, QUOTE_CHARS, Synthetic,
     file_key, line_of, quote_of, range_text,
@@ -30,6 +32,7 @@ use limpid_core::{
     settings::Settings,
     transport::Handoff,
 };
+use host::{BeginError, EditorHost, OwnerId, SharedEditor};
 use review::Review;
 use std::{
     cell::RefCell,
@@ -39,9 +42,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// How long a key waits for the editor's answer before the page repaints
-/// anyway; later output arrives through [`Feedback::tick`].
-const KEY_SETTLE: Duration = Duration::from_millis(30);
+/// How long a window with nothing to poll sleeps while another window's box
+/// has the editor, or when no idle deadline is running.
+const BYSTANDER_PERIOD: Duration = Duration::from_secs(1);
 
 /// Settings of the feedback layer that are not part of the theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +64,12 @@ impl FeedbackOptions {
             idle: Duration::from_secs(settings.editor.idle_seconds),
         }
     }
+}
+
+/// Text from an input method as nvim key notation: `<` is the only
+/// character `nvim_input` reads as the start of a key name.
+pub fn ime_keys(text: &str) -> String {
+    text.replace('<', "<lt>")
 }
 
 /// What a cursor stop is, as far as feedback goes.
@@ -91,9 +100,8 @@ pub struct Feedback {
     source: String,
     pending: Pending,
     synthetic: HashMap<Range<usize>, Synthetic>,
-    spawner: EditorSpawner,
-    editor: Option<Box<dyn EditorPort>>,
-    idle_since: Option<Instant>,
+    host: SharedEditor,
+    owner: OwnerId,
     open: Option<OpenBox>,
     /// Columns and rows of the last grid the editor was sized to.
     grid_size: (u16, u16),
@@ -128,6 +136,8 @@ impl Feedback {
                 }
             }
         };
+        let host = EditorHost::shared_nvim();
+        let owner = host.borrow_mut().register();
         Self {
             options: FeedbackOptions::from_settings(settings),
             settings: settings.clone(),
@@ -138,9 +148,8 @@ impl Feedback {
             source: String::new(),
             pending,
             synthetic: HashMap::new(),
-            spawner: nvim_spawner(),
-            editor: None,
-            idle_since: None,
+            host,
+            owner,
             open: None,
             grid_size: (80, 6),
             review: None,
@@ -151,8 +160,15 @@ impl Feedback {
         }
     }
 
-    pub fn with_spawner(mut self, spawner: EditorSpawner) -> Self {
-        self.spawner = spawner;
+    /// A private editor host that starts editors with `spawner`.
+    pub fn with_spawner(self, spawner: EditorSpawner) -> Self {
+        self.with_host(EditorHost::shared(spawner))
+    }
+
+    /// Share `host` (one per view process) with the other windows.
+    pub fn with_host(mut self, host: SharedEditor) -> Self {
+        self.owner = host.borrow_mut().register();
+        self.host = host;
         self
     }
 
@@ -289,7 +305,26 @@ impl Feedback {
     /// Whether the window should call [`Feedback::tick`]: an editor is
     /// running or its idle timer is.
     pub fn wants_ticks(&self) -> bool {
-        self.open.is_some() || self.editor.is_some()
+        self.open.is_some() || self.host.borrow().has_editor()
+    }
+
+    /// How long the window may sleep before the next [`Feedback::tick`]: the
+    /// frame interval while this window's box is open, else the time until
+    /// the idle timer stops the editor (a long sleep when there is none).
+    pub fn tick_period(&self, now: Instant) -> Duration {
+        if self.open.is_some() {
+            return TICK_INTERVAL;
+        }
+        let host = self.host.borrow();
+        if host.in_use_by_other(self.owner) {
+            return BYSTANDER_PERIOD;
+        }
+        let Some(deadline) = host.idle_deadline(self.options.idle) else {
+            return BYSTANDER_PERIOD;
+        };
+        deadline
+            .saturating_duration_since(now)
+            .max(Duration::from_millis(1))
     }
 
     fn editor_config(&self) -> EditorConfig {
@@ -300,50 +335,59 @@ impl Feedback {
         if self.open.is_some() {
             return ActionResult::Nothing("editor open: :wq or :q!".into());
         }
-        let alive = self
-            .editor
-            .as_mut()
-            .is_some_and(|editor| editor.is_running());
-        if !alive {
-            self.editor = None;
-            let config = self.editor_config();
-            match (self.spawner)(&config) {
-                Ok(editor) => self.editor = Some(editor),
-                Err(error) => {
-                    return ActionResult::Failed(format!(
-                        "{error} (set [editor] command to your nvim)"
-                    ));
-                }
+        let config = self.editor_config();
+        let begun = self
+            .host
+            .borrow_mut()
+            .begin(self.owner, &config, text, kind);
+        match begun {
+            Ok(()) => {}
+            Err(BeginError::InUse) => {
+                return ActionResult::Nothing("editor in use in another window".into());
             }
-        }
-        let Some(editor) = self.editor.as_mut() else {
-            return ActionResult::Failed("editor not running".into());
-        };
-        if let Err(error) = editor.open(text, kind) {
-            self.editor = None;
-            return ActionResult::Failed(error.to_string());
+            Err(BeginError::Spawn(error)) => {
+                return ActionResult::Failed(format!(
+                    "{error} (set [editor] command to your nvim)"
+                ));
+            }
+            Err(BeginError::Open(error)) => return ActionResult::Failed(error.to_string()),
         }
         let rows = self.options.limits.rows_for(text.lines().count() as u16);
         self.open = Some(OpenBox::new(BoxPlan { target, rows }));
-        self.idle_since = None;
         self.stale = true;
         self.focus = Some(Focus::Box);
         ActionResult::Done(String::new())
     }
 
-    /// Keys for the editor, in nvim notation. Waits a moment for its answer.
+    /// Keys for the editor, in nvim notation. Returns at once; the editor's
+    /// answer arrives through [`Feedback::tick`].
     pub fn input(&mut self, keys: &str) {
-        let Some(editor) = self.editor.as_mut() else {
+        if keys.is_empty() || self.open.is_none() {
             return;
-        };
-        editor.input(keys);
-        let deadline = Instant::now() + KEY_SETTLE;
-        while Instant::now() < deadline {
-            if self.drain_editor() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(1));
         }
+        self.host.borrow_mut().input(self.owner, keys);
+    }
+
+    /// Text committed by an input method: typed into the box literally.
+    pub fn ime_commit(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.input(&ime_keys(text));
+    }
+
+    /// The input method's uncommitted text, shown in the box's status line;
+    /// `None` or empty clears it. Returns whether the display changed.
+    pub fn ime_preedit(&mut self, text: Option<&str>) -> bool {
+        let Some(open) = self.open.as_mut() else {
+            return false;
+        };
+        let text = text.filter(|text| !text.is_empty()).map(str::to_owned);
+        if open.preedit == text {
+            return false;
+        }
+        open.preedit = text;
+        true
     }
 
     /// `Ctrl-Shift-q`: close the box and throw its buffer away.
@@ -352,16 +396,16 @@ impl Feedback {
             return;
         };
         let leaves = open.plan.clone();
-        if let Some(editor) = self.editor.as_mut() {
-            editor.input("<C-\\><C-n>:q!<CR>");
-        }
+        self.host
+            .borrow_mut()
+            .input(self.owner, "<C-\\><C-n>:q!<CR>");
         self.finish_box(leaves);
         self.flashes.push("editor closed, buffer discarded".into());
     }
 
     fn finish_box(&mut self, plan: BoxPlan) {
         self.open = None;
-        self.idle_since = Some(Instant::now());
+        self.host.borrow_mut().release(self.owner, Instant::now());
         self.stale = true;
         self.focus = Some(match &plan.target {
             BoxTarget::Reply { field } => self
@@ -381,19 +425,18 @@ impl Feedback {
 
     /// Handle what the editor reported. Returns whether anything did.
     fn drain_editor(&mut self) -> bool {
-        let Some(editor) = self.editor.as_mut() else {
+        let Some(polled) = self.host.borrow_mut().poll(self.owner) else {
             return false;
         };
-        let events = editor.poll();
-        let crashed = self.open.is_some() && !editor.is_running();
-        let handled = !events.is_empty();
-        for event in events {
+        let crashed = self.open.is_some() && !polled.running;
+        let handled = !polled.events.is_empty();
+        for event in polled.events {
             self.handle_event(event);
         }
         if crashed && let Some(open) = self.open.as_ref() {
             let plan = open.plan.clone();
             self.finish_box(plan);
-            self.editor = None;
+            self.host.borrow_mut().discard(self.owner);
             self.flashes.push("the editor exited".into());
             return true;
         }
@@ -437,13 +480,14 @@ impl Feedback {
 
     /// Grow or shrink the box to the text in it.
     fn fit_box_to_content(&mut self) {
-        let (Some(open), Some(editor)) = (self.open.as_mut(), self.editor.as_ref()) else {
+        let Some(open) = self.open.as_mut() else {
             return;
         };
-        let rows = self
-            .options
-            .limits
-            .rows_for(boxes::content_rows(editor.grid()));
+        let content = self.host.borrow().grid().map(boxes::content_rows);
+        let Some(content) = content else {
+            return;
+        };
+        let rows = self.options.limits.rows_for(content);
         if open.plan.rows != rows {
             open.plan.rows = rows;
             self.stale = true;
@@ -491,14 +535,10 @@ impl Feedback {
     /// Returns whether the page needs a repaint.
     pub fn tick(&mut self, now: Instant) -> bool {
         let handled = self.drain_editor();
-        if self.open.is_none()
-            && self.editor.is_some()
-            && self
-                .idle_since
-                .is_some_and(|since| now.saturating_duration_since(since) >= self.options.idle)
-        {
-            self.editor = None;
-            self.idle_since = None;
+        if self.open.is_none() {
+            self.host
+                .borrow_mut()
+                .stop_if_idle(now, self.options.idle);
         }
         handled || self.stale
     }
@@ -532,14 +572,15 @@ impl Feedback {
         let size = boxes::grid_size(outer, theme, scale, fonts);
         if size != self.grid_size {
             self.grid_size = size;
-            if let Some(editor) = self.editor.as_mut() {
-                editor.resize(size.0, size.1);
-            }
+            self.host
+                .borrow_mut()
+                .resize(self.owner, size.0, size.1);
         }
-        let Some(editor) = self.editor.as_ref() else {
+        let host = self.host.borrow();
+        let Some(grid) = host.grid() else {
             return;
         };
-        boxes::paint(canvas, fonts, theme, scale, outer, editor.grid(), open);
+        boxes::paint(canvas, fonts, theme, scale, outer, grid, open);
     }
 
     // ---- the review overlay ----

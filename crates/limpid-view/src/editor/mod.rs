@@ -742,6 +742,17 @@ mod tests {
         assert!(!target.exists(), "a file was written outside the box");
     }
 
+    #[test]
+    fn should_type_committed_ime_text_literally_when_sent_through_nvim_input() {
+        let Some(mut editor) = started() else { return };
+        editor.open("", BoxKind::Comment).unwrap();
+        editor.input(&crate::feedback::ime_keys("a<Esc>\u{3042}"));
+        editor.input("<Esc>:w<CR>");
+        collect_until(&mut editor, |_, seen| {
+            seen.contains(&EditorEvent::Save("a<Esc>\u{3042}".into()))
+        });
+    }
+
     fn user_mode_with_border(name: &str) -> Option<Editor> {
         if !nvim_available() {
             eprintln!("skipping: nvim is not installed");

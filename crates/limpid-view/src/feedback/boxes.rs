@@ -111,6 +111,8 @@ pub struct OpenBox {
     pub cmdline: Option<String>,
     /// The last message nvim wanted shown.
     pub message: Option<String>,
+    /// Text an input method is composing, not yet committed.
+    pub preedit: Option<String>,
 }
 
 impl OpenBox {
@@ -120,12 +122,22 @@ impl OpenBox {
             mode: String::new(),
             cmdline: None,
             message: None,
+            preedit: None,
         }
     }
 
     /// Whether nvim is in a mode that types text.
     pub fn is_inserting(&self) -> bool {
         self.mode.starts_with('i') || self.mode.starts_with('R')
+    }
+
+    /// What the box's status line says: the mode, and the composition in
+    /// progress when an input method has one.
+    pub fn status_label(&self) -> String {
+        match &self.preedit {
+            Some(preedit) => format!("{preedit} | {}", self.mode_label()),
+            None => self.mode_label().to_owned(),
+        }
     }
 
     /// A short name for the mode line of the box.
@@ -173,7 +185,7 @@ pub fn paint(
     let mut label = TextBlock::new(fonts, size, size * 1.3);
     label.set_text(
         fonts,
-        open.mode_label(),
+        &open.status_label(),
         TextStyle::mono(theme.muted).bold(),
         &theme.families,
     );

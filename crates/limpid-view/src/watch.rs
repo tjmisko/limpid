@@ -9,7 +9,7 @@ use crate::{
     helpers::{self, HelperJob, HelperKind, Helpers, Locate},
     page::DocPage,
     paint::Canvas,
-    window::{Page, TICK_INTERVAL},
+    window::Page,
 };
 use limpid_core::{doc::Mode, settings::Settings};
 use std::{
@@ -224,16 +224,19 @@ impl Page for WatchedPage {
     }
 
     fn tick_period(&self) -> Duration {
-        let fast = self.page.wants_ticks();
-        if fast {
-            return TICK_INTERVAL;
-        }
         let working = self.replan || self.helpers.busy() || !self.deferred.is_empty();
-        if working {
-            return HELPER_POLL_INTERVAL;
-        }
         // Idle: wake only as often as the file is looked at.
-        self.watcher.interval
+        let own = if working {
+            HELPER_POLL_INTERVAL
+        } else {
+            self.watcher.interval
+        };
+        if !self.page.wants_ticks() {
+            return own;
+        }
+        // The page says how soon it needs a tick: every frame while an editor
+        // box is open, the idle deadline when the editor only lingers.
+        own.min(self.page.tick_period())
     }
 
     fn tick(&mut self) -> bool {
@@ -246,7 +249,7 @@ impl Page for WatchedPage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{paint::Canvas, text::Fonts};
+    use crate::{paint::Canvas, text::Fonts, window::TICK_INTERVAL};
     use limpid_core::transport::Scheme;
     use std::{cell::RefCell, rc::Rc};
 

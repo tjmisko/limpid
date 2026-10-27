@@ -2,6 +2,7 @@
 //! nvim or a display.
 
 use super::*;
+use super::boxes::EditorPort;
 use crate::editor::{Cell, EditorError, Grid};
 use limpid_core::{
     doc::{Doc, Mode, parse},
@@ -441,7 +442,7 @@ fn should_forward_keys_to_the_editor_when_a_box_is_open() {
     h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
     h.fb.input("<Esc>");
     h.fb.input("");
-    assert_eq!(h.script.borrow().inputs, ["<Esc>", ""]);
+    assert_eq!(h.script.borrow().inputs, ["<Esc>"], "empty keys are not sent");
 }
 
 #[test]
@@ -951,4 +952,228 @@ fn should_flash_a_problem_when_the_sidecar_cannot_be_read() {
         "{flashes:?}"
     );
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+// ---- one editor per process, idle ticks, key path, IME ----
+
+/// A second window's feedback sharing `h`'s editor host.
+fn second_window(h: &Harness) -> Feedback {
+    let settings = Settings::default();
+    let handoff = Handoff {
+        path: h.page.clone(),
+        theme: Scheme::Dark,
+        pane: None,
+        source: None,
+        source_hash: None,
+        source_backed: false,
+    };
+    let mut other = Feedback::new(handoff, "Other".into(), &settings).with_host(h.fb.host.clone());
+    let doc = parse(QUESTIONS, Mode::File, &settings);
+    other.index_document(&doc.blocks, &doc.source);
+    other.overlay(&doc.blocks);
+    other
+}
+
+#[test]
+fn should_start_one_editor_when_two_windows_open_boxes_in_turn() {
+    let mut h = harness(QUESTIONS, false);
+    let mut other = second_window(&h);
+    let src = h.field_src("q2");
+    h.fb.act(FeedbackAction::OpenReply, Some(&src));
+    h.say(EditorEvent::Quit { discard: false });
+    let result = other.act(FeedbackAction::OpenReply, Some(&src));
+    assert_eq!(result, ActionResult::Done(String::new()));
+    assert_eq!(h.script.borrow().spawns, 1, "the second window reuses nvim");
+    assert_eq!(h.script.borrow().opened.len(), 2);
+}
+
+#[test]
+fn should_refuse_a_second_box_when_another_window_has_the_editor() {
+    let mut h = harness(QUESTIONS, false);
+    let mut other = second_window(&h);
+    let src = h.field_src("q2");
+    h.fb.act(FeedbackAction::OpenReply, Some(&src));
+    let result = other.act(FeedbackAction::OpenReply, Some(&src));
+    assert_eq!(
+        result,
+        ActionResult::Nothing("editor in use in another window".into())
+    );
+    assert!(!other.box_open());
+    assert!(h.fb.box_open(), "the first box is undisturbed");
+    assert_eq!(h.script.borrow().opened.len(), 1);
+}
+
+#[test]
+fn should_not_hand_one_windows_events_to_another_when_both_tick() {
+    let mut h = harness(QUESTIONS, false);
+    let mut other = second_window(&h);
+    h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
+    h.script
+        .borrow_mut()
+        .events
+        .push_back(EditorEvent::Save("mine".into()));
+    other.tick(Instant::now());
+    assert_eq!(
+        h.script.borrow().events.len(),
+        1,
+        "the bystander must not consume the owner's events"
+    );
+    h.fb.tick(Instant::now());
+    assert_eq!(h.fb.pending().reply("q2"), Some("mine"));
+}
+
+#[test]
+fn should_let_the_other_window_open_when_the_first_box_closes() {
+    let mut h = harness(QUESTIONS, false);
+    let mut other = second_window(&h);
+    let src = h.field_src("q2");
+    h.fb.act(FeedbackAction::OpenReply, Some(&src));
+    h.fb.force_close();
+    let result = other.act(FeedbackAction::OpenReply, Some(&src));
+    assert_eq!(result, ActionResult::Done(String::new()));
+}
+
+#[test]
+fn should_stop_the_shared_editor_for_every_window_when_idle() {
+    let mut h = harness_with("idle2", QUESTIONS, false, "[editor]\nidle_seconds = 10\n");
+    let other = second_window(&h);
+    h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
+    h.say(EditorEvent::Quit { discard: false });
+    assert!(other.wants_ticks(), "the idle timer is process-wide");
+    h.fb.tick(Instant::now() + Duration::from_secs(11));
+    assert!(!other.wants_ticks());
+    assert!(!h.fb.wants_ticks());
+}
+
+/// A port whose answers come late: any call to `poll` costs `lag`.
+struct Late {
+    lag: Duration,
+    polls: Rc<std::cell::Cell<usize>>,
+    sent: Rc<RefCell<Vec<String>>>,
+    grid: Grid,
+}
+
+impl EditorPort for Late {
+    fn open(&mut self, _text: &str, _kind: BoxKind) -> Result<(), EditorError> {
+        Ok(())
+    }
+    fn input(&mut self, keys: &str) {
+        self.sent.borrow_mut().push(keys.to_owned());
+    }
+    fn resize(&mut self, _cols: u16, _rows: u16) {}
+    fn poll(&mut self) -> Vec<EditorEvent> {
+        self.polls.set(self.polls.get() + 1);
+        std::thread::sleep(self.lag);
+        Vec::new()
+    }
+    fn grid(&self) -> &Grid {
+        &self.grid
+    }
+    fn is_running(&mut self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn should_return_from_input_at_once_when_the_editor_answers_late() {
+    let polls = Rc::new(std::cell::Cell::new(0));
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let (late_polls, late_sent) = (polls.clone(), sent.clone());
+    let spawner: EditorSpawner = Box::new(move |_| {
+        Ok(Box::new(Late {
+            lag: Duration::from_millis(400),
+            polls: late_polls.clone(),
+            sent: late_sent.clone(),
+            grid: Grid::new(40, 6),
+        }) as Box<dyn EditorPort>)
+    });
+    let mut h = harness(QUESTIONS, false);
+    h.fb = Feedback::new(h.fb.handoff().clone(), "x".into(), &Settings::default())
+        .with_spawner(spawner);
+    let doc = parse(QUESTIONS, Mode::File, &Settings::default());
+    h.fb.index_document(&doc.blocks, &doc.source);
+    h.fb.overlay(&doc.blocks);
+    h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
+    let started = Instant::now();
+    for _ in 0..5 {
+        h.fb.input("a");
+    }
+    let spent = started.elapsed();
+    assert!(
+        spent < Duration::from_millis(100),
+        "five keys took {spent:?}"
+    );
+    assert_eq!(polls.get(), 0, "the key path never waits on the editor");
+    assert_eq!(sent.borrow().len(), 5);
+}
+
+#[test]
+fn should_tick_every_frame_only_while_a_box_is_open() {
+    let mut h = harness_with("period", QUESTIONS, false, "[editor]\nidle_seconds = 300\n");
+    let now = Instant::now();
+    assert!(
+        h.fb.tick_period(now) >= Duration::from_secs(1),
+        "no editor, no fast ticks"
+    );
+    h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
+    assert_eq!(h.fb.tick_period(now), TICK_INTERVAL);
+    h.say(EditorEvent::Quit { discard: false });
+    let period = h.fb.tick_period(Instant::now());
+    assert!(
+        period > Duration::from_secs(250) && period <= Duration::from_secs(300),
+        "idle period should run to the deadline: {period:?}"
+    );
+}
+
+#[test]
+fn should_wake_in_a_millisecond_not_spin_when_the_deadline_has_passed() {
+    let mut h = harness_with("past", QUESTIONS, false, "[editor]\nidle_seconds = 1\n");
+    h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
+    h.say(EditorEvent::Quit { discard: false });
+    let period = h.fb.tick_period(Instant::now() + Duration::from_secs(60));
+    assert_eq!(period, Duration::from_millis(1));
+}
+
+#[test]
+fn should_sleep_long_when_another_windows_box_has_the_editor() {
+    let mut h = harness(QUESTIONS, false);
+    let other = second_window(&h);
+    h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
+    assert!(other.tick_period(Instant::now()) >= Duration::from_secs(1));
+}
+
+#[test]
+fn should_type_committed_text_into_the_box_when_an_ime_commits() {
+    let mut h = harness(QUESTIONS, false);
+    h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
+    h.fb.ime_commit("a<b>\u{3042}");
+    assert_eq!(h.script.borrow().inputs, ["a<lt>b>\u{3042}"]);
+}
+
+#[test]
+fn should_ignore_an_ime_commit_when_no_box_is_open_or_the_text_is_empty() {
+    let mut h = harness(QUESTIONS, false);
+    h.fb.ime_commit("x");
+    h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
+    h.fb.ime_commit("");
+    assert!(h.script.borrow().inputs.is_empty());
+}
+
+#[test]
+fn should_show_the_composition_in_the_status_line_while_preediting() {
+    let mut h = harness(QUESTIONS, false);
+    assert!(!h.fb.ime_preedit(Some("ka")), "no box, nothing to show");
+    h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
+    assert!(h.fb.ime_preedit(Some("ka")));
+    assert!(!h.fb.ime_preedit(Some("ka")), "unchanged is not a repaint");
+    assert_eq!(h.fb.open_box().unwrap().status_label(), "ka | NORMAL");
+    assert!(h.fb.ime_preedit(Some("")));
+    assert_eq!(h.fb.open_box().unwrap().status_label(), "NORMAL");
+}
+
+#[test]
+fn should_escape_only_less_than_when_converting_ime_text() {
+    assert_eq!(ime_keys("<Esc> & <lt>"), "<lt>Esc> & <lt>lt>");
+    assert_eq!(ime_keys("plain"), "plain");
+    assert_eq!(ime_keys(""), "");
 }

@@ -4,7 +4,7 @@ use limpid_core::{
 };
 use limpid_view::{
     cli::{self, Args, Snapshot},
-    feedback::Feedback,
+    feedback::{Feedback, host::EditorHost},
     nav::CloseKind,
     page::{Closer, DocPage, SharedFonts},
     serve::{self, Request},
@@ -119,10 +119,13 @@ fn run_windows(args: Args, settings: Settings, fonts: SharedFonts) -> Result<(),
         .map_err(|error| error.to_string())?;
     let proxy = event_loop.create_proxy();
     let live_pages = Rc::new(Cell::new(0));
+    // One nvim for the whole process, lent to one window's box at a time.
+    let editor_host = EditorHost::shared_nvim();
     let factory_proxy = proxy.clone();
     let factory: PageFactory = Box::new(move |request: &Handoff| {
         let page = DocPage::open(&request.path, &settings, request.theme, fonts.clone())?;
-        let feedback = Feedback::new(request.clone(), page.title(), &settings);
+        let feedback = Feedback::new(request.clone(), page.title(), &settings)
+            .with_host(editor_host.clone());
         let page = page
             .with_feedback(feedback)
             .with_closer(Box::new(WindowCloser::new(
