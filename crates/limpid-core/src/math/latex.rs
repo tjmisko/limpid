@@ -12,6 +12,11 @@
 //! `\[ ... \]`, and a top-level amsmath environment stays as it is. Their
 //! metrics come from the `lyx` option's `Preview: Snippet N ht dp wd` log lines
 //! (scaled points).
+//!
+//! Display pages are as wide as the line TeX set them on, with the formula
+//! centred in it, so each is cropped horizontally to its ink (read from a
+//! throwaway raster of the PDF). A display wider than the line is detected by
+//! the `Overfull \hbox` TeX logs for it and set again on a wider line.
 
 use super::{
     Backend, BackendError, Formula, MathSettings, Rendered, find_binary, numbered_files,
@@ -126,11 +131,13 @@ impl Backend for LatexBackend {
         })?;
         let work = out.join("latex");
         std::fs::create_dir_all(&work)?;
-        // A display formula wider than the line is cut off at the page edge
-        // (the snippet width is capped by \hsize), so a display whose snippet
-        // is exactly as wide as its \hsize is set again with a wider line.
+        // A display formula wider than the line overhangs it and TeX logs an
+        // `Overfull \hbox` for it, so exactly those displays are set again
+        // with a line as wide as the formula needs. Numbered and tagged
+        // displays fill the line by design and are never widened.
         let mut line_widths = vec![DEFAULT_LINE_WIDTH_PT; batch.len()];
         let mut log;
+        let mut widenings = 0;
         loop {
             std::fs::write(
                 work.join(format!("{JOB}.tex")),
@@ -152,17 +159,28 @@ impl Backend for LatexBackend {
                     tools.engine_path.display()
                 )));
             }
-            if !widen_clipped_displays(batch, &mut line_widths, &parse_snippet_log(&log)) {
+            widenings += 1;
+            if widenings > MAX_WIDENINGS
+                || !widen_overfull_displays(batch, &mut line_widths, &parse_overfull_log(&log))
+            {
                 break;
             }
         }
 
         let pages = self.split_pages(&tools, &work, batch.len())?;
+        let ink = self.ink_columns(&tools, &work, batch.len());
         let boxes = parse_box_log(&log);
         let snippets = parse_snippet_log(&log);
         let mut results = Vec::with_capacity(batch.len());
         for (index, (formula, page)) in batch.iter().zip(pages).enumerate() {
-            let svg_text = std::fs::read_to_string(&page)?;
+            let mut svg_text = std::fs::read_to_string(&page)?;
+            if formula.display
+                && let Some(&(from, to)) = ink.get(&(index + 1))
+                && let Some(cropped) = crop_svg_horizontally(&svg_text, from, to)
+            {
+                std::fs::write(&page, &cropped)?;
+                svg_text = cropped;
+            }
             let size = svgmeta::parse_svg_size(&svg_text).ok_or_else(|| {
                 BackendError(format!("cannot read the size of {}", page.display()))
             })?;
@@ -277,33 +295,214 @@ const DEFAULT_LINE_WIDTH_PT: f32 = 345.0;
 /// The widest line a display may be given, just under TeX's `\maxdimen`.
 const MAX_LINE_WIDTH_PT: f32 = 16000.0;
 
-/// Double the line width of every display whose snippet fills it entirely,
-/// which is how a clipped formula shows in the log. Returns whether any width
+/// How many times a batch is compiled again with wider display lines.
+const MAX_WIDENINGS: usize = 3;
+
+/// Give every display that overhangs its line (`overfull`: points too wide,
+/// by formula index) a line as wide as it needs. Returns whether any width
 /// changed, i.e. whether the batch must be compiled again.
-fn widen_clipped_displays(
+fn widen_overfull_displays(
     batch: &[&Formula],
     line_widths: &mut [f32],
-    snippets: &HashMap<usize, BoxMetrics>,
+    overfull: &HashMap<usize, f32>,
 ) -> bool {
     let mut widened = false;
     for (index, formula) in batch.iter().enumerate() {
         if !formula.display || line_widths[index] >= MAX_LINE_WIDTH_PT {
             continue;
         }
-        let Some(snippet) = snippets.get(&index) else {
+        let Some(&excess) = overfull.get(&index) else {
             continue;
         };
-        let line_px = svgmeta::tex_dimension_to_px(&format!("{}pt", line_widths[index]));
-        let Some(line_px) = line_px else {
-            continue;
-        };
-        if snippet.width < line_px - 0.05 {
+        if excess <= 0.0 || !excess.is_finite() {
             continue;
         }
-        line_widths[index] = (line_widths[index] * 2.0).min(MAX_LINE_WIDTH_PT);
+        line_widths[index] = (line_widths[index] + excess + 1.0).min(MAX_LINE_WIDTH_PT);
         widened = true;
     }
     widened
+}
+
+/// The largest `Overfull \hbox (Xpt too wide)` before each
+/// `Preview: Snippet N` line, keyed by formula index (from 0): TeX reports an
+/// overhanging display just before the page that holds it is shipped out.
+pub fn parse_overfull_log(log: &str) -> HashMap<usize, f32> {
+    let mut pending = 0.0f32;
+    let mut overfull = HashMap::new();
+    for line in log.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("Overfull \\hbox (") {
+            let excess = rest
+                .split_once("pt too wide")
+                .and_then(|(number, _)| number.parse::<f32>().ok());
+            if let Some(excess) = excess {
+                pending = pending.max(excess);
+            }
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("Preview: Snippet ") else {
+            continue;
+        };
+        let number = rest
+            .split_whitespace()
+            .next()
+            .and_then(|word| word.parse::<usize>().ok())
+            .and_then(|number| number.checked_sub(1));
+        if let Some(index) = number
+            && pending > 0.0
+        {
+            overfull.insert(index, pending);
+        }
+        pending = 0.0;
+    }
+    overfull
+}
+
+/// Resolution of the throwaway rasters the ink extents are read from.
+const INK_DPI: f32 = 216.0;
+
+/// Pixels this much darker than the white page count as ink.
+const INK_THRESHOLD: u8 = 250;
+
+/// The first and last inked pixel column of a binary PGM (`P5`) image, as
+/// fractions of the image width (the end is exclusive); `None` when the
+/// image is blank or malformed.
+fn ink_extent(pgm: &[u8]) -> Option<(f32, f32)> {
+    let mut cursor = 0;
+    let mut fields = [0usize; 4];
+    for (position, field) in fields.iter_mut().enumerate() {
+        while pgm.get(cursor)?.is_ascii_whitespace() {
+            cursor += 1;
+        }
+        let start = cursor;
+        while !pgm.get(cursor)?.is_ascii_whitespace() {
+            cursor += 1;
+        }
+        let word = std::str::from_utf8(&pgm[start..cursor]).ok()?;
+        *field = if position == 0 {
+            usize::from(word == "P5")
+        } else {
+            word.parse().ok()?
+        };
+    }
+    let [is_p5, width, height, maxval] = fields;
+    if is_p5 != 1 || width == 0 || height == 0 || maxval != 255 {
+        return None;
+    }
+    // One whitespace byte separates the header from the pixels.
+    let pixels = pgm.get(cursor + 1..cursor + 1 + width.checked_mul(height)?)?;
+    let mut first = None;
+    let mut last = 0;
+    for row in pixels.chunks_exact(width) {
+        let Some(left) = row.iter().position(|&pixel| pixel < INK_THRESHOLD) else {
+            continue;
+        };
+        let right = row.iter().rposition(|&pixel| pixel < INK_THRESHOLD)?;
+        first = Some(first.map_or(left, |known: usize| known.min(left)));
+        last = last.max(right);
+    }
+    // One pixel of margin keeps anti-aliased edges inside the crop.
+    let first = first?.saturating_sub(1);
+    let end = (last + 2).min(width);
+    Some((first as f32 / width as f32, end as f32 / width as f32))
+}
+
+/// Cut the SVG to the horizontal span `from..to` (fractions of its width) by
+/// rewriting the root element's `viewBox` and `width`. `None` when the root
+/// element has no `viewBox` and plain `width` to rewrite, or the span is empty.
+fn crop_svg_horizontally(svg: &str, from: f32, to: f32) -> Option<String> {
+    if !(0.0 <= from && from < to && to <= 1.0) {
+        return None;
+    }
+    let start = svg.find("<svg")?;
+    let tag_end = svg[start..].find('>')? + start;
+    let tag = &svg[start..tag_end];
+    let (view_box_range, view_box) = attribute_value(tag, "viewBox")?;
+    let numbers: Vec<f32> = view_box
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|part| !part.is_empty())
+        .map(|part| part.parse().ok())
+        .collect::<Option<_>>()?;
+    let [x, y, width, height] = numbers[..] else {
+        return None;
+    };
+    let (width_range, width_text) = attribute_value(tag, "width")?;
+    let unit_at = width_text
+        .find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+')))
+        .unwrap_or(width_text.len());
+    let drawn_width: f32 = width_text[..unit_at].parse().ok()?;
+    let new_view_box = format!(
+        "{} {} {} {}",
+        x + from * width,
+        y,
+        (to - from) * width,
+        height
+    );
+    let new_width = format!("{}{}", drawn_width * (to - from), &width_text[unit_at..]);
+    // Replace the later attribute first so the earlier range stays valid.
+    let mut edits = [(view_box_range, new_view_box), (width_range, new_width)];
+    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let mut cropped_tag = tag.to_owned();
+    for (range, text) in edits {
+        cropped_tag.replace_range(range, &text);
+    }
+    Some(format!(
+        "{}{}{}",
+        &svg[..start],
+        cropped_tag,
+        &svg[tag_end..]
+    ))
+}
+
+/// The byte range and text of a double-quoted attribute of a start tag.
+fn attribute_value<'a>(tag: &'a str, name: &str) -> Option<(std::ops::Range<usize>, &'a str)> {
+    let marker = format!(" {name}=\"");
+    let value_start = tag.find(&marker)? + marker.len();
+    let value_end = value_start + tag[value_start..].find('"')?;
+    Some((value_start..value_end, &tag[value_start..value_end]))
+}
+
+impl LatexBackend {
+    /// For each page (from 1) the horizontal span of its ink, as fractions
+    /// of the page width. Empty when the engine makes no PDF or `pdftoppm`
+    /// is missing, in which case pages keep the width TeX gave them.
+    fn ink_columns(
+        &self,
+        tools: &Toolchain,
+        work: &Path,
+        expected: usize,
+    ) -> HashMap<usize, (f32, f32)> {
+        let mut spans = HashMap::new();
+        if tools.engine != Engine::Pdflatex {
+            return spans;
+        }
+        let Some(pdftoppm) = find_binary("pdftoppm", self.path.as_deref()) else {
+            return spans;
+        };
+        let mut command = Command::new(pdftoppm);
+        command.args([
+            "-gray",
+            "-r",
+            &INK_DPI.to_string(),
+            &format!("{JOB}.pdf"),
+            "ink",
+        ]);
+        if !self.run(command, work).is_ok_and(|output| output.success) {
+            return spans;
+        }
+        for (number, path) in numbered_files(work, "ink-", ".pgm") {
+            if number == 0 || number > expected {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            if let Some(extent) = ink_extent(&bytes) {
+                spans.insert(number, extent);
+            }
+        }
+        spans
+    }
 }
 
 /// The `.tex` source for one batch. Page `i` (from 0) holds `batch[i]`.
@@ -861,6 +1060,17 @@ mod tests {
         }
         let both = backend.render(&[&one_line, &broken_lines], &out).unwrap();
         assert!(
+            both[0].width < 100.0,
+            "a one-line display must be tightly bounded: {:?}",
+            both[0]
+        );
+        assert!(
+            both[1].width < 100.0,
+            "a broken display formula must not span the line: {:?}",
+            both[1]
+        );
+        assert!(both[1].baseline <= both[1].height);
+        assert!(
             both[1].height > both[0].height * 1.6,
             "two lines must be about twice as tall: {both:?}"
         );
@@ -869,6 +1079,9 @@ mod tests {
         assert!(error.0.contains("Undefined control sequence"), "{error}");
         std::fs::remove_dir_all(&out).unwrap();
     }
+
+    /// The default line width in px.
+    const LINE_PX: f32 = 345.0 * 96.0 / 72.27;
 
     /// Typeset one display formula with real pdflatex; `None` when the tools
     /// are missing.
@@ -899,12 +1112,21 @@ mod tests {
             "{rendered:?}"
         );
         assert!(rendered.baseline > 0.0 && rendered.baseline <= rendered.height);
+        assert!(
+            rendered.width <= LINE_PX + 1.0,
+            "{latex} must fit the {LINE_PX}px line, not run away: {rendered:?}"
+        );
         Some(rendered)
     }
 
     #[test]
     fn should_typeset_tag_when_pdflatex_is_installed() {
-        typeset_display("E = mc^2 \\tag{1}", "tag");
+        let tagged = typeset_display("E = mc^2 \\tag{1}", "tag");
+        let plain = typeset_display("E = mc^2", "tagplain");
+        if let (Some(tagged), Some(plain)) = (tagged, plain) {
+            assert!(tagged.width > plain.width + 100.0, "{tagged:?} {plain:?}");
+            assert!(plain.width < 150.0, "{plain:?}");
+        }
     }
 
     #[test]
@@ -916,6 +1138,7 @@ mod tests {
         let single = typeset_display("\\begin{equation}a=b\\end{equation}", "single");
         if let (Some(split), Some(single)) = (split, single) {
             assert!(split.height > single.height * 1.5, "{split:?} {single:?}");
+            assert!(split.width > 100.0, "{split:?}");
         }
     }
 
@@ -946,34 +1169,31 @@ mod tests {
             return;
         };
         assert!(rendered.height > 15.0, "{rendered:?}");
-    }
-
-    fn snippet(width_pt: f32) -> BoxMetrics {
-        BoxMetrics {
-            height: 10.0,
-            depth: 0.0,
-            width: svgmeta::tex_dimension_to_px(&format!("{width_pt}pt")).unwrap(),
-        }
+        assert!(
+            rendered.width < 150.0,
+            "display math must be tightly bounded: {rendered:?}"
+        );
     }
 
     #[test]
-    fn should_widen_line_when_display_snippet_fills_its_line() {
+    fn should_widen_line_when_display_is_overfull() {
         let wide = Formula::new("a+b", true);
         let narrow = Formula::new("c", true);
         let inline = Formula::new("d", false);
         let batch = [&wide, &narrow, &inline];
         let mut widths = vec![345.0, 345.0, 345.0];
-        let snippets = HashMap::from([
-            (0, snippet(345.0)),
-            (1, snippet(100.0)),
-            (2, snippet(345.0)),
-        ]);
-        assert!(widen_clipped_displays(&batch, &mut widths, &snippets));
-        assert_eq!(widths, vec![690.0, 345.0, 345.0]);
-        assert!(!widen_clipped_displays(
+        let overfull = HashMap::from([(0, 100.0), (2, 50.0)]);
+        assert!(widen_overfull_displays(&batch, &mut widths, &overfull));
+        assert_eq!(widths, vec![446.0, 345.0, 345.0]);
+        assert!(!widen_overfull_displays(
             &batch,
             &mut widths,
-            &HashMap::from([(0, snippet(500.0))])
+            &HashMap::new()
+        ));
+        assert!(!widen_overfull_displays(
+            &batch,
+            &mut widths,
+            &HashMap::from([(0, 0.0), (1, f32::NAN)])
         ));
     }
 
@@ -981,15 +1201,85 @@ mod tests {
     fn should_stop_widening_when_line_is_at_the_limit() {
         let formula = Formula::new("a", true);
         let mut widths = vec![MAX_LINE_WIDTH_PT];
-        let snippets = HashMap::from([(0, snippet(MAX_LINE_WIDTH_PT))]);
-        assert!(!widen_clipped_displays(&[&formula], &mut widths, &snippets));
-        let mut widths = vec![9000.0];
-        assert!(widen_clipped_displays(
+        let overfull = HashMap::from([(0, 10.0)]);
+        assert!(!widen_overfull_displays(
             &[&formula],
             &mut widths,
-            &HashMap::from([(0, snippet(9000.0))])
+            &overfull
+        ));
+        let mut widths = vec![9000.0];
+        assert!(widen_overfull_displays(
+            &[&formula],
+            &mut widths,
+            &HashMap::from([(0, 90000.0)])
         ));
         assert_eq!(widths, vec![MAX_LINE_WIDTH_PT]);
+    }
+
+    #[test]
+    fn should_attribute_overfull_to_the_next_snippet_when_log_has_several() {
+        let log = "Overfull \\hbox (12.5pt too wide) detected at line 8\n\
+            Overfull \\hbox (30.25pt too wide) in paragraph at lines 9--10\n\
+            Preview: Snippet 1 480596 0 22609920\n\
+            Preview: Snippet 2 480596 0 22609920\n\
+            Overfull \\hbox (garbage too wide) detected at line 8\n\
+            Overfull \\hbox (7pt too wide) detected at line 8\n\
+            Preview: Snippet 3 1 1 1\n";
+        let overfull = parse_overfull_log(log);
+        assert_eq!(overfull.len(), 2);
+        assert_eq!(overfull[&0], 30.25);
+        assert_eq!(overfull[&2], 7.0);
+    }
+
+    fn pgm(width: usize, height: usize, inked: &[(usize, usize)]) -> Vec<u8> {
+        let mut bytes = format!("P5\n{width} {height}\n255\n").into_bytes();
+        let mut pixels = vec![255u8; width * height];
+        for &(column, row) in inked {
+            pixels[row * width + column] = 0;
+        }
+        bytes.extend(pixels);
+        bytes
+    }
+
+    #[test]
+    fn should_find_ink_columns_when_image_has_marks() {
+        let image = pgm(100, 4, &[(40, 1), (60, 3)]);
+        let (from, to) = ink_extent(&image).unwrap();
+        assert_eq!((from, to), (0.39, 0.62));
+        let edge = pgm(10, 1, &[(0, 0), (9, 0)]);
+        assert_eq!(ink_extent(&edge), Some((0.0, 1.0)));
+    }
+
+    #[test]
+    fn should_find_no_ink_when_image_is_blank_or_malformed() {
+        assert_eq!(ink_extent(&pgm(10, 2, &[])), None);
+        assert_eq!(ink_extent(b""), None);
+        assert_eq!(ink_extent(b"P6\n1 1\n255\n\0\0\0"), None);
+        assert_eq!(ink_extent(b"P5\n10 10\n255\n\0"), None);
+        assert_eq!(ink_extent(b"P5\n0 10\n255\n"), None);
+    }
+
+    const ROOT: &str = "<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" \
+        width=\"200pt\" height=\"10pt\" viewBox=\"0 0 200 10\" stroke-width=\"1\">\n<g/>\n</svg>\n";
+
+    #[test]
+    fn should_narrow_view_box_and_width_when_cropping_svg() {
+        let cropped = crop_svg_horizontally(ROOT, 0.25, 0.75).unwrap();
+        assert!(cropped.contains("width=\"100pt\""), "{cropped}");
+        assert!(cropped.contains("viewBox=\"50 0 100 10\""), "{cropped}");
+        assert!(cropped.contains("height=\"10pt\"") && cropped.contains("<g/>"));
+        let size = svgmeta::parse_svg_size(&cropped).unwrap();
+        assert!((size.width - 100.0 * 96.0 / 72.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn should_not_crop_svg_when_span_or_root_is_unusable() {
+        assert!(crop_svg_horizontally(ROOT, 0.5, 0.5).is_none());
+        assert!(crop_svg_horizontally(ROOT, 0.6, 0.4).is_none());
+        assert!(crop_svg_horizontally(ROOT, -0.1, 0.4).is_none());
+        assert!(crop_svg_horizontally(ROOT, 0.1, 1.5).is_none());
+        assert!(crop_svg_horizontally("<svg width=\"1pt\"></svg>", 0.1, 0.5).is_none());
+        assert!(crop_svg_horizontally("no svg here", 0.1, 0.5).is_none());
     }
 
     #[test]
@@ -1043,6 +1333,28 @@ mod tests {
         // 78 terms are about 1500px wide; the line is 458px.
         assert!(rendered[0].width > 1200.0, "{:?}", rendered[0]);
         assert!(rendered[1].width > 1200.0, "{:?}", rendered[1]);
+    }
+
+    #[test]
+    fn should_keep_display_within_the_line_when_it_is_numbered_or_an_environment() {
+        let cases = [
+            "E = mc^2 \\tag{1}",
+            "\\begin{equation}\\begin{split}a&=b\\\\&=c\\end{split}\\end{equation}",
+            "\\begin{align}a &= b \\tag{A}\\\\ c &= d\\end{align}",
+            "\\begin{alignat}{2}a&=b&\\quad c&=d\\end{alignat}",
+            "\\begin{gather*}a=b\\\\c=d\\end{gather*}",
+            "\\begin{multline}a=b\\\\c=d\\end{multline}",
+            "\\begin{eqnarray}a&=&b\\end{eqnarray}",
+        ];
+        let Some(rendered) = typeset_batch(&cases, "bounded") else {
+            return;
+        };
+        for (latex, one) in cases.iter().zip(&rendered) {
+            assert!(one.width <= LINE_PX + 1.0, "{latex}: {one:?}");
+            assert!(one.height < 60.0, "{latex}: {one:?}");
+        }
+        // Unnumbered, centred formulas are cropped to their ink.
+        assert!(rendered[4].width < 150.0, "{:?}", rendered[4]);
     }
 
     #[test]
