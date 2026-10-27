@@ -74,3 +74,5 @@ try:
     proc.wait(timeout=2)
 except subprocess.TimeoutExpired:
     proc.kill()
+import shutil
+shutil.rmtree(runtime, ignore_errors=True)

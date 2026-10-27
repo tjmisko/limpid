@@ -134,3 +134,19 @@ scratch build whose `Highlighter` loads injected grammars lazily (a change to
 this branch) measured 13.3 MiB for `sample.md` and 12.2 MiB for `small.md`.
 The 13 MiB figure therefore depends on that pending limpid-core change. The
 three-windows-in-one-view figure was not re-measured.
+
+### After the review pass (lazy injected-grammar loading)
+
+Release build of main, `limpid-view --separate FILE`, window class `limpid-test`,
+re-measured on 2026-10-26 after `Highlighter` started loading injected
+grammars only when an injection in the source asks for them.
+
+| Page | PSS | Private | Window (s) |
+|---|---|---|---|
+| `# Empty` + one line | 38.2 | 9.2 | |
+| `bench/small.md` | 41.6 | 10.8 | |
+| `bench/sample.md` | 44.4 | 13.1 | 0.020-0.028 |
+
+Both targets are met: 13.1 MiB private against 15, and 20-28 ms to a window
+against 60 ms warm and 100 ms cold. For comparison the WebKit host needed
+93-102 MiB private and about 300 ms for an empty page.
