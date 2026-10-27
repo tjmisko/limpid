@@ -440,11 +440,10 @@ pub fn leaves<'a>(block: &'a LaidBlock, scale: f32, out: &mut Vec<Leaf<'a>>) {
             });
         }
         Content::Pending(pending) => {
-            let inset = rule_px + pending.padding;
             out.push(Leaf {
                 text: &pending.text,
-                x: rect.x + inset,
-                y: rect.y + inset,
+                x: rect.x + rule_px + pending.padding,
+                y: rect.y + rule_px + pending.pad_y,
                 clip: rect,
             });
         }

@@ -12,6 +12,7 @@ pub mod field;
 pub mod image;
 pub mod inline;
 pub mod list;
+pub mod note;
 pub mod quote;
 pub mod rail;
 pub mod svg;
@@ -68,6 +69,12 @@ pub struct PendingBox {
     pub text: RichText,
     /// Padding inside the box, device pixels.
     pub padding: f32,
+    /// Padding above and below the text, device pixels.
+    pub pad_y: f32,
+    /// Corner radius, device pixels.
+    pub radius: f32,
+    /// Border colour instead of `rule`.
+    pub border: Option<crate::theme::Color>,
     /// The math or Mermaid hash the box waits for.
     pub hash: Option<String>,
     /// Background instead of `surface` (math source uses `code_bg`).

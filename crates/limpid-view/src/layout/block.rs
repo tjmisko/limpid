@@ -104,9 +104,24 @@ pub fn margins(kind: &BlockKind, flow: Flow) -> (f32, f32) {
         BlockKind::Rule => (36.0, 36.0),
         BlockKind::Image { .. } => (16.0, 16.0),
         BlockKind::Html(_) => (0.0, 16.0),
-        BlockKind::Field { .. } | BlockKind::Annotation { .. } => (12.0, 12.0),
+        BlockKind::Field { .. } => (12.0, 12.0),
+        BlockKind::Annotation {
+            kind: AnnotationKind::Reply,
+            ..
+        } => (10.0, 12.0),
+        BlockKind::Annotation { .. } => (12.0, 20.0),
         BlockKind::FootnoteDef { .. } => (0.0, 8.0),
     }
+}
+
+fn is_comment(kind: &BlockKind) -> bool {
+    matches!(
+        kind,
+        BlockKind::Annotation {
+            kind: AnnotationKind::Comment,
+            ..
+        }
+    )
 }
 
 /// Whether a direct child of the document is a cursor stop.
@@ -152,7 +167,8 @@ pub fn stack(cx: &mut Cx, blocks: &[Block], y: f32, flow: Flow) -> (Vec<LaidBloc
 }
 
 pub fn lay_block(cx: &mut Cx, block: &Block, index: usize, y: f32, flow: Flow) -> LaidBlock {
-    let stop = flow.top_level && is_stop(&block.kind);
+    // A comment inside a list item is a stop of its own.
+    let stop = (flow.top_level || is_comment(&block.kind)) && is_stop(&block.kind);
     let make = |content: Content, height: f32| LaidBlock {
         index,
         src: block.src.clone(),
@@ -344,6 +360,9 @@ pub fn pending_with(
             kind,
             text,
             padding,
+            pad_y: padding,
+            radius: 0.0,
+            border: None,
             hash,
             fill,
         }),
@@ -360,14 +379,19 @@ pub fn paint_pending(
 ) {
     let theme = paint.theme;
     let border = paint.scale.round().max(1.0);
-    canvas.fill_rect(area, pending.fill.unwrap_or(theme.surface));
-    canvas.stroke_rect(area, border, theme.rule);
+    canvas.fill_round_rect(area, pending.radius, pending.fill.unwrap_or(theme.surface));
+    canvas.stroke_round_rect(
+        area,
+        pending.radius,
+        border,
+        pending.border.unwrap_or(theme.rule),
+    );
     inline::paint(
         canvas,
         fonts,
         &pending.text,
         area.x + border + pending.padding,
-        area.y + border + pending.padding,
+        area.y + border + pending.pad_y,
         theme,
         paint.scale,
     );

@@ -297,10 +297,7 @@ impl<'a> Canvas<'a> {
         );
         let tall = rect.h - 2.0 * radius;
         self.fill_rect(Rect::new(rect.x, rect.y + radius, t, tall), color);
-        self.fill_rect(
-            Rect::new(rect.right() - t, rect.y + radius, t, tall),
-            color,
-        );
+        self.fill_rect(Rect::new(rect.right() - t, rect.y + radius, t, tall), color);
         for (square, centre) in corners(rect, radius) {
             self.corner_pixels(square, |x, y| {
                 let d = distance(centre, x, y);
@@ -406,10 +403,7 @@ fn corners(rect: Rect, radius: f32) -> [(Rect, (f32, f32)); 4] {
             Rect::new(left, top, radius, radius),
             (left + radius, top + radius),
         ),
-        (
-            Rect::new(right, top, radius, radius),
-            (right, top + radius),
-        ),
+        (Rect::new(right, top, radius, radius), (right, top + radius)),
         (
             Rect::new(left, bottom, radius, radius),
             (left + radius, bottom),

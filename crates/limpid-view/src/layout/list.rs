@@ -22,7 +22,7 @@ const ITEM_GAP: f32 = 6.0;
 const MARKER_GAP: f32 = 8.0;
 
 /// The span of source the item's blocks cover, else `fallback`.
-fn item_source(children: &[Block], fallback: &Range<usize>) -> Range<usize> {
+pub fn item_source(children: &[Block], fallback: &Range<usize>) -> Range<usize> {
     let start = children.iter().map(|block| block.src.start).min();
     let end = children.iter().map(|block| block.src.end).max();
     match (start, end) {
