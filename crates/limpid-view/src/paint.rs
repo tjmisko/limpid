@@ -169,6 +169,20 @@ impl<'a> Canvas<'a> {
         y: f32,
         color: Color,
     ) {
+        self.draw_text_with(fonts, block, x, y, color, false);
+    }
+
+    /// [`Self::draw_text`], with `color` also replacing the colours of spans
+    /// when `force` is set.
+    pub fn draw_text_with(
+        &mut self,
+        fonts: &mut Fonts,
+        block: &TextBlock,
+        x: f32,
+        y: f32,
+        color: Color,
+        force: bool,
+    ) {
         let origin_x = x.round() as i32;
         let origin_y = y.round() as i32;
         let default = cosmic_text::Color::rgba(color.r, color.g, color.b, color.a);
@@ -180,14 +194,19 @@ impl<'a> Canvas<'a> {
                 if alpha == 0 {
                     return;
                 }
+                let (red, green, blue) = if force {
+                    (color.r, color.g, color.b)
+                } else {
+                    (glyph.r(), glyph.g(), glyph.b())
+                };
                 for dy in 0..gh as i32 {
                     for dx in 0..gw as i32 {
                         self.blend_at(
                             origin_x + gx + dx,
                             origin_y + gy + dy,
-                            glyph.r(),
-                            glyph.g(),
-                            glyph.b(),
+                            red,
+                            green,
+                            blue,
                             alpha,
                         );
                     }
@@ -448,5 +467,14 @@ mod tests {
     fn should_panic_when_the_buffer_is_too_small() {
         let mut pixels = buffer(2, 2);
         let _ = Canvas::new(&mut pixels, 3, 3);
+    }
+
+    #[test]
+    fn should_not_panic_when_a_round_rect_leaves_the_canvas() {
+        let mut pixels = buffer(10, 10);
+        let mut canvas = Canvas::new(&mut pixels, 10, 10);
+        canvas.fill_rounded_rect(Rect::new(-20.0, -20.0, 100.0, 100.0), 6.0, RED);
+        canvas.stroke_rounded_rect(Rect::new(-3.0, -3.0, 30.0, 30.0), 6.0, 2.0, RED);
+        canvas.fill_rounded_rect(Rect::new(2.0, 2.0, 1.0, 1.0), 6.0, RED);
     }
 }
