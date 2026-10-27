@@ -1,7 +1,24 @@
 name: Rust
 on: [push, pull_request]
 jobs:
-  core:
+  # The default build: native viewer, command and helpers. No WebKit packages.
+  workspace:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo test --workspace
+        # No display on the runners: window tests skip themselves.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # The WebKit host, behind the `webkit` feature, on Linux only.
+  webkit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -9,5 +26,5 @@ jobs:
         with:
           components: clippy
       - run: sudo apt-get update && sudo apt-get install -y libwebkitgtk-6.0-dev libgtk-4-dev
-      - run: cargo test --workspace
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --features webkit
+      - run: cargo clippy --workspace --features webkit --all-targets -- -D warnings
