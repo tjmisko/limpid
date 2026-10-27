@@ -158,6 +158,20 @@ pub struct LaidBlock {
     pub depth: u8,
 }
 
+/// Index of the first block that may reach below document y `top`. A nested
+/// reply ends above its question box, so bottoms are not sorted; step back to
+/// the box when the search lands just after a reply.
+pub(crate) fn first_visible(blocks: &[LaidBlock], top: f32) -> usize {
+    let mut start = blocks.partition_point(|block| block.rect.bottom() < top);
+    while let [.., outer, inner] = &blocks[..start]
+        && inner.rect.y >= outer.rect.y
+        && inner.rect.bottom() <= outer.rect.bottom()
+    {
+        start -= 2;
+    }
+    start
+}
+
 impl LaidBlock {
     pub fn children(&self) -> &[LaidBlock] {
         match &self.content {
@@ -490,9 +504,7 @@ impl Layout {
 
     /// The first top-level code block that overlaps `top..bottom`.
     pub fn code_block_in(&mut self, top: f32, bottom: f32) -> Option<&mut LaidBlock> {
-        let start = self
-            .blocks
-            .partition_point(|block| block.rect.bottom() < top);
+        let start = first_visible(&self.blocks, top);
         self.blocks[start..]
             .iter_mut()
             .take_while(|block| block.rect.y <= bottom)
@@ -501,9 +513,7 @@ impl Layout {
 
     /// The first top-level table that overlaps `top..bottom` and scrolls.
     pub fn table_block_in(&mut self, top: f32, bottom: f32) -> Option<&mut LaidBlock> {
-        let start = self
-            .blocks
-            .partition_point(|block| block.rect.bottom() < top);
+        let start = first_visible(&self.blocks, top);
         self.blocks[start..]
             .iter_mut()
             .take_while(|block| block.rect.y <= bottom)
@@ -548,9 +558,7 @@ impl Layout {
     /// the top of the canvas.
     pub fn paint(&mut self, canvas: &mut Canvas, fonts: &mut Fonts, scroll: f32) {
         let viewport = canvas.height() as f32;
-        let start = self
-            .blocks
-            .partition_point(|block| block.rect.bottom() < scroll);
+        let start = first_visible(&self.blocks, scroll);
         let paint = PaintCx {
             theme: &self.state.theme,
             scale: self.state.scale,
@@ -779,6 +787,29 @@ mod tests {
         let (_, layout, _) = laid("one\n\n## Two\n", 900.0);
         let gap = layout.blocks[1].rect.y - layout.blocks[0].rect.bottom();
         assert!((gap - 36.0).abs() < 0.01, "{gap}");
+    }
+
+    const REPLIED: &str =
+        "## Questions\n\n1. Pick?\n   - A\n   - B\n\n<!-- limpid reply q1\nB\n-->\n\nTail.\n";
+
+    #[test]
+    fn should_paint_the_question_box_when_the_window_top_is_below_its_reply() {
+        let (_, mut layout, mut fonts) = laid(REPLIED, 900.0);
+        let field = &layout.blocks[1];
+        let reply = &layout.blocks[2];
+        assert!(reply.rect.bottom() < field.rect.bottom() - 3.0);
+        let scroll = field.rect.bottom() - 2.0;
+        let mut pixels = vec![0u32; 900 * 2];
+        layout.paint(&mut Canvas::new(&mut pixels, 900, 2), &mut fonts, scroll);
+        assert!(pixels.iter().any(|&pixel| pixel != 0));
+    }
+
+    #[test]
+    fn should_start_at_the_question_box_when_the_search_lands_after_its_reply() {
+        let (_, layout, _) = laid(REPLIED, 900.0);
+        let field = &layout.blocks[1];
+        let top = field.rect.bottom() - 2.0;
+        assert_eq!(first_visible(&layout.blocks, top), 1);
     }
 
     #[test]

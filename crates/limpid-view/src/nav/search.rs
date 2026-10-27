@@ -628,9 +628,7 @@ pub fn paint_highlights(
     let scale = layout.scale();
     let (soft, strong) = highlight_colors(theme);
     let viewport = canvas.height() as f32;
-    let start = layout
-        .blocks
-        .partition_point(|block| block.rect.bottom() < scroll);
+    let start = crate::layout::first_visible(&layout.blocks, scroll);
     let stroke = scale.round().max(1.0);
     for (offset, block) in layout.blocks[start..].iter().enumerate() {
         if block.rect.y - scroll > viewport {

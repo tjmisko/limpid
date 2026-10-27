@@ -763,6 +763,32 @@ mod tests {
         assert_eq!((nested.rect.x, nested.rect.w), (top.rect.x, top.rect.w));
     }
 
+    #[test]
+    fn should_match_the_comment_x_and_width_when_an_editor_box_sits_in_a_list_item() {
+        let mut doc = limpid_core::doc::parse(
+            "- item\n\n  <!-- limpid comment\n  Note\n  -->\n- other\n",
+            Mode::File,
+            &Settings::default(),
+        );
+        let BlockKind::List { items, .. } = &mut doc.blocks[0].kind else {
+            panic!("a list leads the document");
+        };
+        let nested = items[0]
+            .blocks
+            .iter_mut()
+            .find_map(|block| match &mut block.kind {
+                BlockKind::Annotation { text, .. } => Some(text),
+                _ => None,
+            })
+            .expect("the item holds the comment");
+        *nested = box_text(3);
+        let layout = lay_out(&doc, 1000.0, &Theme::dark(), 1.0, &mut Fonts::new());
+        let (_, top) = laid("para\n\n<!-- limpid comment\nNote\n-->\n");
+        let top = pending(&top, PendingKind::Annotation);
+        let editor = nested_comment(&layout);
+        assert_eq!((editor.rect.x, editor.rect.w), (top.rect.x, top.rect.w));
+    }
+
     fn comment_parts(body: &str) -> (Vec<(f32, f32, f32)>, f32) {
         let (_, layout) = laid(&format!("para\n\n<!-- limpid comment\n{body}\n-->\n"));
         let note = pending(&layout, PendingKind::Annotation);
