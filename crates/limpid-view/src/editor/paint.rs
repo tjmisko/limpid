@@ -12,7 +12,10 @@ use crate::{
 };
 
 /// Cell height as a multiple of the font size.
-pub const GRID_LINE_HEIGHT: f32 = 1.45;
+pub const GRID_LINE_HEIGHT: f32 = 1.7;
+
+/// Font size of the editor box in logical px, whatever the page's size.
+pub const EDITOR_FONT_SIZE: f32 = 15.0;
 
 /// Thickness of the bar and underline cursors, and of spell marks, in px.
 const MARK_THICKNESS: f32 = 2.0;
@@ -230,7 +233,7 @@ fn paint_cursor(
     let y = rect.y + f32::from(row) * cell.1;
     match grid.cursor_shape {
         CursorShape::Block => {
-            canvas.fill_rect(Rect::new(x, y, cell.0, cell.1), theme.ink);
+            canvas.fill_rect(Rect::new(x, y, cell.0, cell.1), theme.teal);
             let Some(under) = grid.cell(row, col) else {
                 return;
             };
@@ -250,12 +253,12 @@ fn paint_cursor(
             );
         }
         CursorShape::Bar => {
-            canvas.fill_rect(Rect::new(x, y, MARK_THICKNESS, cell.1), theme.ink);
+            canvas.fill_rect(Rect::new(x, y, MARK_THICKNESS, cell.1), theme.teal);
         }
         CursorShape::Underline => {
             canvas.fill_rect(
                 Rect::new(x, y + cell.1 - MARK_THICKNESS, cell.0, MARK_THICKNESS),
-                theme.ink,
+                theme.teal,
             );
         }
     }
@@ -398,7 +401,7 @@ mod tests {
         scene.paint(&grid, Rect::new(0.0, 0.0, 200.0, 100.0));
         let x = (2.0 * width + 1.0) as u32;
         let y = (height + 1.0) as u32;
-        assert_eq!(scene.pixel(x, y), scene.theme.ink.to_pixel());
+        assert_eq!(scene.pixel(x, y), scene.theme.teal.to_pixel());
     }
 
     #[test]
@@ -410,8 +413,8 @@ mod tests {
         grid.cursor_shape = CursorShape::Bar;
         scene.paint(&grid, Rect::new(0.0, 0.0, 200.0, 100.0));
         let left = width as u32;
-        assert_eq!(scene.pixel(left, 2), scene.theme.ink.to_pixel());
-        assert_ne!(scene.pixel(left + 4, 2), scene.theme.ink.to_pixel());
+        assert_eq!(scene.pixel(left, 2), scene.theme.teal.to_pixel());
+        assert_ne!(scene.pixel(left + 4, 2), scene.theme.teal.to_pixel());
     }
 
     #[test]
@@ -424,9 +427,9 @@ mod tests {
         scene.paint(&grid, Rect::new(0.0, 0.0, 200.0, 100.0));
         assert_eq!(
             scene.pixel(1, height as u32 - 1),
-            scene.theme.ink.to_pixel()
+            scene.theme.teal.to_pixel()
         );
-        assert_ne!(scene.pixel(1, 1), scene.theme.ink.to_pixel());
+        assert_ne!(scene.pixel(1, 1), scene.theme.teal.to_pixel());
     }
 
     #[test]

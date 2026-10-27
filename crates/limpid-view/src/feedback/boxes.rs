@@ -5,7 +5,7 @@ use super::fields::BoxPlan;
 use crate::{
     editor::{
         BoxKind, Editor, EditorConfig, EditorError, EditorEvent, Grid,
-        paint::{GRID_LINE_HEIGHT, grid_size_for, paint_grid},
+        paint::{EDITOR_FONT_SIZE, GRID_LINE_HEIGHT, grid_size_for, paint_grid},
     },
     layout::field::box_inner,
     paint::{Canvas, Rect},
@@ -155,7 +155,7 @@ impl OpenBox {
 /// Pixel size of one grid cell for a window at `scale`.
 pub fn scaled_theme(theme: &Theme, scale: f32) -> Theme {
     let mut scaled = theme.clone();
-    scaled.font_size = theme.font_size * scale;
+    scaled.font_size = EDITOR_FONT_SIZE * scale;
     scaled
 }
 
@@ -164,8 +164,116 @@ pub fn grid_size(outer: Rect, theme: &Theme, scale: f32, fonts: &mut Fonts) -> (
     grid_size_for(box_inner(outer, scale), fonts, &scaled_theme(theme, scale))
 }
 
-/// Paint the box: a focus-coloured frame, the editor grid and the mode line.
-/// `outer` is the block's rectangle in window coordinates.
+/// Corner radius of the box in logical px.
+const BOX_RADIUS: f32 = 10.0;
+
+/// Font size of the command line in logical px.
+const CMDLINE_FONT_SIZE: f32 = 13.0;
+
+/// The most rows that keep a box within 70 % of a viewport `height` px tall.
+pub fn rows_in_viewport(height: f32, theme: &Theme, scale: f32) -> u16 {
+    let row = box_height(2, theme, scale) - box_height(1, theme, scale);
+    let frame = box_height(1, theme, scale) - row;
+    let rows = ((height * 0.7 - frame) / row.max(1.0)).floor();
+    rows.clamp(1.0, f32::from(u16::MAX)) as u16
+}
+
+fn rounded_path(rect: Rect, radius: f32) -> Option<tiny_skia::Path> {
+    let (x, y, w, h) = (rect.x, rect.y, rect.w, rect.h);
+    let r = radius.min(w / 2.0).min(h / 2.0).max(0.0);
+    let mut path = tiny_skia::PathBuilder::new();
+    path.move_to(x + r, y);
+    path.line_to(x + w - r, y);
+    path.quad_to(x + w, y, x + w, y + r);
+    path.line_to(x + w, y + h - r);
+    path.quad_to(x + w, y + h, x + w - r, y + h);
+    path.line_to(x + r, y + h);
+    path.quad_to(x, y + h, x, y + h - r);
+    path.line_to(x, y + r);
+    path.quad_to(x, y, x + r, y);
+    path.close();
+    path.finish()
+}
+
+/// The surface fill with rounded corners, a teal border and a teal ring.
+fn paint_frame(canvas: &mut Canvas, theme: &Theme, scale: f32, outer: Rect) {
+    let border = scale.round().max(1.0);
+    let room = border.ceil() + 1.0;
+    let width = (outer.w + 2.0 * room).ceil();
+    let height = (outer.h + 2.0 * room).ceil();
+    if width < 1.0 || height < 1.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(width as u32, height as u32) else {
+        return;
+    };
+    let inset = Rect::new(room, room, outer.w, outer.h);
+    let Some(path) = rounded_path(inset, BOX_RADIUS * scale) else {
+        return;
+    };
+    let mut paint = tiny_skia::Paint {
+        anti_alias: true,
+        ..tiny_skia::Paint::default()
+    };
+    let fill = theme.surface;
+    paint.set_color_rgba8(fill.r, fill.g, fill.b, 255);
+    pixmap.fill_path(
+        &path,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        tiny_skia::Transform::identity(),
+        None,
+    );
+    let teal = theme.teal;
+    paint.set_color_rgba8(teal.r, teal.g, teal.b, 255);
+    let stroke = tiny_skia::Stroke {
+        width: border * 2.0,
+        ..tiny_skia::Stroke::default()
+    };
+    pixmap.stroke_path(&path, &paint, &stroke, tiny_skia::Transform::identity(), None);
+    canvas.draw_pixmap(&pixmap, outer.x - room, outer.y - room);
+}
+
+/// The `:` or `/` line nvim is typing, in a dark strip along the bottom of
+/// the box.
+fn paint_cmdline(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    theme: &Theme,
+    scale: f32,
+    outer: Rect,
+    line: &str,
+) {
+    let size = (CMDLINE_FONT_SIZE * scale).round().max(8.0);
+    let pad = 14.0 * scale;
+    let height = (size * 1.5 + 12.0 * scale).round();
+    let border = scale.round().max(1.0);
+    let strip = Rect::new(
+        outer.x + border,
+        outer.bottom() - border - height,
+        (outer.w - 2.0 * border).max(0.0),
+        height,
+    );
+    canvas.fill_rect(strip, theme.code_bg);
+    canvas.fill_rect(Rect::new(strip.x, strip.y, strip.w, border), theme.rule);
+    let mut text = TextBlock::new(fonts, size, size * 1.5);
+    text.set_text(fonts, line, TextStyle::mono(theme.ink), &theme.families);
+    text.set_width(fonts, None);
+    let end = text
+        .glyphs()
+        .map(|glyph| glyph.x + glyph.width)
+        .fold(0.0, f32::max);
+    let top = strip.y + 6.0 * scale;
+    canvas.draw_text(fonts, &text, strip.x + pad, top, theme.ink);
+    canvas.fill_rect(
+        Rect::new(strip.x + pad + end, top, 2.0 * scale.max(1.0), size * 1.5),
+        theme.teal,
+    );
+}
+
+/// Paint the box: a rounded teal-bordered frame, the editor grid, the mode
+/// line and, while one is being typed, the command line. `outer` is the
+/// block's rectangle in window coordinates.
 pub fn paint(
     canvas: &mut Canvas,
     fonts: &mut Fonts,
@@ -175,9 +283,9 @@ pub fn paint(
     grid: &Grid,
     open: &OpenBox,
 ) {
-    let border = scale.round().max(1.0);
-    canvas.fill_rect(outer, theme.code_bg);
-    canvas.stroke_rect(outer, border, theme.teal);
+    // The block underneath is square; clear its corners first.
+    canvas.fill_rect(outer, theme.bg);
+    paint_frame(canvas, theme, scale, outer);
     let scaled = scaled_theme(theme, scale);
     paint_grid(canvas, grid, box_inner(outer, scale), &scaled, fonts);
 
@@ -201,11 +309,14 @@ pub fn paint(
         outer.y + 3.0 * scale,
         theme.muted,
     );
+    if let Some(line) = open.cmdline.as_deref() {
+        paint_cmdline(canvas, fonts, theme, scale, outer, line);
+    }
 }
 
 /// Height in device pixels of a box of `rows` rows at `scale`, frame included.
-pub fn box_height(rows: u16, theme: &Theme, scale: f32) -> f32 {
-    let row = (theme.font_size * scale * GRID_LINE_HEIGHT)
+pub fn box_height(rows: u16, _theme: &Theme, scale: f32) -> f32 {
+    let row = (EDITOR_FONT_SIZE * scale * GRID_LINE_HEIGHT)
         .round()
         .max(1.0);
     let frame = 2.0 * (12.0 * scale + scale.round().max(1.0));
@@ -297,7 +408,7 @@ mod tests {
         let theme = Theme::dark();
         let three = box_height(3, &theme, 1.0);
         let four = box_height(4, &theme, 1.0);
-        let row = (theme.font_size * GRID_LINE_HEIGHT).round();
+        let row = (EDITOR_FONT_SIZE * GRID_LINE_HEIGHT).round();
         assert!((four - three - row).abs() < 0.01);
         assert!(box_height(3, &theme, 2.0) > 1.9 * three);
         assert_eq!(box_height(0, &theme, 1.0), box_height(1, &theme, 1.0));
@@ -332,8 +443,53 @@ mod tests {
                 (laid - predicted).abs() < 1.0,
                 "scale {scale}: {laid} vs {predicted}"
             );
-            assert!(grid_row_height(theme.font_size * scale) > 0.0);
+            assert!(grid_row_height(EDITOR_FONT_SIZE * scale) > 0.0);
         }
+    }
+
+    fn scene(width: u32, height: u32) -> Vec<u32> {
+        vec![Theme::dark().bg.to_pixel(); (width * height) as usize]
+    }
+
+    #[test]
+    fn should_round_the_corners_and_fill_the_surface_when_painting_the_frame() {
+        let theme = Theme::dark();
+        let mut pixels = scene(200, 120);
+        let mut canvas = Canvas::new(&mut pixels, 200, 120);
+        let outer = Rect::new(20.0, 20.0, 160.0, 80.0);
+        canvas.fill_rect(outer, theme.rule);
+        paint_frame(&mut canvas, &theme, 1.0, outer);
+        assert_eq!(canvas.pixel(100, 60), Some(theme.surface.to_pixel()));
+        assert_eq!(canvas.pixel(100, 20), Some(theme.teal.to_pixel()));
+        // The very corner lies outside a radius of 10 and keeps what was there.
+        assert_eq!(canvas.pixel(20, 20), Some(theme.rule.to_pixel()));
+    }
+
+    #[test]
+    fn should_paint_a_dark_strip_when_a_command_line_is_open() {
+        let theme = Theme::dark();
+        let mut fonts = Fonts::new();
+        let mut pixels = scene(300, 160);
+        let mut canvas = Canvas::new(&mut pixels, 300, 160);
+        let outer = Rect::new(10.0, 10.0, 280.0, 140.0);
+        let mut open = OpenBox::new(BoxPlan {
+            target: super::super::fields::BoxTarget::Reply { field: "q1".into() },
+            rows: 3,
+        });
+        open.cmdline = Some(":wq".into());
+        paint(&mut canvas, &mut fonts, &theme, 1.0, outer, &Grid::new(10, 3), &open);
+        assert_eq!(canvas.pixel(30, 140), Some(theme.code_bg.to_pixel()));
+    }
+
+    #[test]
+    fn should_limit_a_box_to_seventy_percent_of_the_viewport_when_asking_for_rows() {
+        let theme = Theme::dark();
+        for scale in [1.0, 2.0] {
+            let rows = rows_in_viewport(1000.0 * scale, &theme, scale);
+            assert!(box_height(rows, &theme, scale) <= 700.0 * scale);
+            assert!(box_height(rows + 1, &theme, scale) > 700.0 * scale);
+        }
+        assert_eq!(rows_in_viewport(0.0, &theme, 1.0), 1);
     }
 
     #[test]

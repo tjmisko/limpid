@@ -10,7 +10,7 @@ use super::{
     block::{Cx, Flow},
     inline::{self, RichText},
 };
-use crate::{editor::paint::GRID_LINE_HEIGHT, paint::Rect, text::TextStyle};
+use crate::{editor::paint::{EDITOR_FONT_SIZE, GRID_LINE_HEIGHT}, paint::Rect, text::TextStyle};
 use limpid_core::doc::{AnnotationKind, Block, Inline};
 
 /// Marks an annotation block as the editor box. The text after the prefix is
@@ -182,7 +182,7 @@ fn lay_box(
 ) -> LaidBlock {
     let (padding, border) = frame(cx);
     let rows = rows.max(1);
-    let grid_height = f32::from(rows) * grid_row_height(cx.body_size());
+    let grid_height = f32::from(rows) * grid_row_height(cx.px(EDITOR_FONT_SIZE));
     let height = grid_height + 2.0 * (padding + border);
     let style = TextStyle::sans(flow.ink);
     let empty = inline::build_inlines(
@@ -310,7 +310,7 @@ mod tests {
                 "the cursor must be able to rest on the box"
             );
         }
-        let row = grid_row_height(theme.font_size);
+        let row = grid_row_height(EDITOR_FONT_SIZE);
         assert!(
             (heights[1] - heights[0] - 3.0 * row).abs() < 0.5,
             "{heights:?}"
