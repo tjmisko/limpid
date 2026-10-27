@@ -44,13 +44,13 @@ impl Review {
         self.lines().len().saturating_sub(1)
     }
 
-    /// `Enter` sends, `Esc` and `q` dismiss, `j`/`k` and `Ctrl-d`/`Ctrl-u`
+    /// `Ctrl-Enter` sends, `Esc` and `q` dismiss, `j`/`k` and `Ctrl-d`/`Ctrl-u`
     /// scroll. Every other key is swallowed: the page below does not move.
     pub fn handle(&mut self, input: &KeyInput) -> ReviewKey {
         let chord = &input.chord;
         let before = self.scroll;
         match (chord.key.as_str(), chord.ctrl) {
-            ("enter", false) => return ReviewKey::Send,
+            ("enter", true) => return ReviewKey::Send,
             ("escape", _) | ("q", false) => return ReviewKey::Dismiss,
             ("c", true) => return ReviewKey::Dismiss,
             ("j" | "down", false) => self.scroll = (self.scroll + 1).min(self.last_scroll()),
@@ -101,7 +101,7 @@ pub fn paint(
         fonts,
         theme,
         size,
-        "Review: Enter sends, Esc closes",
+        "Review: Ctrl-Enter sends, Esc closes",
         text_width,
     );
     canvas.draw_text(fonts, &heading, panel.x + pad, panel.y + pad, theme.muted);
@@ -148,8 +148,19 @@ mod tests {
     }
 
     #[test]
-    fn should_send_when_enter_is_pressed() {
-        assert_eq!(review(2).handle(&KeyInput::named("enter")), ReviewKey::Send);
+    fn should_send_when_ctrl_enter_is_pressed() {
+        assert_eq!(
+            review(2).handle(&KeyInput::named("ctrl+enter")),
+            ReviewKey::Send
+        );
+    }
+
+    #[test]
+    fn should_not_send_when_plain_enter_is_pressed() {
+        assert_eq!(
+            review(2).handle(&KeyInput::named("enter")),
+            ReviewKey::Ignored
+        );
     }
 
     #[test]

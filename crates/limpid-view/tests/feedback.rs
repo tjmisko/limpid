@@ -355,7 +355,7 @@ fn should_close_after_wq_when_there_is_no_feedback_to_send() {
 }
 
 #[test]
-fn should_review_the_message_and_send_it_on_enter_when_s_is_pressed() {
+fn should_review_the_message_and_send_it_on_ctrl_enter_when_s_is_pressed() {
     let delivered = scratch("review-out").join("message.txt");
     let settings = format!("[reply]\ncommand = \"cat > '{}'\"\n", delivered.display());
     let mut world = world("review", false, &settings, None);
@@ -372,6 +372,8 @@ fn should_review_the_message_and_send_it_on_enter_when_s_is_pressed() {
     assert!(!delivered.exists(), "dismissing sends nothing");
     world.press("shift+s");
     world.press("enter");
+    assert!(world.page.review_open(), "plain enter does not send");
+    world.press("ctrl+enter");
     assert!(!world.page.review_open());
     let message = std::fs::read_to_string(&delivered).unwrap();
     assert!(message.contains("q1: Postgres, shared"), "{message}");
