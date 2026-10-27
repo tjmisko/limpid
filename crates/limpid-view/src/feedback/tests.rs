@@ -1230,3 +1230,49 @@ fn should_not_resend_the_size_when_the_same_window_paints_again() {
     }
     assert_eq!(h.script.borrow().resizes, vec![(80, 6)]);
 }
+
+#[test]
+fn should_send_insert_at_start_keys_when_capital_i_opens_a_comment() {
+    let mut h = harness(QUESTIONS, false);
+    let src = h.paragraph_src();
+    let result = h.fb.act(FeedbackAction::Edit(EditAt::Start), Some(&src));
+    assert!(matches!(result, ActionResult::Done(_)), "{result:?}");
+    assert_eq!(h.script.borrow().opened[0].1, BoxKind::Comment);
+    assert_eq!(h.script.borrow().inputs, ["<C-\\><C-n>ggI"]);
+}
+
+#[test]
+fn should_send_append_at_end_keys_when_capital_a_opens_a_reply() {
+    let mut h = harness(QUESTIONS, false);
+    let src = h.field_src("q2");
+    h.fb.act(FeedbackAction::Edit(EditAt::End), Some(&src));
+    assert_eq!(h.script.borrow().opened[0].1, BoxKind::Reply);
+    assert_eq!(h.script.borrow().inputs, ["<C-\\><C-n>GA"]);
+}
+
+#[test]
+fn should_send_no_keys_when_plain_i_opens_a_box() {
+    let mut h = harness(QUESTIONS, false);
+    let src = h.paragraph_src();
+    h.fb.act(FeedbackAction::Edit(EditAt::Keep), Some(&src));
+    assert!(h.fb.box_open());
+    assert!(h.script.borrow().inputs.is_empty());
+}
+
+#[test]
+fn should_edit_the_comment_when_enter_is_pressed_on_a_comment() {
+    let mut h = harness(QUESTIONS, false);
+    let src = h.paragraph_src();
+    h.fb.act(FeedbackAction::OpenComment, Some(&src));
+    h.say(EditorEvent::Save("Vague.".into()));
+    h.say(EditorEvent::Quit { discard: false });
+    h.rebuild();
+    let key = Feedback::comment_key(&src);
+    let shown = h.fb.resolve_focus(&Focus::Comment(key)).unwrap();
+    let result = h.fb.act(FeedbackAction::OpenReply, Some(&shown));
+    assert!(matches!(result, ActionResult::Done(_)), "{result:?}");
+    assert_eq!(
+        h.script.borrow().opened.last().unwrap(),
+        &("Vague.".to_owned(), BoxKind::Comment)
+    );
+}

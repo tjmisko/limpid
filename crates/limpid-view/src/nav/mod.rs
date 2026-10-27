@@ -82,12 +82,21 @@ pub struct Outcome {
     pub requests: Vec<Request>,
 }
 
+/// Where the cursor starts in a box opened by `i`, `I` or `A`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditAt {
+    Keep,
+    Start,
+    End,
+}
+
 /// Feedback actions that belong to the editor layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeedbackAction {
     PickOption(u8),
     OpenReply,
     OpenComment,
+    Edit(EditAt),
     DeleteComment,
     Review,
     FirstUnanswered,
@@ -449,6 +458,9 @@ impl Nav {
             Action::Clear => out.redraw = self.clear(),
             Action::OpenReply => self.feedback(FeedbackAction::OpenReply, now_ms, io),
             Action::OpenComment => self.feedback(FeedbackAction::OpenComment, now_ms, io),
+            Action::Insert => self.feedback(FeedbackAction::Edit(EditAt::Keep), now_ms, io),
+            Action::InsertStart => self.feedback(FeedbackAction::Edit(EditAt::Start), now_ms, io),
+            Action::InsertEnd => self.feedback(FeedbackAction::Edit(EditAt::End), now_ms, io),
             Action::DeleteComment => self.feedback(FeedbackAction::DeleteComment, now_ms, io),
             Action::Review => self.feedback(FeedbackAction::Review, now_ms, io),
             Action::FirstUnanswered => self.feedback(FeedbackAction::FirstUnanswered, now_ms, io),
@@ -1397,6 +1409,20 @@ mod tests {
                 FeedbackAction::OpenReply,
                 FeedbackAction::Review,
                 FeedbackAction::FirstUnanswered,
+            ]
+        );
+    }
+
+    #[test]
+    fn should_hand_the_insert_keys_to_the_page_actions_when_pressed() {
+        let mut world = World::new("a\n", 600.0);
+        world.keys(&["i", "shift+i", "shift+a"]);
+        assert_eq!(
+            world.actions.picked,
+            vec![
+                FeedbackAction::Edit(EditAt::Keep),
+                FeedbackAction::Edit(EditAt::Start),
+                FeedbackAction::Edit(EditAt::End),
             ]
         );
     }

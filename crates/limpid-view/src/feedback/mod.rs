@@ -15,7 +15,7 @@ pub mod review;
 use crate::{
     editor::{BoxKind, EditorConfig, EditorEvent},
     layout::Layout,
-    nav::{ActionResult, FeedbackAction, PageActions},
+    nav::{ActionResult, EditAt, FeedbackAction, PageActions},
     paint::{Canvas, Rect},
     text::Fonts,
     theme::Theme,
@@ -105,6 +105,8 @@ pub struct Feedback {
     open: Option<OpenBox>,
     /// Columns and rows of the last grid the editor was sized to.
     grid_size: (u16, u16),
+    /// The most rows a box may have in the window it was last painted in.
+    viewport_rows: Option<u16>,
     review: Option<Review>,
     stale: bool,
     reload: bool,
@@ -166,6 +168,7 @@ impl Feedback {
             owner,
             open: None,
             grid_size: (80, 6),
+            viewport_rows: None,
             review: None,
             stale: false,
             reload: false,
@@ -352,6 +355,15 @@ impl Feedback {
             .max(Duration::from_millis(1))
     }
 
+    /// The row limits, with the top set by the window's height once known.
+    fn limits(&self) -> BoxLimits {
+        let mut limits = self.options.limits;
+        if let Some(rows) = self.viewport_rows {
+            limits.max_rows = rows.max(limits.min_rows);
+        }
+        limits
+    }
+
     fn editor_config(&self) -> EditorConfig {
         EditorConfig::from_settings(&self.settings.editor, self.grid_size.0, self.grid_size.1)
     }
@@ -377,7 +389,7 @@ impl Feedback {
             }
             Err(BeginError::Open(error)) => return ActionResult::Failed(error.to_string()),
         }
-        let rows = self.options.limits.rows_for(text.lines().count() as u16);
+        let rows = self.limits().rows_for(text.lines().count() as u16);
         self.open = Some(OpenBox::new(BoxPlan { target, rows }));
         self.stale = true;
         self.focus = Some(Focus::Box);
@@ -505,6 +517,7 @@ impl Feedback {
 
     /// Grow or shrink the box to the text in it.
     fn fit_box_to_content(&mut self) {
+        let limits = self.limits();
         let Some(open) = self.open.as_mut() else {
             return;
         };
@@ -512,7 +525,7 @@ impl Feedback {
         let Some(content) = content else {
             return;
         };
-        let rows = self.options.limits.rows_for(content);
+        let rows = limits.rows_for(content);
         if open.plan.rows != rows {
             open.plan.rows = rows;
             self.stale = true;
@@ -576,6 +589,14 @@ impl Feedback {
         theme: &Theme,
         fonts: &mut Fonts,
     ) {
+        if self.open.is_none() {
+            return;
+        }
+        let max_rows = boxes::rows_in_viewport(canvas.height() as f32, theme, layout.scale());
+        if self.viewport_rows != Some(max_rows) {
+            self.viewport_rows = Some(max_rows);
+            self.fit_box_to_content();
+        }
         let (Some(open), Some(src)) = (self.open.as_ref(), self.box_src()) else {
             return;
         };
@@ -678,6 +699,7 @@ impl Feedback {
     fn open_reply(&mut self, stop: Option<&Range<usize>>) -> ActionResult {
         let field = match stop.map(|stop| self.classify(stop)) {
             Some(StopRef::Field(id) | StopRef::Reply(id)) => id,
+            Some(StopRef::Comment(_)) => return self.open_comment(stop),
             _ => return ActionResult::Nothing("no question here".into()),
         };
         let text = match self.pending.reply(&field) {
@@ -685,6 +707,28 @@ impl Feedback {
             None => self.saved_reply_text(&field),
         };
         self.begin_box(BoxTarget::Reply { field }, &text, BoxKind::Reply)
+    }
+
+    /// `i`, `I` and `A`: edit the question's reply, or comment on the block,
+    /// with the cursor where `at` says.
+    fn edit_at(&mut self, at: EditAt, stop: Option<&Range<usize>>) -> ActionResult {
+        let on_question = matches!(
+            stop.map(|stop| self.classify(stop)),
+            Some(StopRef::Field(_) | StopRef::Reply(_))
+        );
+        let result = if on_question {
+            self.open_reply(stop)
+        } else {
+            self.open_comment(stop)
+        };
+        if matches!(result, ActionResult::Done(_)) {
+            match at {
+                EditAt::Keep => {}
+                EditAt::Start => self.input("<C-\\><C-n>ggI"),
+                EditAt::End => self.input("<C-\\><C-n>GA"),
+            }
+        }
+        result
     }
 
     fn open_comment(&mut self, stop: Option<&Range<usize>>) -> ActionResult {
@@ -841,6 +885,7 @@ impl Feedback {
             FeedbackAction::PickOption(number) => self.pick_option(number, stop),
             FeedbackAction::OpenReply => self.open_reply(stop),
             FeedbackAction::OpenComment => self.open_comment(stop),
+            FeedbackAction::Edit(at) => self.edit_at(at, stop),
             FeedbackAction::DeleteComment => self.delete_comment(stop),
             FeedbackAction::Review => self.open_review(),
             FeedbackAction::FirstUnanswered => self.first_unanswered(),

@@ -35,6 +35,9 @@ pub enum Action {
     ScrollRight,
     OpenReply,
     OpenComment,
+    Insert,
+    InsertStart,
+    InsertEnd,
     DeleteComment,
     Review,
     FirstUnanswered,
@@ -72,7 +75,10 @@ const TABLE: &[(Action, &str, &str)] = &[
     (Action::AlignBottom, "align_bottom", "z b"),
     (Action::ScrollLeft, "scroll_left", "h"),
     (Action::ScrollRight, "scroll_right", "l"),
-    (Action::OpenReply, "open_reply", "enter, i"),
+    (Action::OpenReply, "open_reply", "enter"),
+    (Action::Insert, "insert", "i"),
+    (Action::InsertStart, "insert_start", "shift+i"),
+    (Action::InsertEnd, "insert_end", "shift+a"),
     (Action::OpenComment, "open_comment", "c"),
     (Action::DeleteComment, "delete_comment", "x"),
     (Action::Review, "review", "shift+s"),
@@ -622,6 +628,15 @@ mod tests {
             action,
             count: None,
         }
+    }
+
+    #[test]
+    fn should_bind_i_and_capital_i_and_a_to_the_insert_actions_when_defaults_are_used() {
+        let mut map = map();
+        assert_eq!(press(&mut map, "i", 0), action(Action::Insert));
+        assert_eq!(press(&mut map, "shift+i", 0), action(Action::InsertStart));
+        assert_eq!(press(&mut map, "shift+a", 0), action(Action::InsertEnd));
+        assert_eq!(press(&mut map, "enter", 0), action(Action::OpenReply));
     }
 
     #[test]
