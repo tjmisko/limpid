@@ -1,8 +1,8 @@
 //! Behaviour of [`Feedback`] against a scripted editor, so none of it needs
 //! nvim or a display.
 
-use super::*;
 use super::boxes::EditorPort;
+use super::*;
 use crate::editor::{Cell, EditorError, Grid};
 use limpid_core::{
     doc::{Doc, Mode, parse},
@@ -442,7 +442,11 @@ fn should_forward_keys_to_the_editor_when_a_box_is_open() {
     h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
     h.fb.input("<Esc>");
     h.fb.input("");
-    assert_eq!(h.script.borrow().inputs, ["<Esc>"], "empty keys are not sent");
+    assert_eq!(
+        h.script.borrow().inputs,
+        ["<Esc>"],
+        "empty keys are not sent"
+    );
 }
 
 #[test]

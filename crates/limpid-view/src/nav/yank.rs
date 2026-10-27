@@ -71,7 +71,8 @@ pub fn fence_body(markdown: &str) -> Option<String> {
         if closing {
             break;
         }
-        body.push(line);
+        let strip = line.len() - line.trim_start_matches(' ').len();
+        body.push(&line[strip.min(indent)..]);
     }
     Some(body.join("\n"))
 }
@@ -91,12 +92,29 @@ pub fn blocks_text(source: &str, ranges: &[Range<usize>]) -> String {
         return String::new();
     };
     let text = slice(source, &(start..end));
+    // The range may start after the fence's indent; the indent is part of the fence.
+    let line_start = source
+        .get(..start)
+        .map_or(start, |head| head.rfind('\n').map_or(0, |at| at + 1));
+    let indented = source
+        .get(line_start..start)
+        .filter(|gap| !gap.is_empty() && gap.chars().all(|c| c == ' '))
+        .and_then(|_| source.get(line_start..end));
     if ranges.len() == 1
-        && let Some(code) = fence_body(text)
+        && let Some(code) = fence_body(indented.unwrap_or(text))
     {
-        return finish(&code);
+        return finish_code(&code);
     }
     finish(text)
+}
+
+/// Code keeps its own leading indent; only blank lines around it go.
+fn finish_code(code: &str) -> String {
+    let trimmed = code.trim_end().trim_start_matches(['\n', '\r']);
+    if trimmed.trim().is_empty() {
+        return String::new();
+    }
+    format!("{trimmed}\n")
 }
 
 fn finish(text: &str) -> String {
@@ -332,12 +350,37 @@ mod tests {
         assert_eq!(fence_body("```\n```").as_deref(), Some(""));
         assert_eq!(
             fence_body("   ```\n  indented\n   ```").as_deref(),
-            Some("  indented")
+            Some("indented")
+        );
+        assert_eq!(
+            fence_body("  ```\n    deeper\n  ```").as_deref(),
+            Some("  deeper")
         );
         assert_eq!(fence_body("plain text"), None);
         assert_eq!(fence_body("``\nnot a fence\n``"), None);
         assert_eq!(fence_body("    ```\ncode block\n"), None);
         assert_eq!(fence_body(""), None);
+    }
+
+    #[test]
+    fn should_yank_only_the_code_when_fences_differ_in_length_kind_or_info() {
+        for markdown in [
+            "````python3 title=x\nprint(1)\n````\n",
+            "~~~\nprint(1)\n~~~\n",
+            "~~~~ py\nprint(1)\n~~~~\n",
+            "  ```py\n  print(1)\n  ```\n",
+        ] {
+            let doc = doc(&format!("intro\n\n{markdown}\nafter\n"));
+            let text = blocks_text(&doc.source, &[doc.blocks[1].src.clone()]);
+            assert_eq!(text, "print(1)\n", "{markdown:?}");
+        }
+    }
+
+    #[test]
+    fn should_keep_the_first_line_indent_when_yanking_code() {
+        let doc = doc("```\n    indented\nflush\n```\n");
+        let text = blocks_text(&doc.source, &[doc.blocks[0].src.clone()]);
+        assert_eq!(text, "    indented\nflush\n");
     }
 
     #[test]

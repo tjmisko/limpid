@@ -1519,6 +1519,28 @@ mod tests {
     }
 
     #[test]
+    fn should_extend_the_selection_by_the_count_when_a_count_precedes_j_or_k() {
+        let mut world = World::new("one\n\ntwo\n\nthree\n\nfour\n\nfive\n", 600.0);
+        world.keys(&["v", "3", "j", "y"]);
+        assert_eq!(
+            world.clipboard.copied,
+            vec!["one\n\ntwo\n\nthree\n\nfour\n"]
+        );
+        world.keys(&["shift+g", "v", "2", "k", "y"]);
+        assert_eq!(world.clipboard.copied[1], "three\n\nfour\n\nfive\n");
+        assert_eq!(world.message(), "Yanked 3 blocks");
+    }
+
+    #[test]
+    fn should_yank_the_code_and_exit_when_visual_covers_one_code_block() {
+        let mut world = World::new("```rs\nlet a = 1;\n```\n", 600.0);
+        world.keys(&["v", "y"]);
+        assert_eq!(world.clipboard.copied, vec!["let a = 1;\n"]);
+        assert_eq!(world.message(), "Yanked code");
+        assert_eq!(world.nav.state(), StateName::Page);
+    }
+
+    #[test]
     fn should_select_upwards_the_same_way_when_moving_before_the_anchor() {
         let mut world = World::new("one\n\ntwo\n\nthree\n", 600.0);
         world.keys(&["shift+g", "v", "k", "y"]);
