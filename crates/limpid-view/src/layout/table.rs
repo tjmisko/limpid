@@ -299,7 +299,23 @@ fn cell_at<'a>(row: &'a [Vec<Inline>], column: usize, empty: &'a Vec<Inline>) ->
     row.get(column).unwrap_or(empty)
 }
 
+/// Corner radius of a table, CSS px.
+const RADIUS: f32 = 10.0;
+
 pub fn paint(paint: &PaintCx, canvas: &mut Canvas, fonts: &mut Fonts, block: &LaidBlock) {
+    let Content::Table(table) = &block.content else {
+        return;
+    };
+    paint_square(paint, canvas, fonts, block);
+    let theme = paint.theme;
+    let area = paint.window_rect(&block.rect);
+    let radius = RADIUS * paint.scale;
+    canvas.cut_corners(area, radius, theme.bg);
+    canvas.stroke_round_rect(area, radius, table.border, theme.rule);
+}
+
+/// The table with square corners, which [`paint`] then rounds.
+fn paint_square(paint: &PaintCx, canvas: &mut Canvas, fonts: &mut Fonts, block: &LaidBlock) {
     let Content::Table(table) = &block.content else {
         return;
     };
@@ -686,5 +702,36 @@ mod tests {
         let two = lay_out(&doc, 2000.0, &Theme::dark(), 2.0, &mut fonts);
         let ratio = two.blocks[0].rect.h / one.blocks[0].rect.h;
         assert!((1.8..2.2).contains(&ratio), "{ratio}");
+    }
+
+    #[test]
+    fn should_round_the_corners_of_a_table_when_painting() {
+        let doc = parse(
+            "| a | b |\n|---|---|\n| 1 | 2 |\n",
+            Mode::File,
+            &Settings::default(),
+        );
+        let theme = Theme::dark();
+        let mut fonts = Fonts::new();
+        let mut layout = crate::layout::lay_out(&doc, 800.0, &theme, 1.0, &mut fonts);
+        let (width, height) = (800u32, 400u32);
+        let mut pixels = vec![0u32; (width * height) as usize];
+        let mut canvas = Canvas::new(&mut pixels, width, height);
+        canvas.clear(theme.bg);
+        layout.paint(&mut canvas, &mut fonts, 0.0);
+        let block = &layout.blocks[0];
+        let left = layout.column_x.round() as i32;
+        let top = block.rect.y.round() as i32;
+        let middle = left + (block.rect.w / 2.0) as i32;
+        assert_eq!(
+            canvas.pixel(left, top),
+            Some(theme.bg.to_pixel()),
+            "the corner shows the page"
+        );
+        assert_eq!(
+            canvas.pixel(middle, top),
+            Some(theme.rule.to_pixel()),
+            "the edge keeps its border"
+        );
     }
 }
