@@ -296,6 +296,27 @@ impl Settings {
             0.1,
             3600.0,
         )?;
+        let style = &self.style;
+        if let Some(value) = style.line_height {
+            within("style.line_height", value, 1.0, 3.0)?;
+        }
+        if let Some(value) = style.content_width {
+            within("style.content_width", value, 100, 4000)?;
+        }
+        if let Some(value) = style.focus_alpha {
+            within("style.focus_alpha", value, 0.0, 1.0)?;
+        }
+        if let Some(value) = style.selection_alpha {
+            within("style.selection_alpha", value, 0.0, 1.0)?;
+        }
+        for (key, value) in style.colors() {
+            let Some(text) = value else { continue };
+            if !is_hex_colour(text) {
+                return Err(serde::de::Error::custom(format!(
+                    "style.{key} must be a colour like #7cdec7, got {text:?}"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -331,8 +352,27 @@ impl Settings {
 #[serde(default, deny_unknown_fields)]
 pub struct Style {
     pub font_size: u32,
-    /// Extra stylesheet. Absolute, or relative to the config directory.
+    /// Extra stylesheet for the WebKit host. The native viewer ignores it.
     pub css: Option<String>,
+    /// Overrides `view.line_height` when set.
+    pub line_height: Option<f32>,
+    /// Overrides `view.content_width` when set, in px.
+    pub content_width: Option<u32>,
+    /// Page colour tokens as `#rrggbb`, `None` keeps the scheme's own.
+    pub bg: Option<String>,
+    pub surface: Option<String>,
+    pub raised: Option<String>,
+    pub rule: Option<String>,
+    pub ink: Option<String>,
+    pub muted: Option<String>,
+    pub faint: Option<String>,
+    pub teal: Option<String>,
+    pub blue: Option<String>,
+    pub amber: Option<String>,
+    /// Alpha of the focus band, 0 to 1.
+    pub focus_alpha: Option<f32>,
+    /// Alpha of the selection band, 0 to 1.
+    pub selection_alpha: Option<f32>,
 }
 
 impl Default for Style {
@@ -340,11 +380,48 @@ impl Default for Style {
         Self {
             font_size: 17,
             css: None,
+            line_height: None,
+            content_width: None,
+            bg: None,
+            surface: None,
+            raised: None,
+            rule: None,
+            ink: None,
+            muted: None,
+            faint: None,
+            teal: None,
+            blue: None,
+            amber: None,
+            focus_alpha: None,
+            selection_alpha: None,
         }
     }
 }
 
+/// `#rrggbb`, the only colour form the style keys take.
+fn is_hex_colour(text: &str) -> bool {
+    text.len() == 7
+        && text.starts_with('#')
+        && text[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 impl Style {
+    /// The colour keys by name, for validation and for the viewer.
+    pub fn colors(&self) -> [(&'static str, &Option<String>); 10] {
+        [
+            ("bg", &self.bg),
+            ("surface", &self.surface),
+            ("raised", &self.raised),
+            ("rule", &self.rule),
+            ("ink", &self.ink),
+            ("muted", &self.muted),
+            ("faint", &self.faint),
+            ("teal", &self.teal),
+            ("blue", &self.blue),
+            ("amber", &self.amber),
+        ]
+    }
+
     fn css_path(&self, dir: &Path) -> PathBuf {
         let path = PathBuf::from(self.css.as_deref().unwrap_or("custom.css"));
         if path.is_absolute() {
@@ -642,5 +719,32 @@ mod tests {
     fn should_read_the_math_timeout_when_it_is_set() {
         let settings = Settings::parse("[math]\ntimeout_seconds = 12.5").unwrap();
         assert_eq!(settings.math.timeout_seconds, 12.5);
+    }
+
+    #[test]
+    fn should_parse_the_style_keys_when_all_are_set() {
+        let settings = Settings::parse(
+            "[style]\nline_height = 1.8\ncontent_width = 700\nbg = '#000000'\nteal = '#00ff00'\nfocus_alpha = 0.2\nselection_alpha = 0.4\n",
+        )
+        .unwrap();
+        assert_eq!(settings.style.line_height, Some(1.8));
+        assert_eq!(settings.style.content_width, Some(700));
+        assert_eq!(settings.style.bg.as_deref(), Some("#000000"));
+        assert_eq!(settings.style.focus_alpha, Some(0.2));
+        assert_eq!(Settings::parse("").unwrap().style.teal, None);
+    }
+
+    #[test]
+    fn should_name_the_key_when_a_style_value_is_invalid() {
+        for (source, key) in [
+            ("[style]\nbg = 'red'\n", "style.bg"),
+            ("[style]\nink = '#12345'\n", "style.ink"),
+            ("[style]\nline_height = 0.5\n", "style.line_height"),
+            ("[style]\ncontent_width = 10\n", "style.content_width"),
+            ("[style]\nfocus_alpha = 1.5\n", "style.focus_alpha"),
+            ("[style]\nselection_alpha = -0.1\n", "style.selection_alpha"),
+        ] {
+            assert!(range_error(source).contains(key), "{source}");
+        }
     }
 }

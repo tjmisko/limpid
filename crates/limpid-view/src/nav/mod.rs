@@ -805,12 +805,7 @@ impl Nav {
 
 /// The tint of the visual selection: the focus colour, stronger.
 pub fn selection_tint(theme: &Theme) -> Color {
-    Color::rgba(
-        theme.focus.r,
-        theme.focus.g,
-        theme.focus.b,
-        theme.focus.a.saturating_mul(2),
-    )
+    theme.selection
 }
 
 #[cfg(test)]

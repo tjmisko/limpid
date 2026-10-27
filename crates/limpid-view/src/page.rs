@@ -56,10 +56,13 @@ pub fn theme_for(settings: &Settings, scheme: Scheme) -> Theme {
     if view.font_size > 0 && view.font_size != limpid_core::settings::View::default().font_size {
         theme.font_size = view.font_size as f32;
     }
-    if view.line_height.is_finite() && view.line_height > 0.0 {
+    if settings.style.line_height.is_none()
+        && view.line_height.is_finite()
+        && view.line_height > 0.0
+    {
         theme.line_height = view.line_height;
     }
-    if view.content_width > 0 {
+    if settings.style.content_width.is_none() && view.content_width > 0 {
         theme.content_width = view.content_width as f32;
     }
     if view.rail_width > 0 {

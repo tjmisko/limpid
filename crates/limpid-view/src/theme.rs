@@ -100,6 +100,7 @@ pub struct Theme {
     pub scheme: Scheme,
     pub bg: Color,
     pub surface: Color,
+    pub raised: Color,
     pub ink: Color,
     pub muted: Color,
     pub faint: Color,
@@ -110,6 +111,8 @@ pub struct Theme {
     pub code_bg: Color,
     pub rule: Color,
     pub focus: Color,
+    /// Tint of the visual-mode selection band.
+    pub selection: Color,
     pub hl: HighlightPalette,
     /// CSS px at scale 1.
     pub font_size: f32,
@@ -141,6 +144,7 @@ impl Theme {
             scheme: Scheme::Dark,
             bg: rgb(0x0c1015),
             surface: rgb(0x12181f),
+            raised: rgb(0x18212a),
             ink: rgb(0xe8eeed),
             muted: rgb(0x95a4b1),
             faint: rgb(0x627484),
@@ -151,6 +155,7 @@ impl Theme {
             code_bg: rgb(0x0e1419),
             rule: rgb(0x27313d),
             focus: Color::rgba(124, 222, 199, 31),
+            selection: Color::rgba(124, 222, 199, 62),
             hl: HighlightPalette {
                 keyword: rgb(0xcba6f7),
                 operator: rgb(0x89dceb),
@@ -178,6 +183,7 @@ impl Theme {
             scheme: Scheme::Light,
             bg: rgb(0xfbfaf7),
             surface: rgb(0xf0eee8),
+            raised: rgb(0xe8e6df),
             ink: rgb(0x20252a),
             muted: rgb(0x53616c),
             faint: rgb(0x71818d),
@@ -188,6 +194,7 @@ impl Theme {
             code_bg: rgb(0xf3f2ee),
             rule: rgb(0xd4d1c8),
             focus: Color::rgba(18, 109, 93, 26),
+            selection: Color::rgba(18, 109, 93, 52),
             hl: HighlightPalette {
                 keyword: rgb(0x6955a5),
                 operator: rgb(0x6955a5),
@@ -217,14 +224,44 @@ impl Theme {
         }
     }
 
-    /// The scheme's palette with sizes taken from the settings. Only
-    /// `style.font_size` exists in `Settings` today; the `[view]` keys join
-    /// here when `limpid-core` gains them.
+    /// The scheme's palette with the `[style]` settings applied. The `[view]`
+    /// keys are applied by the caller.
     pub fn from_settings(settings: &Settings, scheme: Scheme) -> Self {
         let mut theme = Self::for_scheme(scheme);
-        if settings.style.font_size > 0 {
-            theme.font_size = settings.style.font_size as f32;
+        let style = &settings.style;
+        if style.font_size > 0 {
+            theme.font_size = style.font_size as f32;
         }
+        if let Some(value) = style.line_height {
+            theme.line_height = value;
+        }
+        if let Some(value) = style.content_width {
+            theme.content_width = value as f32;
+        }
+        let slots: [(&Option<String>, &mut Color); 10] = [
+            (&style.bg, &mut theme.bg),
+            (&style.surface, &mut theme.surface),
+            (&style.raised, &mut theme.raised),
+            (&style.rule, &mut theme.rule),
+            (&style.ink, &mut theme.ink),
+            (&style.muted, &mut theme.muted),
+            (&style.faint, &mut theme.faint),
+            (&style.teal, &mut theme.teal),
+            (&style.blue, &mut theme.blue),
+            (&style.amber, &mut theme.amber),
+        ];
+        for (value, slot) in slots {
+            if let Some(color) = value.as_deref().and_then(Color::from_hex) {
+                *slot = color;
+            }
+        }
+        // The bands are the teal token at a low alpha.
+        let teal = theme.teal;
+        let alpha = |fraction: f32| (fraction * 255.0).round() as u8;
+        let focus_alpha = style.focus_alpha.map_or(theme.focus.a, alpha);
+        let selection_alpha = style.selection_alpha.map_or(theme.selection.a, alpha);
+        theme.focus = Color::rgba(teal.r, teal.g, teal.b, focus_alpha);
+        theme.selection = Color::rgba(teal.r, teal.g, teal.b, selection_alpha);
         theme
     }
 }
@@ -268,6 +305,29 @@ mod tests {
             Theme::from_settings(&settings, Scheme::Dark).font_size,
             17.0
         );
+    }
+
+    #[test]
+    fn should_apply_style_tokens_when_settings_set_them() {
+        let settings = Settings::parse(
+            "[style]\nline_height = 2.0\ncontent_width = 700\nbg = '#010203'\nraised = '#040506'\nteal = '#0a0b0c'\nfocus_alpha = 0.5\nselection_alpha = 1.0\n",
+        )
+        .unwrap();
+        let theme = Theme::from_settings(&settings, Scheme::Dark);
+        assert_eq!(theme.line_height, 2.0);
+        assert_eq!(theme.content_width, 700.0);
+        assert_eq!(theme.bg, Color::rgb(1, 2, 3));
+        assert_eq!(theme.raised, Color::rgb(4, 5, 6));
+        assert_eq!(theme.focus, Color::rgba(10, 11, 12, 128));
+        assert_eq!(theme.selection, Color::rgba(10, 11, 12, 255));
+        assert_eq!(theme.surface, Theme::dark().surface);
+    }
+
+    #[test]
+    fn should_keep_the_default_bands_when_no_alpha_is_set() {
+        let theme = Theme::from_settings(&Settings::default(), Scheme::Dark);
+        assert_eq!(theme.focus, Theme::dark().focus);
+        assert_eq!(theme.selection, Theme::dark().selection);
     }
 
     #[test]
