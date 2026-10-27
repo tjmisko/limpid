@@ -208,6 +208,8 @@ pub struct Math {
     pub svg: SvgConverter,
     /// Typst binary name or path.
     pub typst: String,
+    /// How long one math helper run may take, in seconds.
+    pub timeout_seconds: f64,
 }
 
 impl Default for Math {
@@ -217,6 +219,7 @@ impl Default for Math {
             latex: LatexEngine::Auto,
             svg: SvgConverter::Auto,
             typst: "typst".into(),
+            timeout_seconds: 60.0,
         }
     }
 }
@@ -254,13 +257,46 @@ pub enum HelperWindow {
 impl Settings {
     pub fn parse(source: &str) -> Result<Self, toml::de::Error> {
         let settings: Self = toml::from_str(source)?;
-        let seconds = settings.mermaid.timeout_seconds;
-        if !seconds.is_finite() || seconds <= 0.0 {
-            return Err(serde::de::Error::custom(
-                "mermaid.timeout_seconds must be greater than zero",
-            ));
-        }
+        settings.check_ranges()?;
         Ok(settings)
+    }
+
+    /// Reject values outside the documented ranges, naming the key and range.
+    fn check_ranges(&self) -> Result<(), toml::de::Error> {
+        fn within<T: PartialOrd + std::fmt::Display + Copy>(
+            key: &str,
+            value: T,
+            low: T,
+            high: T,
+        ) -> Result<(), toml::de::Error> {
+            // A NaN fails both comparisons, so it is rejected too.
+            if value >= low && value <= high {
+                return Ok(());
+            }
+            Err(serde::de::Error::custom(format!(
+                "{key} must be between {low} and {high}, got {value}"
+            )))
+        }
+        let view = &self.view;
+        within("view.font_size", view.font_size, 6, 72)?;
+        within("view.line_height", view.line_height, 1.0, 3.0)?;
+        within("view.content_width", view.content_width, 100, 4000)?;
+        within("view.rail_width", view.rail_width, 100, 4000)?;
+        within("view.scroll_fraction", view.scroll_fraction, 0.05, 1.0)?;
+        within("editor.idle_seconds", self.editor.idle_seconds, 0, 86400)?;
+        within(
+            "mermaid.timeout_seconds",
+            self.mermaid.timeout_seconds,
+            0.1,
+            3600.0,
+        )?;
+        within(
+            "math.timeout_seconds",
+            self.math.timeout_seconds,
+            0.1,
+            3600.0,
+        )?;
+        Ok(())
     }
 
     /// The directory holding `config.toml`, or `None` when no config root is set.
@@ -387,6 +423,7 @@ mod tests {
         assert_eq!(settings.math.latex, LatexEngine::Auto);
         assert_eq!(settings.math.svg, SvgConverter::Auto);
         assert_eq!(settings.math.typst, "typst");
+        assert_eq!(settings.math.timeout_seconds, 60.0);
         assert!(settings.mermaid.enabled);
         assert_eq!(settings.mermaid.timeout_seconds, 20.0);
         assert_eq!(settings.mermaid.helper_window, HelperWindow::Auto);
@@ -491,5 +528,119 @@ mod tests {
             let source = format!("[mermaid]\ntimeout_seconds = {value}");
             assert!(Settings::parse(&source).is_err(), "{source}");
         }
+    }
+
+    fn range_error(source: &str) -> String {
+        Settings::parse(source).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn should_accept_each_range_boundary_when_values_sit_on_the_edge() {
+        for source in [
+            "[view]\nfont_size = 6",
+            "[view]\nfont_size = 72",
+            "[view]\nline_height = 1.0",
+            "[view]\nline_height = 3.0",
+            "[view]\ncontent_width = 100",
+            "[view]\ncontent_width = 4000",
+            "[view]\nrail_width = 100",
+            "[view]\nrail_width = 4000",
+            "[view]\nscroll_fraction = 0.05",
+            "[view]\nscroll_fraction = 1.0",
+            "[editor]\nidle_seconds = 0",
+            "[editor]\nidle_seconds = 86400",
+            "[mermaid]\ntimeout_seconds = 0.1",
+            "[mermaid]\ntimeout_seconds = 3600",
+            "[math]\ntimeout_seconds = 0.1",
+            "[math]\ntimeout_seconds = 3600",
+        ] {
+            assert!(Settings::parse(source).is_ok(), "{source}");
+        }
+    }
+
+    #[test]
+    fn should_name_key_and_range_when_a_value_is_out_of_range() {
+        for (source, key, range) in [
+            ("[view]\nfont_size = 5", "view.font_size", "6 and 72"),
+            ("[view]\nfont_size = 73", "view.font_size", "6 and 72"),
+            ("[view]\nfont_size = 0", "view.font_size", "6 and 72"),
+            ("[view]\nline_height = 0.9", "view.line_height", "1 and 3"),
+            ("[view]\nline_height = 3.1", "view.line_height", "1 and 3"),
+            (
+                "[view]\ncontent_width = 99",
+                "view.content_width",
+                "100 and 4000",
+            ),
+            (
+                "[view]\ncontent_width = 4001",
+                "view.content_width",
+                "100 and 4000",
+            ),
+            ("[view]\nrail_width = 0", "view.rail_width", "100 and 4000"),
+            (
+                "[view]\nrail_width = 4001",
+                "view.rail_width",
+                "100 and 4000",
+            ),
+            (
+                "[view]\nscroll_fraction = 0.0",
+                "view.scroll_fraction",
+                "0.05 and 1",
+            ),
+            (
+                "[view]\nscroll_fraction = 1.5",
+                "view.scroll_fraction",
+                "0.05 and 1",
+            ),
+            (
+                "[editor]\nidle_seconds = 86401",
+                "editor.idle_seconds",
+                "0 and 86400",
+            ),
+            (
+                "[mermaid]\ntimeout_seconds = 0.05",
+                "mermaid.timeout_seconds",
+                "0.1 and 3600",
+            ),
+            (
+                "[mermaid]\ntimeout_seconds = 3601",
+                "mermaid.timeout_seconds",
+                "0.1 and 3600",
+            ),
+            (
+                "[math]\ntimeout_seconds = 0",
+                "math.timeout_seconds",
+                "0.1 and 3600",
+            ),
+            (
+                "[math]\ntimeout_seconds = -5",
+                "math.timeout_seconds",
+                "0.1 and 3600",
+            ),
+        ] {
+            let error = range_error(source);
+            assert!(error.contains(key), "{source}: {error}");
+            assert!(error.contains(range), "{source}: {error}");
+        }
+    }
+
+    #[test]
+    fn should_reject_non_finite_numbers_when_a_range_is_checked() {
+        for source in [
+            "[view]\nline_height = nan",
+            "[view]\nline_height = inf",
+            "[view]\nscroll_fraction = nan",
+            "[math]\ntimeout_seconds = nan",
+            "[math]\ntimeout_seconds = inf",
+            "[mermaid]\ntimeout_seconds = inf",
+        ] {
+            assert!(Settings::parse(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn should_read_the_math_timeout_when_it_is_set() {
+        let settings = Settings::parse("[math]\ntimeout_seconds = 12.5").unwrap();
+        assert_eq!(settings.math.timeout_seconds, 12.5);
     }
 }
