@@ -347,10 +347,10 @@ fn should_stay_open_and_keep_the_save_when_delivery_fails() {
 }
 
 #[test]
-fn should_flash_when_sending_with_nothing_to_send() {
+fn should_close_after_wq_when_there_is_no_feedback_to_send() {
     let mut world = world("nothing", false, "", None);
     world.command("wq");
-    assert_eq!(world.closed.get(), None);
+    assert_eq!(world.closed.get(), Some(CloseKind::Window));
     assert!(world.flash().contains("no feedback"), "{}", world.flash());
 }
 

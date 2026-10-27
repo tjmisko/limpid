@@ -588,9 +588,10 @@ impl Nav {
             }
             Command::WriteQuit => {
                 let result = io.actions.write_and_send();
-                let sent = matches!(result, ActionResult::Done(_));
+                // With no feedback there is nothing to send, so it just closes.
+                let done = matches!(result, ActionResult::Done(_) | ActionResult::Nothing(_));
                 self.report(result, now_ms, "nothing to save");
-                if sent {
+                if done {
                     out.requests.push(Request::Close(CloseKind::Window));
                 }
             }
@@ -1284,7 +1285,10 @@ mod tests {
         world.actions.unsaved = true;
         let outcome = world.press("q");
         assert!(outcome.requests.is_empty());
-        assert!(world.message().starts_with("unsaved changes"));
+        assert_eq!(
+            world.message(),
+            "unsaved changes — :wq to save and send, :q! to discard"
+        );
     }
 
     #[test]
@@ -1298,7 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn should_say_there_is_nothing_to_save_when_no_editor_handles_w_and_wq() {
+    fn should_say_there_is_nothing_to_save_when_no_editor_handles_w_and_close_on_wq() {
         let mut world = World::new("a\n", 600.0);
         world.press(":");
         world.typed("w");
@@ -1308,8 +1312,19 @@ mod tests {
         world.press(":");
         world.typed("wq");
         let outcome = world.press("enter");
-        assert!(outcome.requests.is_empty());
+        assert_eq!(outcome.requests, vec![Request::Close(CloseKind::Window)]);
         assert_eq!(world.message(), "nothing to save");
+    }
+
+    #[test]
+    fn should_close_after_wq_when_there_is_no_feedback_to_send() {
+        let mut world = World::new("a\n", 600.0);
+        world.actions.write_result = Some(ActionResult::Nothing("no feedback to send".into()));
+        world.press(":");
+        world.typed("wq");
+        let outcome = world.press("enter");
+        assert_eq!(outcome.requests, vec![Request::Close(CloseKind::Window)]);
+        assert_eq!(world.message(), "no feedback to send");
     }
 
     #[test]

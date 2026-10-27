@@ -902,7 +902,10 @@ impl DocPage {
             ReviewKey::Send => {
                 feedback.borrow_mut().close_review();
                 let result = feedback.borrow_mut().write_and_send();
-                let sent = matches!(result, crate::nav::ActionResult::Done(_));
+                let sent = matches!(
+                    result,
+                    crate::nav::ActionResult::Done(_) | crate::nav::ActionResult::Nothing(_)
+                );
                 let message = match result {
                     crate::nav::ActionResult::Done(message)
                     | crate::nav::ActionResult::Nothing(message)
