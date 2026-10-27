@@ -103,10 +103,69 @@ pub fn raster(
     if (width as usize) * (height as usize) * 4 > budget {
         return None;
     }
-    let cache_key = (key, width, height);
+    render_cached((key, width, height), budget, bytes, |_| {})
+}
+
+/// The SVG `key` drawn at `width` by `height` pixels as a mask filled with
+/// `ink`. Coverage is the alpha channel, or the inverted luminance when the
+/// SVG is fully opaque (black marks on a white page). TeX output carries
+/// explicit black fills that vanish on a dark theme; this repaints them.
+/// Cached by (source, size, ink).
+pub fn raster_mask(
+    key: u64,
+    width: u32,
+    height: u32,
+    ink: [u8; 3],
+    budget: usize,
+    bytes: impl FnOnce() -> Option<Vec<u8>>,
+) -> Option<Rc<Pixmap>> {
+    if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
+        return None;
+    }
+    if (width as usize) * (height as usize) * 4 > budget {
+        return None;
+    }
+    let tinted = hash_bytes(&[&key.to_le_bytes()[..], &ink[..], b"mask"].concat());
+    render_cached((tinted, width, height), budget, bytes, |pixmap| {
+        paint_mask(pixmap, ink);
+    })
+}
+
+/// Replace `pixmap` with `ink` at the coverage the drawing had.
+fn paint_mask(pixmap: &mut Pixmap, ink: [u8; 3]) {
+    let opaque = pixmap
+        .data()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|pixel| pixel[3] == 255);
+    for pixel in pixmap.data_mut().as_chunks_mut::<4>().0 {
+        let coverage = if opaque {
+            let luminance =
+                (u32::from(pixel[0]) * 77 + u32::from(pixel[1]) * 151 + u32::from(pixel[2]) * 28)
+                    >> 8;
+            255 - luminance.min(255) as u8
+        } else {
+            pixel[3]
+        };
+        let scale = |channel: u8| ((u32::from(channel) * u32::from(coverage) + 127) / 255) as u8;
+        pixel[0] = scale(ink[0]);
+        pixel[1] = scale(ink[1]);
+        pixel[2] = scale(ink[2]);
+        pixel[3] = coverage;
+    }
+}
+
+fn render_cached(
+    cache_key: Key,
+    budget: usize,
+    bytes: impl FnOnce() -> Option<Vec<u8>>,
+    finish: impl FnOnce(&mut Pixmap),
+) -> Option<Rc<Pixmap>> {
     if let Some(hit) = RASTERS.with(|cache| cache.borrow_mut().get(&cache_key)) {
         return Some(hit);
     }
+    let (_, width, height) = cache_key;
     let tree = parse(&bytes()?)?;
     let size = tree.size();
     let mut pixmap = Pixmap::new(width, height)?;
@@ -115,6 +174,7 @@ pub fn raster(
         height as f32 / size.height(),
     );
     resvg::render(&tree, transform, &mut pixmap.as_mut());
+    finish(&mut pixmap);
     let pixmap = Rc::new(pixmap);
     RASTERS.with(|cache| cache.borrow_mut().insert(cache_key, pixmap.clone(), budget));
     Some(pixmap)
@@ -245,5 +305,58 @@ mod tests {
         clear_cache();
         assert!(raster(5, 10, 10, 1 << 20, || Some(b"<svg".to_vec())).is_none());
         assert!(raster(6, 10, 10, 1 << 20, || None).is_none());
+    }
+
+    const BLACK_MARK: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10" viewBox="0 0 20 10"><rect width="10" height="10" fill="#000000"/></svg>"##;
+    const BLACK_ON_WHITE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10" viewBox="0 0 20 10"><rect width="20" height="10" fill="#ffffff"/><rect width="10" height="10" fill="#000000"/></svg>"##;
+    const INK: [u8; 3] = [0xe8, 0xee, 0xed];
+
+    #[test]
+    fn should_fill_marks_with_ink_when_the_svg_has_alpha() {
+        clear_cache();
+        let svg = || Some(BLACK_MARK.as_bytes().to_vec());
+        let pixmap = raster_mask(10, 20, 10, INK, 1 << 20, svg).unwrap();
+        assert_eq!(pixel(&pixmap, 2, 5), [0xe8, 0xee, 0xed, 255]);
+        assert_eq!(pixel(&pixmap, 15, 5)[3], 0);
+    }
+
+    #[test]
+    fn should_fill_dark_marks_with_ink_when_the_svg_is_opaque() {
+        clear_cache();
+        let svg = || Some(BLACK_ON_WHITE.as_bytes().to_vec());
+        let pixmap = raster_mask(11, 20, 10, INK, 1 << 20, svg).unwrap();
+        assert_eq!(pixel(&pixmap, 2, 5), [0xe8, 0xee, 0xed, 255]);
+        assert_eq!(pixel(&pixmap, 15, 5), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn should_draw_a_separate_raster_when_the_ink_differs() {
+        clear_cache();
+        let svg = || Some(BLACK_MARK.as_bytes().to_vec());
+        let light = raster_mask(12, 20, 10, [0x20, 0x25, 0x2a], 1 << 20, svg).unwrap();
+        let dark = raster_mask(12, 20, 10, INK, 1 << 20, svg).unwrap();
+        assert_eq!(cached_rasters(), 2);
+        assert_ne!(pixel(&light, 2, 5), pixel(&dark, 2, 5));
+    }
+
+    #[test]
+    fn should_not_read_the_source_again_when_the_mask_is_cached() {
+        clear_cache();
+        let first = raster_mask(13, 20, 10, INK, 1 << 20, || {
+            Some(BLACK_MARK.as_bytes().to_vec())
+        })
+        .unwrap();
+        let second = raster_mask(13, 20, 10, INK, 1 << 20, || panic!("re-read")).unwrap();
+        assert!(Rc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn should_return_none_when_the_mask_size_is_absurd_or_the_source_is_bad() {
+        clear_cache();
+        let svg = || Some(BLACK_MARK.as_bytes().to_vec());
+        assert!(raster_mask(14, 0, 10, INK, 1 << 20, svg).is_none());
+        assert!(raster_mask(14, 100_000, 10, INK, usize::MAX, svg).is_none());
+        assert!(raster_mask(14, 10, 10, INK, 1 << 20, || Some(b"<svg".to_vec())).is_none());
+        assert!(raster_mask(14, 10, 10, INK, 1 << 20, || None).is_none());
     }
 }

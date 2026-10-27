@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     paint::{Canvas, Rect},
-    theme::Color,
+    theme::{Color, Theme},
 };
 use limpid_core::{doc::Block, settings::Settings};
 use std::{
@@ -217,6 +217,11 @@ fn laid(
     }
 }
 
+/// The theme's ink as the mask colour of typeset math.
+fn ink_rgb(theme: &Theme) -> [u8; 3] {
+    [theme.ink.r, theme.ink.g, theme.ink.b]
+}
+
 /// Display math: a centred SVG, or the LaTeX source in monospace on `code_bg`
 /// when the formula is not cached (or cannot be drawn).
 #[allow(clippy::too_many_arguments)]
@@ -265,7 +270,8 @@ fn math_media(cx: &Cx, flow: Flow, hash: &str) -> Option<(MediaBox, f32)> {
         height.round().max(1.0) as u32,
     );
     let key = svg::hash_bytes(format!("math:{hash}").as_bytes());
-    let pixmap = svg::raster(key, width_px, height_px, cx.boxes.cache_bytes, || {
+    let ink = ink_rgb(cx.theme);
+    let pixmap = svg::raster_mask(key, width_px, height_px, ink, cx.boxes.cache_bytes, || {
         read_capped(&rendered.svg, cx.boxes.max_file_bytes)
     })?;
     let pad_y = cx.px(2.0);
@@ -437,7 +443,9 @@ pub fn paint_typeset_math(
     x: f32,
     y: f32,
     typeset: &[TypesetMath],
+    ink: Color,
 ) {
+    let ink = [ink.r, ink.g, ink.b];
     let budget = INLINE_MATH_BUDGET.with(|budget| *budget.borrow());
     let factor = text.font_size / MATH_REFERENCE_EM;
     for formula in typeset {
@@ -447,7 +455,7 @@ pub fn paint_typeset_math(
             (height * factor).round().max(1.0) as u32,
         );
         let key = svg::hash_bytes(format!("math:{}", formula.hash).as_bytes());
-        let Some(pixmap) = svg::raster(key, width_px, height_px, budget, || {
+        let Some(pixmap) = svg::raster_mask(key, width_px, height_px, ink, budget, || {
             let rendered = limpid_core::math::cached(&formula.hash)?;
             read_capped(&rendered.svg, 64 * 1024 * 1024)
         }) else {

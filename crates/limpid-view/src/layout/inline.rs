@@ -483,7 +483,7 @@ pub fn paint(
         canvas.stroke_rect(rect, line, theme.rule);
     }
     canvas.draw_text(fonts, &text.block, x, y, theme.ink);
-    crate::layout::boxes::paint_typeset_math(canvas, text, x, y, &typeset);
+    crate::layout::boxes::paint_typeset_math(canvas, text, x, y, &typeset, theme.ink);
     for deco in &text.decorations {
         if deco.kind != DecorationKind::Strike {
             continue;

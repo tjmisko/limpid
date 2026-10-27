@@ -28,7 +28,8 @@ use std::{
     sync::Once,
 };
 
-const MATH_COLOR: u32 = 0x12ab34;
+const DARK_INK: u32 = 0xe8eeed;
+const LIGHT_INK: u32 = 0x20252a;
 const MERMAID_COLOR: u32 = 0xab1234;
 
 fn cache_root() -> PathBuf {
@@ -73,7 +74,7 @@ fn seed_math(root: &Path, hash: &str, width: f32, height: f32, baseline: f32) {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join(format!("{hash}.svg")),
-        svg_of(width, height, "#12ab34"),
+        svg_of(width, height, "#000000"),
     )
     .unwrap();
     std::fs::write(
@@ -227,6 +228,52 @@ fn should_match_the_committed_image_when_rendering_math() {
     init();
     let mut page = page(&fixture("math.md"), Scheme::Dark);
     assert_matches_snapshot(&shot(&mut page, 1000, 520, 1.0), "math-dark-1000x520-s1");
+}
+
+#[test]
+fn should_paint_math_in_ink_when_the_svg_fill_is_black_on_the_dark_theme() {
+    init();
+    let mut page = page(&fixture("math.md"), Scheme::Dark);
+    let image = shot(&mut page, 1000, 520, 1.0);
+    let ink = image
+        .pixels
+        .iter()
+        .filter(|&&pixel| pixel == DARK_INK)
+        .count();
+    assert!(ink > 1000, "only {ink} ink pixels");
+    assert_eq!(image.pixels.iter().filter(|&&pixel| pixel == 0).count(), 0);
+}
+
+#[test]
+fn should_paint_math_in_ink_when_the_svg_fill_is_black_on_the_light_theme() {
+    init();
+    let mut page = page(&fixture("math.md"), Scheme::Light);
+    let image = shot(&mut page, 1000, 520, 1.0);
+    let ink = image
+        .pixels
+        .iter()
+        .filter(|&&pixel| pixel == LIGHT_INK)
+        .count();
+    assert!(ink > 1000, "only {ink} ink pixels");
+    // The light ink is dark but not black, so no pixel is pure black.
+    assert_eq!(image.pixels.iter().filter(|&&pixel| pixel == 0).count(), 0);
+}
+
+#[test]
+fn should_match_the_committed_image_when_rendering_math_on_the_light_theme() {
+    init();
+    let mut page = page(&fixture("math.md"), Scheme::Light);
+    assert_matches_snapshot(&shot(&mut page, 1000, 520, 1.0), "math-light-1000x520-s1");
+}
+
+#[test]
+fn should_keep_mermaid_colours_when_math_is_masked() {
+    let (_, mut layout, mut fonts) = laid(&fixture("mermaid.md"), 1000.0, 1.0, env());
+    let pixels = paint_all(&mut layout, &mut fonts, 1000, 760, 0.0);
+    assert!(
+        count(&pixels, MERMAID_COLOR) > 1000,
+        "diagram lost its colour"
+    );
 }
 
 #[test]
@@ -551,7 +598,12 @@ fn should_show_latex_source_on_code_background_when_display_math_is_not_cached()
 fn should_paint_cached_math_colours_when_math_is_on_screen() {
     let (_, mut layout, mut fonts) = laid(&fixture("math.md"), 1000.0, 1.0, env());
     let pixels = paint_all(&mut layout, &mut fonts, 1000, 500, 0.0);
-    assert!(count(&pixels, MATH_COLOR) > 1000, "display formula missing");
+    assert!(count(&pixels, DARK_INK) > 1000, "display formula missing");
+    assert_eq!(
+        count(&pixels, 0x000000),
+        0,
+        "black TeX fill reached the page"
+    );
 }
 
 #[test]
@@ -588,7 +640,7 @@ fn should_paint_inline_math_over_the_line_when_it_is_in_a_list_item() {
     let _ = env_seeded_for(markdown);
     let (_, mut layout, mut fonts) = laid(markdown, 1000.0, 1.0, env());
     let pixels = paint_all(&mut layout, &mut fonts, 1000, 200, 0.0);
-    assert!(count(&pixels, MATH_COLOR) > 100);
+    assert!(count(&pixels, DARK_INK) > 100);
 }
 
 fn env_seeded_for(markdown: &str) -> BoxEnv {
