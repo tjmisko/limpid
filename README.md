@@ -95,7 +95,12 @@ the Claude Code plugin adds `/read`; both render the current turn with
 any other.
 
 For a Codex session, run `limpid codex` or `limpid codex 0..2`. The core reader
-also accepts `limpid-core claude [spec]` and `limpid-core pi [spec]`, with their
+also has a [Codex integration](integrations/codex/README.md): `$read` in the
+CLI, or the read skill in the app, with `:wq` feedback delivered to the
+originating thread. Plain-text `limpid-read` also works with the hook.
+Install it with `python3 integrations/codex/install.py` after updating
+`limpid-core`, then review the handler in Codex's `/hooks` interface.
+The core reader also accepts `limpid-core claude [spec]` and `limpid-core pi [spec]`, with their
 transcript data as JSON on stdin. Each prints a cached page path that can be
 passed to `limpid`, and writes the Markdown it rendered from beside it as
 `<page>.md`.

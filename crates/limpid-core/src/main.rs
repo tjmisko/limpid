@@ -43,9 +43,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         Some("send") if args.len() == 1 => send()?,
         Some("feedback") => feedback(&args[1..])?,
-        Some("codex") if args.len() <= 2 => {
-            codex(args.get(1).and_then(|arg| arg.to_str()).unwrap_or(""))?
-        }
+        Some("codex") => codex(&args[1..])?,
+        Some("codex-hook") if args.len() == 1 => codex_hook()?,
         Some("claude") if args.len() <= 2 => stdin_agent(
             "claude",
             args.get(1).and_then(|arg| arg.to_str()).unwrap_or(""),
@@ -57,7 +56,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         Some("math") => math(&args[1..])?,
         _ => {
             return Err(
-                "usage: limpid-core render FILE.md | math FILE.md [--json] | claude [spec] | codex [spec] | pi [spec] | feedback [--json] [--session ID [--spec S]] [PAGE] | grammars list|sync | instructions | send".into(),
+                "usage: limpid-core render FILE.md | math FILE.md [--json] | claude [spec] | codex [spec] [--session ID] [--transcript PATH] | codex-hook | pi [spec] | feedback [--json] [--session ID [--spec S]] [PAGE] | grammars list|sync | instructions | send".into(),
             );
         }
     }
@@ -155,28 +154,151 @@ struct PageMeta {
     feedback_sock: Option<String>,
 }
 
-fn codex(spec: &str) -> Result<(), Box<dyn Error>> {
+fn codex(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
+    let mut spec = None;
+    let mut transcript = None;
+    let mut thread = std::env::var("CODEX_THREAD_ID")
+        .ok()
+        .or_else(|| std::env::var("CODEX_SESSION_ID").ok())
+        .filter(|id| !id.is_empty());
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--session") => {
+                thread = Some(
+                    args.next()
+                        .and_then(|v| v.to_str())
+                        .filter(|v| !v.is_empty())
+                        .ok_or("--session requires a session ID")?
+                        .to_owned(),
+                );
+            }
+            Some("--transcript") => {
+                transcript = Some(PathBuf::from(
+                    args.next().ok_or("--transcript requires a path")?,
+                ))
+            }
+            Some(value) if !value.starts_with('-') && spec.is_none() => {
+                spec = Some(value.to_owned())
+            }
+            _ => {
+                return Err(
+                    "usage: limpid-core codex [spec] [--session ID] [--transcript PATH]".into(),
+                );
+            }
+        }
+    }
+    let spec = spec.as_deref().unwrap_or("0");
     let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME is required")?);
     let root = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".codex"))
         .join("sessions");
-    let thread = std::env::var("CODEX_THREAD_ID")
-        .ok()
-        .or_else(|| std::env::var("CODEX_SESSION_ID").ok());
-    let source =
-        limpid_core::codex::find_rollout(&root, thread.as_deref(), &std::env::current_dir()?)
-            .ok_or("no Codex rollout found for this session or directory")?;
-    let turns = limpid_core::codex::parse_rollout(&std::fs::read_to_string(&source)?);
+    let source = match transcript {
+        Some(path) => path,
+        None => {
+            limpid_core::codex::find_rollout(&root, thread.as_deref(), &std::env::current_dir()?)
+                .ok_or("no Codex rollout found for this session or directory")?
+        }
+    };
+    let input = std::fs::read_to_string(&source)?;
+    let identity = input
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|record| record["type"] == "session_meta")
+        .and_then(|record| {
+            record
+                .pointer("/payload/id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .ok_or("Codex transcript has no session identity")?;
+    if thread.as_ref().is_some_and(|id| id != &identity) {
+        return Err("Codex transcript belongs to a different session".into());
+    }
+    let turns = limpid_core::codex::parse_rollout(&input);
     write_agent_page(
         "codex",
         &turns.turns,
         turns.model.as_deref(),
         spec,
-        thread,
+        Some(identity),
         Some(source),
         None,
     )
+}
+
+/// A read request is handled locally, then blocked before model generation.
+/// Errors also block: a failed reader must never turn /read into a model task.
+fn codex_hook() -> Result<(), Box<dyn Error>> {
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    let event: Value = serde_json::from_str(&input)?;
+    if event["hook_event_name"] != "UserPromptSubmit" {
+        return Ok(());
+    }
+    let prompt = event["prompt"].as_str().unwrap_or("").trim();
+    let mut words = prompt.split_whitespace();
+    if !matches!(words.next(), Some("/read" | "/limpid-read" | "$read" | "limpid-read")) {
+        return Ok(());
+    }
+    let result = (|| -> Result<String, Box<dyn Error>> {
+        let spec = words.next().unwrap_or("0");
+        if words.next().is_some() {
+            return Err("usage: /read [0 | 0..2 | 1..=3 | 2.. | ..4]".into());
+        }
+        limpid_core::spec::parse(spec)?;
+        let session = event["session_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or("Codex hook has no session ID")?;
+        let source = event["transcript_path"]
+            .as_str()
+            .filter(|path| !path.is_empty())
+            .ok_or("Codex hook has no transcript path; paginated history is not supported yet")?;
+        let executable = std::env::current_exe()?;
+        let mut render = Command::new(&executable);
+        render.args(["codex", spec, "--session", session, "--transcript", source]);
+        if let Some(cwd) = event["cwd"].as_str() {
+            render.current_dir(cwd);
+        }
+        let output = render.output()?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr)
+                .trim()
+                .to_owned()
+                .into());
+        }
+        let page = String::from_utf8(output.stdout)?.trim().to_owned();
+        if page.is_empty() {
+            return Err("limpid-core returned no page".into());
+        }
+        let sibling = executable.with_file_name("limpid");
+        let viewer = if sibling.is_file() {
+            sibling
+        } else {
+            PathBuf::from("limpid")
+        };
+        let opened = Command::new(viewer)
+            .args(["--source-backed", &page])
+            .output()?;
+        if !opened.status.success() {
+            return Err(format!(
+                "could not open Limpid: {}",
+                String::from_utf8_lossy(&opened.stderr).trim()
+            )
+            .into());
+        }
+        Ok(format!(
+            "Opened Limpid: {page}. :wq sends feedback to this conversation."
+        ))
+    })();
+    let reason = result.unwrap_or_else(|error| format!("Limpid: {error}"));
+    println!(
+        "{}",
+        serde_json::json!({"decision": "block", "reason": reason})
+    );
+    Ok(())
 }
 
 fn stdin_agent(agent: &'static str, spec: &str) -> Result<(), Box<dyn Error>> {
@@ -355,6 +477,29 @@ fn send() -> Result<(), Box<dyn Error>> {
     let message = message.trim_end_matches(['\r', '\n']);
     if message.is_empty() {
         return Err("reply message is empty".into());
+    }
+    if std::env::var("LIMPID_AGENT").as_deref() == Ok("codex") {
+        let session = std::env::var("LIMPID_SESSION")
+            .ok()
+            .filter(|id| !id.is_empty())
+            .ok_or("Codex feedback has no session ID")?;
+        let output = Command::new("codex")
+            .args([
+                "queue",
+                "--thread",
+                &session,
+                "--message",
+                message,
+                "--resume",
+            ])
+            .output()?;
+        // queue can return success when resume fails. Keep that failure visible;
+        // do not retry automatically because the message may already be queued.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.status.success() || stderr.to_ascii_lowercase().contains("warning") {
+            return Err(format!("Codex feedback delivery needs attention (do not resend without checking the queue): {}", stderr.trim()).into());
+        }
+        return Ok(());
     }
     let pane = std::env::var("LIMPID_PANE")
         .ok()

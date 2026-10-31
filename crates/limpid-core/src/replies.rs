@@ -1126,6 +1126,9 @@ pub fn deliver_or_wake_with(
             return Ok(());
         }
     }
+    if meta.get("agent").and_then(serde_json::Value::as_str) == Some("codex") {
+        return deliver_with_command(request, &wake_message(&request.path, message), command);
+    }
     deliver_with_command(request, message, command)
 }
 

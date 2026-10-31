@@ -202,13 +202,14 @@ pub fn find_rollout(root: &Path, thread_id: Option<&str>, cwd: &Path) -> Option<
     let files = rollouts(root);
     if let Some(id) = thread_id {
         let suffix = format!("-{id}.jsonl");
-        if let Some(path) = files.iter().find(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(&suffix))
-        }) {
-            return Some(path.clone());
-        }
+        return files
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(&suffix))
+            })
+            .cloned();
     }
     let mut candidates = files
         .into_iter()
@@ -287,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn finds_exact_thread_then_newest_matching_directory() {
+    fn finds_exact_thread_without_falling_back_to_another_session() {
         let root = std::env::temp_dir().join(format!("limpid-codex-find-{}", std::process::id()));
         let day = root.join("2026/03/04");
         fs::create_dir_all(&day).unwrap();
@@ -318,8 +319,9 @@ mod tests {
                 .unwrap(),
             "rollout-2026-03-04T10-00-00-aaaa.jsonl"
         );
+        assert!(find_rollout(&root, Some("missing"), Path::new("/work")).is_none());
         assert_eq!(
-            find_rollout(&root, Some("missing"), Path::new("/work"))
+            find_rollout(&root, None, Path::new("/work"))
                 .unwrap()
                 .file_name()
                 .unwrap(),

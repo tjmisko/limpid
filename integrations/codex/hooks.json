@@ -1,0 +1,16 @@
+{
+  "description": "Open Limpid with read commands without model generation",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "limpid-core codex-hook",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
