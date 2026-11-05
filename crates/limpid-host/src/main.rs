@@ -199,6 +199,7 @@ fn open_request(
         "close",
         "save",
         "deliver",
+        "export",
         "close-all",
     ] {
         manager.register_script_message_handler(name, None);
@@ -337,6 +338,35 @@ fn open_request(
             Ok(true) => reload_with_anchor(&save_view, &save_anchor),
             Ok(false) => ack_saved(&save_view),
             Err(error) => show_page_error(&save_view, &format!("Could not save: {error}")),
+        }
+    });
+    let export_request = active_request.clone();
+    let export_view = view.clone();
+    let export_anchor = restore_anchor.clone();
+    manager.connect_script_message_received(Some("export"), move |_, value| {
+        let result = (|| -> Result<bool, Box<dyn std::error::Error>> {
+            let settings = limpid_core::settings::Settings::load_default()?;
+            let changed = save_pending(&mut export_request.borrow_mut(), &value_json(value))?;
+            let title = export_view
+                .title()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "Document".into());
+            // Acknowledge saved edits even if export or its hook fails.
+            if changed {
+                reload_with_anchor(&export_view, &export_anchor);
+            } else {
+                ack_saved(&export_view);
+            }
+            let path = limpid_core::replies::export_feedback(
+                &export_request.borrow(),
+                &title,
+                &settings.feedback.export_hook,
+            )?;
+            show_page_error(&export_view, &format!("Exported to {}", path.display()));
+            Ok(changed)
+        })();
+        if let Err(error) = result {
+            show_page_error(&export_view, &format!("Could not export: {error}"));
         }
     });
     let deliver_request = active_request.clone();

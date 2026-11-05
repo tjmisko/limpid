@@ -168,8 +168,8 @@ pub fn rows(keymap: &Keymap) -> Vec<Row> {
         what: describe(Action::PickOption(1)),
     });
     rows.push(Row {
-        keys: ":w  :wq  :q!  :qa".into(),
-        what: "Save / save and send / discard / close all",
+        keys: ":w  :wq  :export  :q!  :qa".into(),
+        what: "Save / save and send / export / discard / close all",
     });
     rows
 }

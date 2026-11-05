@@ -876,6 +876,25 @@ impl Feedback {
         }
     }
 
+    pub fn export(&mut self) -> ActionResult {
+        if self.open.is_some() {
+            return ActionResult::Failed("close the editor with :wq before exporting".into());
+        }
+        if self.pending.has_unsaved()
+            && let Err(error) = self.save()
+        {
+            return ActionResult::Failed(format!("not saved: {error}"));
+        }
+        match replies::export_feedback(
+            &self.handoff,
+            &self.title,
+            &self.settings.feedback.export_hook,
+        ) {
+            Ok(path) => ActionResult::Done(format!("Exported to {}", path.display())),
+            Err(error) => ActionResult::Failed(error.to_string()),
+        }
+    }
+
     pub fn write(&mut self) -> ActionResult {
         if !self.pending.has_unsaved() {
             return ActionResult::Nothing("nothing to save".into());
@@ -934,6 +953,10 @@ impl Feedback {
 pub struct FeedbackHandle(pub Rc<RefCell<Feedback>>);
 
 impl PageActions for FeedbackHandle {
+    fn export(&mut self) -> ActionResult {
+        self.0.borrow_mut().export()
+    }
+
     fn write(&mut self) -> ActionResult {
         self.0.borrow_mut().write()
     }

@@ -138,6 +138,26 @@ Agent pages save replies beside their cached page. Replies to a markdown file
 are stored as HTML comments in that file. limpid refuses to write an annotation
 if the file changed since it was rendered.
 
+`:export` saves pending feedback and writes the composed message to
+`<source>.feedback.md` (for example, `plan.md.feedback.md`), keeping the window
+open. The message includes quotes truncated at 100 characters, full responses,
+the original file path, and instructions to apply the feedback and read the
+original only if needed. Repeating it atomically replaces that export. Agent pages export beside
+the cached page. This works without an AI session and preserves the usual
+in-file annotations. An empty review produces an error and leaves any previous
+export untouched.
+
+Optionally run a shell hook after the file is written:
+
+```toml
+[feedback]
+export_hook = "wl-copy"
+```
+
+The hook receives the exported text on stdin and the original file path in
+`LIMPID_SOURCE`. It is disabled by default. A hook failure is reported while
+keeping the exported file, so you can still pass it to an AI session.
+
 ## Send answers back
 
 Saved answers live beside the page. `limpid-core feedback <page>` prints them

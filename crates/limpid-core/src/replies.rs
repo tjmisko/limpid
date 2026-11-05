@@ -922,6 +922,38 @@ pub fn compose_review(request: &Handoff, title: &str) -> Result<String, Box<dyn 
     compose_for_page(request, title, &saved_replies(request)?)
 }
 
+/// Export saved feedback beside its source (or cached page). The file is
+/// replaced atomically before the optional hook runs; hook failure retains it.
+pub fn export_feedback(
+    request: &Handoff,
+    title: &str,
+    hook: &str,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let saved = saved_replies(request)?;
+    if !saved.has_feedback() {
+        return Err("no feedback to export".into());
+    }
+    let base = request.source.as_ref().unwrap_or(&request.path);
+    let message = format!(
+        "{}\n\nOriginal file: {}\nApply this feedback to the original file. This feedback is complete; only read the original file if something is unclear.",
+        compose_for_page(request, title, &saved)?,
+        base.display(),
+    );
+    let mut name = base.as_os_str().to_os_string();
+    name.push(".feedback.md");
+    let path = PathBuf::from(name);
+    atomic_write(&path, message.as_bytes())?;
+    if !hook.trim().is_empty() {
+        deliver_reply(hook, &message, "file", None, Some(base), None).map_err(|error| {
+            format!(
+                "exported to {}, but export hook failed: {error}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(path)
+}
+
 pub fn replies_from_value(value: &serde_json::Value) -> Result<AgentReplies, Box<dyn Error>> {
     let mut replies = AgentReplies::default();
     if let Some(map) = value.get("replies").and_then(serde_json::Value::as_object) {

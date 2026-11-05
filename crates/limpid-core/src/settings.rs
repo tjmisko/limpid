@@ -8,6 +8,7 @@ pub struct Settings {
     pub highlight: Highlight,
     pub questions: Questions,
     pub reply: Reply,
+    pub feedback: Feedback,
     pub style: Style,
     pub view: View,
     pub editor: Editor,
@@ -78,6 +79,13 @@ impl Default for Reply {
             command: "wl-copy".into(),
         }
     }
+}
+
+/// Optional command receiving exported feedback on stdin.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct Feedback {
+    pub export_hook: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

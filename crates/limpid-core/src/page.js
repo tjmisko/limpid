@@ -760,7 +760,7 @@
       commandBox.className = 'limpid-command';
       commandBox.type = 'text';
       commandBox.setAttribute('aria-label', 'Command');
-      commandBox.placeholder = 'q    w    wq    q!    qa';
+      commandBox.placeholder = 'q    w    wq    export    q!    qa';
       commandBox.addEventListener('keydown', event => {
         if (event.key === 'Escape') {
           closeCommand();
@@ -794,6 +794,8 @@
       }
     } else if (name === 'w') {
       post('save', dirtyPayload());
+    } else if (name === 'export') {
+      post('export', dirtyPayload());
     } else if (name === 'wq') {
       post('deliver', dirtyPayload());
     } else if (name === 'q!') {
@@ -823,7 +825,7 @@
     ['/', 'Search'],
     ['n / N', 'Next / previous match'],
     ['t / F1', 'Toggle the rail'],
-    ['q  :w  :wq  :q!  :qa', 'Quit / save / save and send / discard / close all'],
+    ['q  :w  :wq  :export  :q!  :qa', 'Quit / save / save and send / export / discard / close all'],
     ['r', 'Reload'],
     ['+ / - / 0', 'Zoom in / out / reset'],
     ['[ / ]', 'History back / forward'],

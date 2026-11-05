@@ -20,6 +20,8 @@ pub enum Command {
     Write,
     /// `:wq`
     WriteQuit,
+    /// Save and export feedback, keeping the window open.
+    Export,
     /// An empty line.
     Empty,
     Unknown(String),
@@ -34,13 +36,14 @@ pub fn parse(line: &str) -> Command {
         "q!" | "quit!" => Command::QuitForce,
         "qa" | "qall" => Command::QuitAll,
         "w" | "write" => Command::Write,
+        "export" => Command::Export,
         "wq" | "x" => Command::WriteQuit,
         other => Command::Unknown(other.to_owned()),
     }
 }
 
 /// What the prompt shows while it is empty.
-pub const COMMAND_PLACEHOLDER: &str = "q    w    wq    q!    qa";
+pub const COMMAND_PLACEHOLDER: &str = "q    w    wq    export    q!    qa";
 
 /// The text being typed on a prompt line. Edits happen at the end of the line
 /// only, as in a shell without cursor keys.
@@ -155,6 +158,7 @@ mod tests {
         assert_eq!(parse("qa"), Command::QuitAll);
         assert_eq!(parse("w"), Command::Write);
         assert_eq!(parse("wq"), Command::WriteQuit);
+        assert_eq!(parse("export"), Command::Export);
     }
 
     #[test]

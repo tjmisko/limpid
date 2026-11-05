@@ -117,6 +117,10 @@ pub enum ActionResult {
 /// What the page can do about feedback. The defaults are those of a page with
 /// no editor.
 pub trait PageActions {
+    fn export(&mut self) -> ActionResult {
+        ActionResult::Nothing("no feedback to export".into())
+    }
+
     /// `:w`
     fn write(&mut self) -> ActionResult {
         ActionResult::Nothing("nothing to save".into())
@@ -666,6 +670,10 @@ impl Nav {
             Command::Quit => self.quit(now_ms, io, out),
             Command::QuitForce => out.requests.push(Request::Close(CloseKind::Window)),
             Command::QuitAll => out.requests.push(Request::Close(CloseKind::All)),
+            Command::Export => {
+                let result = io.actions.export();
+                self.report(result, now_ms, "no feedback to export");
+            }
             Command::Write => {
                 let result = io.actions.write();
                 self.report(result, now_ms, "nothing to save");
@@ -923,6 +931,11 @@ mod tests {
     }
 
     impl PageActions for Fake {
+        fn export(&mut self) -> ActionResult {
+            self.write_result
+                .clone()
+                .unwrap_or(ActionResult::Nothing("no feedback to export".into()))
+        }
         fn has_unsaved(&self) -> bool {
             self.unsaved
         }
@@ -1505,6 +1518,27 @@ mod tests {
         let outcome = world.press("enter");
         assert!(outcome.requests.is_empty());
         assert_eq!(world.message(), "no pane");
+    }
+
+    #[test]
+    fn export_reports_success_or_failure_without_closing_the_window() {
+        let mut world = World::new("a\n", 600.0);
+        for result in [
+            ActionResult::Done("Exported".into()),
+            ActionResult::Failed("hook failed".into()),
+        ] {
+            world.actions.write_result = Some(result.clone());
+            world.press(":");
+            world.typed("export");
+            let outcome = world.press("enter");
+            assert!(outcome.requests.is_empty());
+            assert_eq!(world.nav.state(), StateName::Page);
+            let expected = match result {
+                ActionResult::Done(s) | ActionResult::Failed(s) => s,
+                _ => unreachable!(),
+            };
+            assert_eq!(world.message(), expected);
+        }
     }
 
     #[test]

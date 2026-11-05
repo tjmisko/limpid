@@ -1339,3 +1339,85 @@ fn should_edit_the_comment_when_enter_is_pressed_on_a_comment() {
         &("Vague.".to_owned(), BoxKind::Comment)
     );
 }
+
+#[test]
+fn export_saves_pending_file_and_sidecar_feedback_and_replaces_snapshot() {
+    for file_backed in [true, false] {
+        let mut h = harness(QUESTIONS, file_backed);
+        let path = h.dir.join("page.md.feedback.md");
+        assert!(matches!(h.fb.export(), ActionResult::Failed(_)));
+        assert!(!path.exists());
+        h.fb.act(FeedbackAction::PickOption(1), Some(&h.field_src("q1")));
+        let paragraph = h.paragraph_src();
+        h.fb.act(FeedbackAction::OpenComment, Some(&paragraph));
+        assert!(matches!(h.fb.export(), ActionResult::Failed(_)));
+        h.say(EditorEvent::Save("Please expand this. λ".into()));
+        h.say(EditorEvent::Quit { discard: false });
+        assert!(matches!(h.fb.export(), ActionResult::Done(_)));
+        assert!(!h.fb.has_unsaved());
+        let exported = std::fs::read_to_string(&path).unwrap();
+        assert!(exported.contains("q1: SQLite"), "{exported}");
+        assert!(exported.contains(&format!("Original file: {}", h.page.display())));
+        assert!(exported.contains("only read the original file if something is unclear"));
+        assert!(exported.contains("Please expand this. λ"), "{exported}");
+        assert!(exported.contains("Intro paragraph."), "{exported}");
+        if file_backed {
+            h.reload();
+        }
+        h.fb.act(FeedbackAction::PickOption(2), Some(&h.field_src("q1")));
+        assert!(matches!(h.fb.export(), ActionResult::Done(_)));
+        let exported = std::fs::read_to_string(&path).unwrap();
+        assert!(exported.contains("q1: Postgres"), "{exported}");
+        assert!(!exported.contains("q1: SQLite"), "{exported}");
+    }
+}
+
+#[test]
+fn export_hook_receives_exact_file_content_and_preserves_export_on_failure() {
+    let mut h = harness(QUESTIONS, true);
+    let path = h.dir.join("page.md.feedback.md");
+    let copied = h.dir.join("clipboard");
+    h.fb.settings.feedback.export_hook = format!("cat > {}", copied.display());
+    h.fb.act(FeedbackAction::PickOption(1), Some(&h.field_src("q1")));
+    assert!(matches!(h.fb.export(), ActionResult::Done(_)));
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        std::fs::read(&copied).unwrap()
+    );
+    h.fb.settings.feedback.export_hook = "cat >/dev/null; exit 7".into();
+    let ActionResult::Failed(error) = h.fb.export() else {
+        panic!("expected hook failure")
+    };
+    assert!(error.contains("export hook failed"), "{error}");
+    assert!(error.contains(path.to_str().unwrap()), "{error}");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        std::fs::read(&copied).unwrap()
+    );
+}
+
+#[test]
+fn export_refuses_stale_file_without_running_hook_or_replacing_export() {
+    let mut h = harness(QUESTIONS, true);
+    let path = h.dir.join("page.md.feedback.md");
+    std::fs::write(&path, "previous export").unwrap();
+    h.fb.act(FeedbackAction::PickOption(1), Some(&h.field_src("q1")));
+    std::fs::write(&h.page, format!("{QUESTIONS}External change")).unwrap();
+    assert!(matches!(h.fb.export(), ActionResult::Failed(_)));
+    assert!(h.fb.has_unsaved());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "previous export");
+}
+
+#[test]
+fn export_write_failure_keeps_feedback_saved_and_skips_hook() {
+    let mut h = harness(QUESTIONS, true);
+    let path = h.dir.join("page.md.feedback.md");
+    std::fs::create_dir(&path).unwrap();
+    let copied = h.dir.join("clipboard");
+    h.fb.settings.feedback.export_hook = format!("cat > {}", copied.display());
+    h.fb.act(FeedbackAction::PickOption(1), Some(&h.field_src("q1")));
+    assert!(matches!(h.fb.export(), ActionResult::Failed(_)));
+    assert!(!h.fb.has_unsaved());
+    assert_eq!(h.fb.saved().unwrap().replies["q1"], "SQLite");
+    assert!(!copied.exists());
+}
