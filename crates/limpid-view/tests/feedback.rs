@@ -34,6 +34,7 @@ struct Script {
     opened: Vec<(String, BoxKind)>,
     inputs: Vec<String>,
     events: VecDeque<EditorEvent>,
+    cursor: Option<(u16, u16)>,
 }
 
 struct Fake {
@@ -54,7 +55,11 @@ impl EditorPort for Fake {
     }
     fn resize(&mut self, _cols: u16, _rows: u16) {}
     fn poll(&mut self) -> Vec<EditorEvent> {
-        self.script.borrow_mut().events.drain(..).collect()
+        let mut script = self.script.borrow_mut();
+        if let Some(cursor) = script.cursor.take() {
+            self.grid.cursor = cursor;
+        }
+        script.events.drain(..).collect()
     }
     fn grid(&self) -> &Grid {
         &self.grid
@@ -678,5 +683,34 @@ fn should_scroll_to_the_box_when_a_reply_box_opens_far_down_the_page() {
     assert!(
         world.page.doc().source.get(focused.src.clone()) == Some(""),
         "the cursor is on the added box, not the question"
+    );
+}
+
+#[test]
+fn should_scroll_as_a_comment_box_grows_near_the_bottom_of_the_window() {
+    let filler: String = (0..40).map(|n| format!("Paragraph {n}.\n\n")).collect();
+    let mut world = world_from("growing-comment", &filler, false, "", None);
+    world.press("shift+g");
+    world.press("c");
+    assert!(world.page.box_open());
+    paint(&mut world.page);
+    let before = world.page.scroll();
+    {
+        let mut script = world.script.borrow_mut();
+        script.cursor = Some((7, 0));
+        script.events.push_back(EditorEvent::Redraw);
+    }
+    world.page.tick();
+    paint(&mut world.page);
+    let stop = world
+        .page
+        .nav()
+        .cursor()
+        .stop(world.page.layout().unwrap())
+        .unwrap();
+    assert!(world.page.scroll() > before, "growth must scroll the page");
+    assert!(
+        stop.rect.bottom() - world.page.scroll() < 680.0,
+        "the editor must remain above the status bar"
     );
 }

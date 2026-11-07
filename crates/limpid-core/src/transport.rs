@@ -166,7 +166,10 @@ mod tests {
     fn should_name_view_and_host_sockets_apart_when_both_use_one_runtime_directory() {
         let runtime = Path::new("/run/user/1000");
         for scheme in [Scheme::Dark, Scheme::Light] {
-            assert_ne!(view_socket_path(runtime, scheme), socket_path(runtime, scheme));
+            assert_ne!(
+                view_socket_path(runtime, scheme),
+                socket_path(runtime, scheme)
+            );
         }
         assert_eq!(
             view_socket_path(runtime, Scheme::Dark),

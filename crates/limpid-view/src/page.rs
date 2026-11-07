@@ -742,6 +742,11 @@ impl DocPage {
         let stale = feedback.borrow_mut().take_stale();
         if stale {
             self.rebuild_overlay();
+            // Growing an editor moves its bottom edge without moving the
+            // document cursor. Reveal it again after the new layout is ready.
+            if feedback.borrow().box_open() {
+                self.reveal_cursor = true;
+            }
             changed = true;
         }
         let focus = feedback.borrow_mut().take_focus();
