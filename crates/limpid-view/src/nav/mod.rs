@@ -261,6 +261,57 @@ impl Nav {
         }
     }
 
+    /// Focus the stop under document point `(x, y)`. Returns whether the
+    /// focus moved.
+    pub fn focus_at(&mut self, env: &mut Env, x: f32, y: f32) -> bool {
+        let stops = collect_stops(env.layout);
+        let hit = stops.iter().rev().find(|stop| {
+            stop.rect.y <= y && y < stop.rect.bottom() && stop.rect.x <= x && x < stop.rect.right()
+        });
+        let Some(stop) = hit else {
+            return false;
+        };
+        if self.cursor.src.as_ref() == Some(&stop.src) {
+            return false;
+        }
+        self.cursor.src = Some(stop.src.clone());
+        true
+    }
+
+    /// Keep the focused stop on screen after a scroll: when it has left the
+    /// viewport, move focus to the nearest stop still in view. Returns
+    /// whether the focus moved.
+    pub fn focus_visible(&mut self, env: &mut Env) -> bool {
+        let stops = collect_stops(env.layout);
+        let Some(at) = self.cursor.locate(&stops) else {
+            return false;
+        };
+        let scroll = *env.scroll;
+        let viewport = env.viewport;
+        let stop = &stops[at];
+        if stop.rect.bottom() > scroll && stop.rect.y < scroll + viewport {
+            return false;
+        }
+        // In the empty scroll space below the last block there is no visible
+        // stop; fall back to the nearest end of the document.
+        let target = if stop.rect.y < scroll {
+            stops
+                .iter()
+                .position(|s| s.rect.bottom() > scroll)
+                .or_else(|| stops.len().checked_sub(1))
+        } else {
+            stops
+                .iter()
+                .rposition(|s| s.rect.y < scroll + viewport)
+                .or(Some(0))
+        };
+        let Some(target) = target.filter(|&target| target != at) else {
+            return false;
+        };
+        self.cursor.src = Some(stops[target].src.clone());
+        true
+    }
+
     /// Point the cursor at `src` (the source range of a stop in the document
     /// about to be shown). `None` leaves it to find its own place.
     pub fn retarget_cursor(&mut self, src: Option<Range<usize>>) {
