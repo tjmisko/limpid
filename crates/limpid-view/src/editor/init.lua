@@ -145,6 +145,20 @@ local function box_is_open()
   return limpid.win ~= nil and vim.api.nvim_win_is_valid(limpid.win)
 end
 
+-- An emptied box can be abandoned with :q even when deleting its text
+-- marked it modified. Do this only at quit time so undo still restores
+-- the usual protection for unsaved text.
+vim.api.nvim_create_autocmd("QuitPre", {
+  callback = function()
+    if box_is_open()
+      and vim.api.nvim_get_current_buf() == limpid.buf
+      and buffer_text(limpid.buf) == ""
+    then
+      vim.bo[limpid.buf].modified = false
+    end
+  end,
+})
+
 vim.api.nvim_create_autocmd("WinEnter", {
   callback = function()
     if not box_is_open() or vim.api.nvim_get_current_win() == limpid.win then

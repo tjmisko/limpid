@@ -580,6 +580,36 @@ mod tests {
     }
 
     #[test]
+    fn should_allow_quit_when_the_buffer_has_been_cleared() {
+        let Some(mut editor) = started() else { return };
+        for initial in ["", "saved comment"] {
+            editor.open(initial, BoxKind::Comment).unwrap();
+            if initial.is_empty() {
+                editor.input("temporary text<Esc>");
+            }
+            editor.input("ggdG:q<CR>");
+            let events = collect_until(&mut editor, |_, seen| {
+                seen.iter().any(|e| matches!(e, EditorEvent::Quit { .. }))
+            });
+            assert!(events.iter().any(|e| matches!(e, EditorEvent::Quit { .. })));
+            assert!(!events.iter().any(|e| matches!(e, EditorEvent::Save(_))));
+            assert!(editor.is_running());
+        }
+    }
+
+    #[test]
+    fn should_protect_text_restored_after_clearing_the_buffer() {
+        let Some(mut editor) = started() else { return };
+        editor.open("saved", BoxKind::Comment).unwrap();
+        editor.input("A changes<Esc>ggdGu:q<CR>");
+        let events = collect_until(&mut editor, |_, seen| {
+            seen.iter().any(|e| matches!(e, EditorEvent::Message(_)))
+        });
+        assert!(events.contains(&EditorEvent::Message(UNSAVED_CHANGES.to_string())));
+        assert!(!events.iter().any(|e| matches!(e, EditorEvent::Quit { .. })));
+    }
+
+    #[test]
     fn should_refuse_to_quit_silently_when_the_buffer_is_modified() {
         let Some(mut editor) = started() else { return };
         editor.open("x", BoxKind::Reply).unwrap();
