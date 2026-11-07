@@ -91,6 +91,12 @@ impl WindowCloser {
 }
 
 impl Closer for WindowCloser {
+    fn open(&self, handoff: &Handoff) -> bool {
+        self.proxy
+            .send_event(UserEvent::Open(handoff.clone()))
+            .is_ok()
+    }
+
     fn close(&self, kind: CloseKind) -> bool {
         let event = match kind {
             CloseKind::Window => {

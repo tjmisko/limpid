@@ -22,6 +22,8 @@ pub enum Command {
     WriteQuit,
     /// Save and export feedback, keeping the window open.
     Export,
+    /// `:!cmd`, run by the user's shell.
+    Shell(String),
     /// An empty line.
     Empty,
     Unknown(String),
@@ -30,6 +32,9 @@ pub enum Command {
 /// Parse a command line. Leading colons and surrounding space are ignored.
 pub fn parse(line: &str) -> Command {
     let name = line.trim().trim_start_matches(':').trim();
+    if let Some(command) = name.strip_prefix('!') {
+        return Command::Shell(command.trim().to_owned());
+    }
     match name {
         "" => Command::Empty,
         "q" | "quit" => Command::Quit,
@@ -43,7 +48,7 @@ pub fn parse(line: &str) -> Command {
 }
 
 /// What the prompt shows while it is empty.
-pub const COMMAND_PLACEHOLDER: &str = "q    w    wq    export    q!    qa";
+pub const COMMAND_PLACEHOLDER: &str = "q    w    wq    export    q!    qa    !cmd";
 
 /// The text being typed on a prompt line. Edits happen at the end of the line
 /// only, as in a shell without cursor keys.
@@ -176,6 +181,18 @@ mod tests {
         assert_eq!(parse("Q"), Command::Unknown("Q".into()));
         assert_eq!(parse("q !"), Command::Unknown("q !".into()));
         assert_eq!(parse("wq!"), Command::Unknown("wq!".into()));
+    }
+
+    #[test]
+    fn should_parse_a_shell_command_when_the_line_starts_with_a_bang() {
+        assert_eq!(parse("!ls -la"), Command::Shell("ls -la".into()));
+        assert_eq!(parse(":!ls"), Command::Shell("ls".into()));
+        assert_eq!(
+            parse("  :! git status  "),
+            Command::Shell("git status".into())
+        );
+        assert_eq!(parse("!"), Command::Shell("".into()));
+        assert_eq!(parse(":q!"), Command::QuitForce);
     }
 
     #[test]

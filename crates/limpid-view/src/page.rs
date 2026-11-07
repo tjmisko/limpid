@@ -20,6 +20,7 @@ use crate::{
         yank::{Clipboard, NoClipboard, ReplyCommand},
     },
     paint::Canvas,
+    shell::{self, Shell},
     text::Fonts,
     theme::Theme,
     window::{Page, TICK_INTERVAL},
@@ -120,6 +121,12 @@ fn title_of(doc: &Doc, fallback: &str) -> String {
 /// nothing wakes the event loop.
 const LOAD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// How often a page with a `:!` command running looks for its output.
+const SHELL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Names each `:!` output page, so two that finish together do not collide.
+static SHELL_PAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Inputs the layout was built for; a change throws it away.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct LayoutKey {
@@ -132,6 +139,10 @@ struct LayoutKey {
 pub trait Closer {
     /// Returns false when the request cannot be honoured.
     fn close(&self, kind: CloseKind) -> bool;
+    /// Show `handoff` in a new window. Returns false when unsupported.
+    fn open(&self, _handoff: &Handoff) -> bool {
+        false
+    }
     /// Whether this window was asked to close.
     fn closing(&self) -> bool {
         false
@@ -222,6 +233,8 @@ pub struct DocPage {
     reveal_cursor: bool,
     /// Parses Markdown off the UI thread.
     loader: Loader,
+    /// `:!` commands running in the user's shell.
+    shell: Shell,
     /// The first document has not arrived yet; the page shows its background.
     loading: bool,
     /// Parses made on the calling thread (the loader counts the others).
@@ -263,6 +276,45 @@ fn paint_outlines(
         }
         StopKind::Text | StopKind::Heading => {}
     }
+}
+
+/// Write a finished `:!` command's output as a Markdown page.
+fn write_shell_page(run: &shell::Run) -> Option<PathBuf> {
+    let serial = SHELL_PAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path =
+        std::env::temp_dir().join(format!("limpid-shell-{}-{serial}.md", std::process::id()));
+    let mut page = format!("# `!{}`\n\n", run.command);
+    if !run.success {
+        page.push_str("Command failed.\n\n");
+    }
+    let output = if run.output.trim().is_empty() {
+        "(no output)\n"
+    } else {
+        &run.output
+    };
+    page.push_str(&fence(output));
+    std::fs::write(&path, page).ok()?;
+    Some(path)
+}
+
+/// Wrap `text` in a backtick fence longer than any run of backticks in it.
+fn fence(text: &str) -> String {
+    let longest = text
+        .split(|character| character != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let marker = "`".repeat(longest.max(2) + 1);
+    let mut fenced = String::new();
+    fenced.push_str(&marker);
+    fenced.push_str("text\n");
+    fenced.push_str(text);
+    if !text.ends_with('\n') {
+        fenced.push('\n');
+    }
+    fenced.push_str(&marker);
+    fenced.push('\n');
+    fenced
 }
 
 impl DocPage {
@@ -427,6 +479,7 @@ impl DocPage {
             base_blocks: Vec::new(),
             reveal_cursor: false,
             loader: Loader::new(Mode::File, settings),
+            shell: Shell::default(),
             loading: false,
             sync_parses: 1,
         };
@@ -891,7 +944,38 @@ impl DocPage {
             Request::Reload => self.reload(),
             Request::Zoom(step) => self.zoom_by(step),
             Request::ToggleRail => self.toggle_rail(),
+            Request::Shell(command) => self.start_shell(&command),
         }
+    }
+
+    /// `:!cmd`: run `cmd` in the user's shell; the output opens in a new page.
+    fn start_shell(&mut self, command: &str) {
+        self.shell.start(command);
+        self.flash(format!("!{command}"));
+    }
+
+    /// Open a page for every shell command that has finished.
+    fn poll_shell(&mut self) -> bool {
+        let runs = self.shell.poll();
+        let mut opened = false;
+        for run in &runs {
+            let Some(path) = write_shell_page(run) else {
+                continue;
+            };
+            let handoff = Handoff {
+                path,
+                theme: self.theme.scheme,
+                pane: None,
+                source: None,
+                source_hash: None,
+                source_backed: false,
+            };
+            opened |= self
+                .closer
+                .as_ref()
+                .is_some_and(|closer| closer.open(&handoff));
+        }
+        opened
     }
 
     /// Handle one key press. Returns true when the page changed and needs a
@@ -1207,6 +1291,7 @@ impl Page for DocPage {
 
     fn wants_ticks(&self) -> bool {
         self.loader.busy()
+            || self.shell.busy()
             || self
                 .feedback
                 .as_ref()
@@ -1225,11 +1310,15 @@ impl Page for DocPage {
             // that up, and serves where nobody wakes the loop.
             return feedback_period.min(LOAD_POLL_INTERVAL);
         }
+        if self.shell.busy() {
+            return feedback_period.min(SHELL_POLL_INTERVAL);
+        }
         feedback_period
     }
 
     fn tick(&mut self) -> bool {
         let mut changed = self.poll_loaded();
+        changed |= self.poll_shell();
         let Some(feedback) = self.feedback.clone() else {
             return changed;
         };
@@ -2446,6 +2535,60 @@ mod tests {
             loose.nav().status_view(loose.now_ms()).message,
             "this page cannot close itself"
         );
+    }
+
+    #[test]
+    fn should_write_a_fenced_page_when_a_shell_command_finishes() {
+        let run = shell::Run {
+            command: "echo hi".into(),
+            output: "hi\n".into(),
+            success: true,
+        };
+        let path = write_shell_page(&run).unwrap();
+        let page = std::fs::read_to_string(&path).unwrap();
+        assert!(page.contains("# `!echo hi`"));
+        assert!(page.contains("```text\nhi\n```"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn should_lengthen_the_fence_when_the_output_contains_backticks() {
+        let run = shell::Run {
+            command: "x".into(),
+            output: "```\n".into(),
+            success: true,
+        };
+        let path = write_shell_page(&run).unwrap();
+        let page = std::fs::read_to_string(&path).unwrap();
+        assert!(page.contains("````text"), "{page}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    struct Opened(Rc<Cell<usize>>);
+
+    impl Closer for Opened {
+        fn close(&self, _kind: CloseKind) -> bool {
+            false
+        }
+
+        fn open(&self, _handoff: &Handoff) -> bool {
+            self.0.set(self.0.get() + 1);
+            true
+        }
+    }
+
+    #[test]
+    fn should_open_a_page_when_a_shell_command_finishes() {
+        let opened = Rc::new(Cell::new(0));
+        let mut page = chrome_page("text\n").with_closer(Box::new(Opened(opened.clone())));
+        paint(&mut page, 500, 300, 1.0);
+        page.shell.start("echo hi");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while opened.get() == 0 && Instant::now() < deadline {
+            page.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(opened.get(), 1);
     }
 
     // Yank and actions through the page.

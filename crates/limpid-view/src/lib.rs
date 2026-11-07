@@ -7,6 +7,7 @@ pub mod nav;
 pub mod page;
 pub mod paint;
 pub mod serve;
+pub mod shell;
 pub mod snapshot;
 pub mod text;
 pub mod theme;

@@ -67,6 +67,7 @@ fn describe(action: Action) -> &'static str {
         Action::SearchNext => "Next match",
         Action::SearchPrev => "Previous match",
         Action::CommandOpen => "Command line",
+        Action::ShellOpen => "Shell command",
         Action::Visual => "Visual selection",
         Action::Yank => "Yank: yy block, yis section, y j / k blocks",
         Action::YankPage => "Yank the whole page",
@@ -170,6 +171,10 @@ pub fn rows(keymap: &Keymap) -> Vec<Row> {
     rows.push(Row {
         keys: ":w  :wq  :export  :q!  :qa".into(),
         what: "Save / save and send / export / discard / close all",
+    });
+    rows.push(Row {
+        keys: ":!cmd".into(),
+        what: "Run a shell command",
     });
     rows
 }

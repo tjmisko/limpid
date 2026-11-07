@@ -67,12 +67,14 @@ pub enum ZoomStep {
 }
 
 /// Something only the page can do; [`Nav`] asks for it in its [`Outcome`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     Close(CloseKind),
     Reload,
     Zoom(ZoomStep),
     ToggleRail,
+    /// `:!cmd`: run `cmd` in the user's shell.
+    Shell(String),
 }
 
 /// What a key press did.
@@ -492,6 +494,10 @@ impl Nav {
             Action::SearchNext => self.search_step(true, now_ms, env),
             Action::SearchPrev => self.search_step(false, now_ms, env),
             Action::CommandOpen => self.open_prompt(Mode::Command),
+            Action::ShellOpen => {
+                self.open_prompt(Mode::Command);
+                self.line.insert("!");
+            }
             Action::Help => {
                 self.mode = Mode::Help;
                 self.help_scroll = 0;
@@ -687,6 +693,7 @@ impl Nav {
                     out.requests.push(Request::Close(CloseKind::Window));
                 }
             }
+            Command::Shell(command) => out.requests.push(Request::Shell(command)),
             Command::Unknown(name) => self.flash(format!("Not a command: :{name}"), now_ms),
         }
     }
@@ -1539,6 +1546,27 @@ mod tests {
             };
             assert_eq!(world.message(), expected);
         }
+    }
+
+    #[test]
+    fn should_ask_the_page_to_run_a_shell_command_when_the_line_starts_with_a_bang() {
+        let mut world = World::new("a\n", 600.0);
+        world.press(":");
+        world.typed("!echo hi");
+        let outcome = world.press("enter");
+        assert_eq!(outcome.requests, vec![Request::Shell("echo hi".into())]);
+        assert_eq!(world.nav.state(), StateName::Page);
+    }
+
+    #[test]
+    fn should_open_the_command_line_prefilled_when_pressing_bang() {
+        let mut world = World::new("a\n", 600.0);
+        world.press("!");
+        assert_eq!(world.nav.state(), StateName::Command);
+        assert_eq!(world.nav.command_box(), Some("!"));
+        world.typed("echo hi");
+        let outcome = world.press("enter");
+        assert_eq!(outcome.requests, vec![Request::Shell("echo hi".into())]);
     }
 
     #[test]
