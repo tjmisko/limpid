@@ -9,7 +9,7 @@ use crate::{
     helpers::{self, HelperJob, HelperKind, Helpers, Locate},
     page::DocPage,
     paint::Canvas,
-    window::Page,
+    window::{Page, PointerEvent},
 };
 use limpid_core::{doc::Mode, replies::source_hash, settings::Settings};
 use std::{
@@ -232,6 +232,10 @@ impl Page for WatchedPage {
 
     fn modifiers_changed(&mut self, modifiers: ModifiersState) {
         self.page.modifiers_changed(modifiers);
+    }
+
+    fn pointer(&mut self, event: PointerEvent) -> bool {
+        self.page.pointer(event)
     }
 
     fn ime(&mut self, event: &Ime) -> bool {

@@ -23,7 +23,7 @@ use crate::{
     shell::{self, Shell},
     text::Fonts,
     theme::Theme,
-    window::{Page, TICK_INTERVAL},
+    window::{Page, PointerEvent, TICK_INTERVAL},
 };
 use limpid_core::{
     doc::{Block, Doc, Mode, parse},
@@ -126,6 +126,9 @@ const SHELL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Names each `:!` output page, so two that finish together do not collide.
 static SHELL_PAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// One wheel notch scrolls this many body lines.
+const WHEEL_LINES: f32 = 3.0;
 
 /// Inputs the layout was built for; a change throws it away.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -574,6 +577,34 @@ impl DocPage {
 
     pub fn set_input_mode(&mut self, mode: InputMode) {
         self.input_mode = mode;
+    }
+
+    /// Move focus to the stop under the pointer, in device pixels.
+    fn focus_at(&mut self, x: f32, y: f32) -> bool {
+        let Some(column_x) = self.layout.as_ref().map(|layout| layout.column_x) else {
+            return false;
+        };
+        let doc_x = x - column_x;
+        let doc_y = self.scroll + y;
+        self.with_nav(|nav, env, _| nav.focus_at(env, doc_x, doc_y))
+            .unwrap_or(false)
+    }
+
+    /// A wheel turn of `lines`, positive for a scroll down.
+    fn wheel(&mut self, lines: f32) -> bool {
+        let line = self.theme.font_size * self.theme.line_height * self.scale;
+        self.scroll_by(lines * line * WHEEL_LINES)
+    }
+
+    /// Scroll the viewport by `dy` device pixels, then move focus to a visible
+    /// stop when the scroll pushed it off screen.
+    fn scroll_by(&mut self, dy: f32) -> bool {
+        self.with_nav(|nav, env, _| {
+            let moved = env.set_scroll(*env.scroll + dy);
+            let focused = nav.focus_visible(env);
+            moved || focused
+        })
+        .unwrap_or(false)
     }
 
     /// Open or close the compact contents block shown in narrow windows.
@@ -1262,10 +1293,16 @@ impl Page for DocPage {
         self.modifiers = modifiers;
     }
 
-    fn pointer(&mut self) -> bool {
-        let changed = self.input_mode != InputMode::Mouse;
+    fn pointer(&mut self, event: PointerEvent) -> bool {
+        let left_keyboard = self.input_mode != InputMode::Mouse;
         self.input_mode = InputMode::Mouse;
-        changed
+        let changed = match event {
+            PointerEvent::Moved { x, y } => self.focus_at(x, y),
+            PointerEvent::Wheel { lines } => self.wheel(lines),
+            PointerEvent::Scroll { dy } => self.scroll_by(dy),
+            PointerEvent::Button => false,
+        };
+        changed || left_keyboard
     }
 
     fn ime(&mut self, event: &Ime) -> bool {
@@ -2052,8 +2089,9 @@ mod tests {
     #[test]
     fn should_drop_the_band_to_faint_when_the_mouse_moves() {
         let mut page = chrome_page("one\n\ntwo\n");
-        assert!(page.pointer());
-        assert!(!page.pointer(), "already in mouse mode");
+        let moved = PointerEvent::Moved { x: 0.0, y: 0.0 };
+        assert!(page.pointer(moved));
+        assert!(!page.pointer(moved), "already in mouse mode");
         assert_eq!(page.input_mode(), InputMode::Mouse);
         let pixels = paint(&mut page, 800, 600, 1.0);
         let theme = Theme::dark();
@@ -2067,7 +2105,7 @@ mod tests {
     #[test]
     fn should_return_to_keyboard_mode_when_a_key_is_pressed() {
         let mut page = chrome_page("one\n\ntwo\n");
-        page.pointer();
+        page.pointer(PointerEvent::Moved { x: 0.0, y: 0.0 });
         press(&mut page, "j");
         assert_eq!(page.input_mode(), InputMode::Keyboard);
     }
@@ -2091,7 +2129,7 @@ mod tests {
     #[test]
     fn should_paint_the_outline_fainter_when_the_mouse_leads() {
         let mut page = chrome_page("```\ncode\n```\n\ntext\n");
-        page.pointer();
+        page.pointer(PointerEvent::Moved { x: 0.0, y: 0.0 });
         let pixels = paint(&mut page, 800, 600, 1.0);
         let theme = Theme::dark();
         let layout = page.layout().unwrap();
@@ -2392,6 +2430,58 @@ mod tests {
         assert!(matches!(follow, RailFollow::Scroll { .. }), "{follow:?}");
         press(&mut page, "k");
         assert_eq!(page.input_mode(), InputMode::Keyboard);
+    }
+
+    #[test]
+    fn should_focus_the_block_under_the_pointer_when_the_mouse_moves() {
+        let mut page = chrome_page("one\n\ntwo\n");
+        paint(&mut page, 800, 600, 1.0);
+        assert_eq!(focused(&page), "one");
+        let layout = page.layout().unwrap();
+        let second = layout.blocks[1].rect;
+        let x = layout.column_x + 10.0;
+        let y = second.y + second.h / 2.0 - page.scroll();
+        assert!(page.pointer(PointerEvent::Moved { x, y }));
+        assert_eq!(focused(&page), "two");
+        assert!(
+            !page.pointer(PointerEvent::Moved { x, y }),
+            "the same block does not move focus again"
+        );
+    }
+
+    #[test]
+    fn should_keep_focus_in_view_when_the_wheel_scrolls_the_page() {
+        let mut page = chrome_page(&numbered(200));
+        paint(&mut page, 400, 300, 1.0);
+        let before = page.scroll();
+        assert!(page.pointer(PointerEvent::Wheel { lines: 3.0 }));
+        assert!(page.scroll() > before, "the wheel scrolled the view");
+        for _ in 0..20 {
+            page.pointer(PointerEvent::Wheel { lines: 3.0 });
+        }
+        let layout = page.layout().unwrap();
+        let stop = page.nav().cursor().stop(layout).unwrap();
+        let scroll = page.scroll();
+        let viewport = page.viewport_height;
+        assert!(
+            stop.rect.bottom() > scroll && stop.rect.y < scroll + viewport,
+            "focus stays on screen after scrolling down"
+        );
+        let after_down = page.scroll();
+        for _ in 0..80 {
+            page.pointer(PointerEvent::Wheel { lines: -3.0 });
+        }
+        assert!(page.scroll() < after_down, "the wheel scrolled back up");
+    }
+
+    #[test]
+    fn should_focus_the_last_block_when_the_wheel_scrolls_past_it() {
+        let mut page = chrome_page(&numbered(20));
+        paint(&mut page, 400, 300, 1.0);
+        for _ in 0..100 {
+            page.pointer(PointerEvent::Wheel { lines: 3.0 });
+        }
+        assert_eq!(focused(&page), "line 19");
     }
 
     #[test]

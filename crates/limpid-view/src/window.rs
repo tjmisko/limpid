@@ -8,7 +8,7 @@ use std::{collections::HashMap, num::NonZeroU32, rc::Rc, time::Duration};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
-    event::{Ime, KeyEvent, WindowEvent},
+    event::{Ime, KeyEvent, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, OwnedDisplayHandle},
     keyboard::ModifiersState,
     platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11},
@@ -25,7 +25,7 @@ pub trait Page {
     fn key(&mut self, event: &KeyEvent) -> bool;
     fn modifiers_changed(&mut self, _modifiers: ModifiersState) {}
     /// The mouse moved, clicked or scrolled. Returns whether the page changed.
-    fn pointer(&mut self) -> bool {
+    fn pointer(&mut self, _event: PointerEvent) -> bool {
         false
     }
     /// An input-method event (committed text, uncommitted preedit text, or
@@ -53,6 +53,19 @@ pub trait Page {
     fn tick_period(&self) -> Duration {
         TICK_INTERVAL
     }
+}
+
+/// A pointer event, in device pixels from the top-left of the canvas.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PointerEvent {
+    /// The pointer moved to `(x, y)`.
+    Moved { x: f32, y: f32 },
+    /// A wheel turn of `lines`, positive for a scroll down.
+    Wheel { lines: f32 },
+    /// A trackpad scroll of `dy` device pixels, positive for a scroll down.
+    Scroll { dy: f32 },
+    /// A button was pressed or released.
+    Button,
 }
 
 /// How often a page that wants ticks is woken.
@@ -288,10 +301,28 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.reap_closing(event_loop);
             }
-            WindowEvent::CursorMoved { .. }
-            | WindowEvent::MouseInput { .. }
-            | WindowEvent::MouseWheel { .. } => {
-                if open.page.pointer() {
+            WindowEvent::CursorMoved { position, .. } => {
+                let event = PointerEvent::Moved {
+                    x: position.x as f32,
+                    y: position.y as f32,
+                };
+                if open.page.pointer(event) {
+                    open.request_redraw();
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let event = match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => PointerEvent::Wheel { lines },
+                    MouseScrollDelta::PixelDelta(position) => PointerEvent::Scroll {
+                        dy: position.y as f32,
+                    },
+                };
+                if open.page.pointer(event) {
+                    open.request_redraw();
+                }
+            }
+            WindowEvent::MouseInput { .. } => {
+                if open.page.pointer(PointerEvent::Button) {
                     open.request_redraw();
                 }
             }
