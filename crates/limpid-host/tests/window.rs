@@ -8,7 +8,7 @@
 use std::{
     collections::HashMap,
     fs,
-    io::Write,
+    io::{Read, Write},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -49,6 +49,7 @@ fn link_wayland(runtime: &Path) {
 
 struct Host {
     child: Child,
+    stdout: thread::JoinHandle<Vec<u8>>,
     socket: PathBuf,
     runtime: PathBuf,
 }
@@ -56,17 +57,25 @@ struct Host {
 impl Host {
     fn start(runtime: &Path, scheme: &str) -> Host {
         link_wayland(runtime);
-        let child = Command::new(env!("CARGO_BIN_EXE_limpid-host"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_limpid-host"))
             .arg(scheme)
             .env("XDG_RUNTIME_DIR", runtime)
             // Keeps test windows on a hidden workspace under a compositor
             // rule that matches this class (see bench/NOTES.md).
             .env("LIMPID_WINDOW_CLASS", "limpid-test")
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
+        // WebKit writes console.log to stdout. Drain it while the host runs,
+        // so a chatty page cannot fill the pipe and block the window.
+        let mut pipe = child.stdout.take().unwrap();
+        let stdout = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes).unwrap();
+            bytes
+        });
         let socket = runtime.join(format!("limpid-{}.sock", scheme.trim_start_matches("--")));
         let deadline = Instant::now() + Duration::from_secs(5);
         while !socket.exists() {
@@ -75,6 +84,7 @@ impl Host {
         }
         Host {
             child,
+            stdout,
             socket,
             runtime: runtime.to_path_buf(),
         }
@@ -119,8 +129,13 @@ impl Host {
             .arg(self.child.id().to_string())
             .status();
         let output = self.child.wait_with_output().unwrap();
+        let stdout = self.stdout.join().unwrap();
         let _ = fs::remove_dir_all(&self.runtime);
-        String::from_utf8_lossy(&output.stderr).into_owned()
+        format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
     }
 }
 
@@ -262,6 +277,98 @@ fn comment_markdown_renders_in_the_client() {
         stderr.contains("<ul><li>yes</li><li>no</li></ul>"),
         "{stderr}"
     );
+}
+
+#[test]
+fn contents_never_take_document_focus_in_rendered_and_injected_pages() {
+    if !display_available() {
+        return;
+    }
+    let runtime = temp_dir("toc-focus");
+    let host = Host::start(&runtime, "--light");
+    for source_backed in [false, true] {
+        for compact in [false, true] {
+            let case = format!("{source_backed}-{compact}");
+            let page = runtime.join(format!("{case}.html"));
+            let mut html = format!(
+                r##"<!doctype html><meta charset="utf-8"><title>Contents focus</title>
+<style>
+body {{ margin: 0; }} article {{ padding: 12px; }}
+.wide {{ display: {}; }} .compact {{ display: {}; }}
+#first-text {{ margin-bottom: 900px; }}
+</style>
+<script id="limpid-sources" type="application/json">{{}}</script>
+<article>
+<nav class="wide"><h2 id="navigation-heading">Contents</h2><ul class="toc">
+<li><a href="#first">First</a></li><li><a href="#second">Second</a></li>
+</ul></nav>
+<details class="toc-compact compact" open><summary>Contents</summary><ul class="toc">
+<li><a href="#first">First</a></li><li><a href="#second">Second</a></li>
+</ul></details>
+<div role="navigation"><p>Other navigation</p></div>
+<ul class="toc"><li><a href="#first">Standalone contents</a></li></ul>
+<aside class="rail"><p>Rail item</p></aside>
+<p hidden>Hidden content</p>
+<details><summary>Collapsed extra</summary><p>Hidden details content</p></details>
+<h1 id="first" data-src="0-1">First</h1>
+<p id="first-text" data-src="2-3">First paragraph</p>
+<h2 id="second" data-src="4-5">Second</h2>
+<p id="last" data-src="6-7">Last paragraph</p>
+</article>"##,
+                if compact { "none" } else { "block" },
+                if compact { "block" } else { "none" },
+            );
+            html.push_str(
+                r##"<script>
+window.addEventListener('load', () => {
+  // Other window tests can obscure this page and pause animation frames.
+  // Restoring annotations initializes focus through the same client path.
+  window.limpidRestoreComments({});
+  const check = (ok, message) => { if (!ok) throw new Error(message); };
+  const focus = () => document.querySelector('.limpid-focused')?.id;
+  const key = value => document.dispatchEvent(new KeyboardEvent('keydown', {key: value, bubbles: true, cancelable: true}));
+  const active = id => [...document.querySelectorAll('.toc a.active')].every(link => link.hash === '#' + id)
+    && !!document.querySelector('.toc a.active');
+  check(focus() === 'first', 'initial focus must be the document title, got ' + document.querySelector('.limpid-focused')?.outerHTML);
+  check(active('first'), 'initial section');
+  key('j'); check(focus() === 'first-text', 'first paragraph');
+  key('j'); check(focus() === 'second', 'second heading');
+  check(active('second'), 'keyboard section follows content focus');
+  key('j'); check(focus() === 'last', 'last paragraph');
+  key('k'); check(focus() === 'second', 'reverse traversal skips contents');
+  key('g'); key('g'); check(focus() === 'first', 'gg skips all navigation');
+  key('j'); key('j');
+  window.scrollTo({top: 0, behavior: 'instant'});
+  window.dispatchEvent(new WheelEvent('wheel'));
+  check(active('first'), 'mouse section follows viewport');
+  key('k');
+  check(focus() === 'first-text' && active('first'), 'keyboard resumes content section');
+  check(!document.querySelector('nav .limpid-focused,.toc .limpid-focused,.toc-compact .limpid-focused,.rail .limpid-focused,[role=navigation] .limpid-focused'), 'navigation is never block focused');
+  console.log('LIMPID_TEST toc-focus=' + CASE + ':ok');
+});
+</script>"##
+                    .replace("CASE", &format!("'{case}'"))
+                    .as_str(),
+            );
+            fs::write(&page, html).unwrap();
+            host.send(
+                &serde_json::json!({"path": page, "theme": "light", "source_backed": source_backed})
+                    .to_string(),
+            );
+            thread::sleep(SETTLE);
+        }
+    }
+    let stderr = host.stop();
+    for source_backed in [false, true] {
+        for compact in [false, true] {
+            assert!(
+                stderr.contains(&format!(
+                    "LIMPID_TEST toc-focus={source_backed}-{compact}:ok"
+                )),
+                "{stderr}"
+            );
+        }
+    }
 }
 
 #[test]

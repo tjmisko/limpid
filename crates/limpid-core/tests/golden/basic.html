@@ -351,6 +351,9 @@ body.limpid-visual .limpid-focused::before{display:none}
   const guideMode = !sourceBacked;
   const KEY_ATTR = guideMode ? 'data-limpid-src' : 'data-src';
   const KEY_SELECTOR = `[${KEY_ATTR}]`;
+  // Navigation may live inside the article on injected guide pages. It is
+  // page chrome, never a document block or a section heading.
+  const NAVIGATION_SELECTOR = 'nav,[role="navigation"],.toc,.toc-compact,.rail';
   const keyOf = element => element?.getAttribute(KEY_ATTR) || '';
   document.body.classList.toggle('limpid-guide', guideMode);
   const scrollSpace = document.createElement('div');
@@ -425,7 +428,8 @@ body.limpid-visual .limpid-focused::before{display:none}
     }
     initFocus(true);
   };
-  const headings = [...document.querySelectorAll('article h1[id],article h2[id],article h3[id],article h4[id],article h5[id],article h6[id]')];
+  const headings = [...document.querySelectorAll('article h1[id],article h2[id],article h3[id],article h4[id],article h5[id],article h6[id]')]
+    .filter(element => !element.closest(NAVIGATION_SELECTOR));
   let inputMode = 'keyboard';
   function applyActive(index) {
     while (index > 0 && !byId.has(headings[index].id)) index -= 1;
@@ -487,11 +491,14 @@ body.limpid-visual .limpid-focused::before{display:none}
   // stop. Question options are part of their field, not stops.
   function focusStops() {
     return [...document.querySelectorAll(STOP_SELECTOR)].filter(element => {
+      if (element.closest(NAVIGATION_SELECTOR) || !element.getClientRects().length) return false;
+      // WebKit can retain client rects for the contents of closed details.
+      if (element.closest('[hidden],details:not([open])')) return false;
       if (element.matches('.question-option')) return false;
       if (element.matches('.limpid-annotation')) return element.matches('.limpid-comment');
       // The callout is one focusable entity; its inner paragraph is not.
       if (element.closest('.limpid-annotation')) return false;
-      if (!guideMode && (element.matches('.meta') || element.closest('.toc-compact'))) return false;
+      if (!guideMode && element.matches('.meta')) return false;
       if (element.matches('li')) return true;
       return !element.parentElement?.closest('li,blockquote');
     });
