@@ -125,6 +125,11 @@ one). Inside a box every key is Neovim's: `:w` saves, `:q` cancels, and
 `Ctrl-Enter` saves directly. `S` opens the composed message for review;
 `Ctrl-Enter` there runs the configured reply command.
 
+Multiple windows can keep editors open at the same time. Each active editor
+has its own Neovim process, reused after the box closes. The box grows with
+the text, including wrapped lines, up to the viewport limit; longer text
+scrolls inside the editor.
+
 Edits stay on the page until you save. `:` on the page opens limpid's command
 line: `:w` saves, `:q` quits and refuses while unsaved changes remain, `:wq`
 saves, sends the answers, and quits, `:q!` quits and discards, and `:qa`
