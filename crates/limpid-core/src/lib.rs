@@ -1,6 +1,8 @@
 pub mod agent_page;
 pub mod bridge;
 pub mod bridge_import;
+pub mod bridge_relay;
+pub mod bridge_ssh;
 pub mod claude;
 pub mod codex;
 pub mod doc;
