@@ -256,6 +256,8 @@ impl EditorPort for StartingPort {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenBox {
     pub plan: BoxPlan,
+    /// Whole-buffer display height, reported by Neovim independently of its grid.
+    pub content_rows: u16,
     pub mode: String,
     /// The `:` line nvim is showing, with its leading character.
     pub cmdline: Option<String>,
@@ -269,6 +271,7 @@ impl OpenBox {
     pub fn new(plan: BoxPlan) -> Self {
         Self {
             plan,
+            content_rows: 1,
             mode: String::new(),
             cmdline: None,
             message: None,

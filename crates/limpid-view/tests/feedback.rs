@@ -698,7 +698,7 @@ fn should_scroll_as_a_comment_box_grows_near_the_bottom_of_the_window() {
     {
         let mut script = world.script.borrow_mut();
         script.cursor = Some((7, 0));
-        script.events.push_back(EditorEvent::Redraw);
+        script.events.push_back(EditorEvent::ContentRows(8));
     }
     world.page.tick();
     paint(&mut world.page);
@@ -712,5 +712,41 @@ fn should_scroll_as_a_comment_box_grows_near_the_bottom_of_the_window() {
     assert!(
         stop.rect.bottom() - world.page.scroll() < 680.0,
         "the editor must remain above the status bar"
+    );
+    world
+        .script
+        .borrow_mut()
+        .events
+        .push_back(EditorEvent::ContentRows(200));
+    world.page.tick();
+    paint(&mut world.page);
+    let stop = world
+        .page
+        .nav()
+        .cursor()
+        .stop(world.page.layout().unwrap())
+        .unwrap();
+    assert!(
+        stop.rect.h <= 700.0 * 0.7 + 1.0,
+        "long buffers fit within the viewport cap"
+    );
+    assert!(stop.rect.bottom() - world.page.scroll() < 680.0);
+    let height = stop.rect.h;
+    world
+        .script
+        .borrow_mut()
+        .events
+        .push_back(EditorEvent::Redraw);
+    world.page.tick();
+    paint(&mut world.page);
+    let stop = world
+        .page
+        .nav()
+        .cursor()
+        .stop(world.page.layout().unwrap())
+        .unwrap();
+    assert_eq!(
+        stop.rect.h, height,
+        "a redraw cannot change the buffer height"
     );
 }

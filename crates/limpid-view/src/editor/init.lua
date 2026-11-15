@@ -32,6 +32,39 @@ local function buffer_text(buf)
   return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
 end
 
+-- The UI grid only contains the visible slice of the buffer (and filler
+-- rows). Measure the whole buffer so wrapped and off-screen lines can grow
+-- limpid's box without making its height depend on the previous grid size.
+local function report_height()
+  local win, buf = limpid.win, limpid.buf
+  if not win or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+  local rows
+  if vim.api.nvim_win_text_height then
+    local ok, height = pcall(vim.api.nvim_win_text_height, win, {
+      start_row = 0,
+      end_row = vim.api.nvim_buf_line_count(buf) - 1,
+    })
+    if ok then
+      rows = height.all
+    end
+  end
+  -- Compatibility with Neovim before nvim_win_text_height was introduced.
+  if not rows then
+    rows = 0
+    local width = math.max(1, vim.api.nvim_win_get_width(win))
+    for _, line in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do
+      rows = rows + math.max(1, math.ceil(vim.fn.strdisplaywidth(line) / width))
+    end
+  end
+  rows = math.min(65535, math.max(1, rows))
+  if limpid.rows ~= rows then
+    limpid.rows = rows
+    vim.rpcnotify(chan, "limpid", "content_rows", rows)
+  end
+end
+
 local function float_config()
   return {
     relative = "editor",
@@ -76,6 +109,7 @@ function limpid.open(text, kind)
 
   local win = vim.api.nvim_open_win(buf, true, float_config())
   limpid.win = win
+  limpid.rows = nil
   style_window(win)
   -- Absent before nvim 0.10; the box is then only protected from focus loss.
   pcall(function()
@@ -107,8 +141,13 @@ function limpid.open(text, kind)
     vim.cmd("stopinsert")
     vim.cmd("normal! G$")
   end
+  report_height()
   return true
 end
+
+vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "TextChangedP" }, {
+  callback = report_height,
+})
 
 -- Writes are intercepted for every buffer, so no :w ever reaches a file. Range
 -- writes (:1w path) and appends go through other events, refused below. Only
@@ -189,6 +228,7 @@ vim.api.nvim_create_autocmd("VimResized", {
   callback = function()
     if limpid.win and vim.api.nvim_win_is_valid(limpid.win) then
       pcall(vim.api.nvim_win_set_config, limpid.win, float_config())
+      report_height()
     end
   end,
 })
