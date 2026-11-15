@@ -2385,6 +2385,30 @@ mod tests {
     }
 
     #[test]
+    fn should_keep_contents_out_of_block_focus_in_wide_and_narrow_windows() {
+        let source = "# One\n\nfirst paragraph\n\n## Two\n\nsecond paragraph\n";
+        for width in [700, 1400] {
+            let mut page = chrome_page(source);
+            paint(&mut page, width, 600, 1.0);
+            assert_eq!(focused(&page), "# One");
+            if width == 700 {
+                page.toggle_contents();
+                paint(&mut page, width, 600, 1.0);
+                assert!(page.layout().unwrap().compact.as_ref().unwrap().open);
+            } else {
+                assert!(page.layout().unwrap().rail.is_some());
+            }
+            assert_eq!(focused(&page), "# One");
+            press(&mut page, "j");
+            assert_eq!(focused(&page), "first paragraph");
+            press(&mut page, "j");
+            assert_eq!(focused(&page), "## Two");
+            press(&mut page, "k");
+            assert_eq!(focused(&page), "first paragraph");
+        }
+    }
+
+    #[test]
     fn should_toggle_the_compact_contents_when_pressing_t_in_a_narrow_window() {
         let mut page = chrome_page("# One\n\ntext\n\n## Two\n\ntext\n");
         let open = |page: &DocPage| page.layout().unwrap().compact.as_ref().map(|c| c.open);
