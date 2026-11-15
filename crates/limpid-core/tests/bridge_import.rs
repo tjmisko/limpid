@@ -83,6 +83,7 @@ fn page(instance: &str, markdown: &str, annotations: serde_json::Value) -> OpenP
         remote_path: Some("/home/remote/only-there/page.md".into()),
         markdown: markdown.into(),
         annotations,
+        revision: 0,
         delivery: Delivery::Remote,
     }
 }
@@ -396,7 +397,7 @@ fn should_name_files_from_identity_when_remote_strings_contain_path_separators()
     open.remote_path = Some("../../../etc/passwd".into());
     relay(&w).open(open).unwrap();
     let names = files_in(&w.receiver);
-    assert_eq!(names.len(), 3, "{names:?}");
+    assert_eq!(names.len(), 4, "{names:?}");
     assert!(
         names
             .iter()
@@ -440,7 +441,7 @@ fn should_not_copy_or_link_assets_when_the_markdown_references_files() {
     );
     relay(&w).open(page("i1", &markdown, json!(null))).unwrap();
     let names = files_in(&w.receiver);
-    assert_eq!(names.len(), 3, "{names:?}");
+    assert_eq!(names.len(), 4, "{names:?}");
     assert!(
         names
             .iter()

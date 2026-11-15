@@ -73,6 +73,9 @@ pub struct OpenPage {
     pub markdown: String,
     #[serde(default)]
     pub annotations: serde_json::Value,
+    /// The sender's annotation revision at open time; a save names the next one.
+    #[serde(default)]
+    pub revision: u64,
     pub delivery: Delivery,
 }
 
@@ -212,7 +215,12 @@ fn read_item(stream: &mut UnixStream, dec: &mut Decoder) -> Result<Option<Decode
         let mut chunk = [0u8; 8192];
         let n = match stream.read(&mut chunk) {
             Ok(n) => n,
-            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
                 return Err(BridgeError::Timeout);
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -751,7 +759,9 @@ impl Relay {
 
     /// Send a page; returns once the hub reports real acceptance or failure.
     pub fn open(&self, page: OpenPage) -> Result<(), BridgeError> {
-        self.peer.request(Body::Open(page), self.timeout).map(|_| ())
+        self.peer
+            .request(Body::Open(page), self.timeout)
+            .map(|_| ())
     }
 
     pub fn close_page(&self, instance: &str) -> Result<(), BridgeError> {
@@ -788,8 +798,7 @@ impl Relay {
         code: ErrorCode,
         message: impl Into<String>,
     ) -> Result<(), BridgeError> {
-        self.peer
-            .reply(error_body(Some(request.id), code, message))
+        self.peer.reply(error_body(Some(request.id), code, message))
     }
 
     /// Write raw bytes to the connection; for protocol tests.

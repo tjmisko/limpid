@@ -62,3 +62,21 @@ Only touch files named for your own route. Local: remove stale
 `$XDG_RUNTIME_DIR/limpid/b-*.sock` left by a killed launcher. Remote: remove
 `/tmp/limpid-<route>.sock` for the route in that shell's
 `$LIMPID_BRIDGE_ROUTE`.
+
+## Stage 4: saving feedback to the remote page
+
+Manual check after the steps above. Submitting (`:wq` to the agent) is still
+unavailable; saving never wakes Claude.
+
+1. Open a page with `/read` over `limpid ssh nlessfun`. Answer a question and
+   add a comment in the local window, then `:w`. The status line first says
+   `Saved locally, saving to the remote`, then
+   `Saved locally and on the remote (revision N)`.
+2. On the remote: `limpid-core feedback --json <page.html>` shows the reply
+   and comment. Claude stays idle: no new turn starts.
+3. Delete the comment locally, `:w`, and confirm the remote no longer lists it.
+4. Cut the connection (kill the `ssh` process of the login), edit, `:w`. The
+   status line says `Saved locally only, not on the remote`; the local copy is
+   at `~/.cache/limpid/remote/<stem>.replies.json`.
+5. Two logins that opened the same page: save from one, then from the other.
+   The second says `stale revision` and keeps its local copy.

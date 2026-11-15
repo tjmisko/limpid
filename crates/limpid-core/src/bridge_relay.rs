@@ -9,8 +9,8 @@
 //! removed, which the login wrapper does when its shell exits.
 
 use crate::{
-    bridge::{BridgeError, Delivery, ErrorCode, OpenPage, Relay},
-    replies::{read_annotations_file, source_hash},
+    bridge::{Body, BridgeError, Delivery, ErrorCode, OpenPage, Relay},
+    bridge_save::{apply_save, page_id_of, read_feedback, read_revision},
 };
 use std::{
     ffi::OsString,
@@ -89,13 +89,10 @@ pub fn page_from_agent_files(html: &Path, route: &str) -> Result<OpenPage, Strin
             )
         })?
         .to_string();
-    let annotations = if html.exists() {
-        let replies =
-            read_annotations_file(html).map_err(|error| format!("{}: {error}", html.display()))?;
-        serde_json::to_value(replies).map_err(|error| error.to_string())?
-    } else {
-        serde_json::Value::Null
-    };
+    // The same set `limpid-core feedback` reads: embedded plus sidecar.
+    let replies = read_feedback(html).map_err(|error| format!("{}: {error}", html.display()))?;
+    let annotations = serde_json::to_value(replies).map_err(|error| error.to_string())?;
+    let revision = read_revision(html)?.revision;
     let remote_path = html
         .canonicalize()
         .unwrap_or_else(|_| html.to_path_buf())
@@ -104,11 +101,12 @@ pub fn page_from_agent_files(html: &Path, route: &str) -> Result<OpenPage, Strin
     Ok(OpenPage {
         route: route.to_string(),
         session,
-        page_id: format!("md-{}", source_hash(markdown.as_bytes())),
+        page_id: page_id_of(markdown.as_bytes()),
         instance: new_instance(),
         remote_path: Some(remote_path),
         markdown,
         annotations,
+        revision,
         delivery: Delivery::Remote,
     })
 }
@@ -122,13 +120,20 @@ fn new_instance() -> String {
 }
 
 /// The relay's life: connect, open, report the outcome on `status`, then hold
-/// the connection until it ends. Requests the hub sends are refused: saving
-/// and submitting are not implemented, and a page is never answered locally.
+/// the connection until it ends. A save from the hub is persisted on this
+/// host and acknowledged with its revision; it never reaches the agent.
+/// Submitting is not implemented and is refused, and a page is never answered
+/// locally.
 pub fn serve(route: &RouteEnv, page: OpenPage, status: &mut dyn Write) -> Result<(), String> {
     let report = |status: &mut dyn Write, line: &str| {
         let _ = writeln!(status, "{line}");
         let _ = status.flush();
     };
+    let identity = (
+        page.instance.clone(),
+        page.page_id.clone(),
+        page.remote_path.clone(),
+    );
     let relay = match Relay::connect(&route.socket, &route.route) {
         Ok(relay) => relay.with_timeout(OPEN_TIMEOUT),
         Err(error) => {
@@ -151,15 +156,55 @@ pub fn serve(route: &RouteEnv, page: OpenPage, status: &mut dyn Write) -> Result
             return Ok(());
         }
         match relay.next_request(POLL_INTERVAL) {
-            Ok(request) => {
-                let _ = relay.fail(
-                    &request,
-                    ErrorCode::DeliveryUnavailable,
-                    "this page is a preview; saving and submitting are not available yet",
-                );
-            }
+            Ok(request) => answer(&relay, &request, &identity),
             Err(BridgeError::Timeout) => {}
             Err(_) => return Ok(()),
+        }
+    }
+}
+
+/// Answer one request from the hub for the page this relay holds.
+fn answer(
+    relay: &Relay,
+    request: &crate::bridge::Request,
+    (instance, page_id, remote_path): &(String, String, Option<String>),
+) {
+    let Body::Save {
+        instance: saved_instance,
+        page_id: saved_page,
+        revision,
+        annotations,
+    } = &request.body
+    else {
+        let _ = relay.fail(
+            request,
+            ErrorCode::DeliveryUnavailable,
+            "submitting feedback is not available yet; it is saved on this host only",
+        );
+        return;
+    };
+    if saved_instance != instance || saved_page != page_id {
+        let _ = relay.fail(
+            request,
+            ErrorCode::PageMismatch,
+            "the save is for a different page than this relay holds",
+        );
+        return;
+    }
+    let Some(html) = remote_path else {
+        let _ = relay.fail(
+            request,
+            ErrorCode::DeliveryUnavailable,
+            "the page has no path on this host to save to",
+        );
+        return;
+    };
+    match apply_save(Path::new(html), page_id, instance, *revision, annotations) {
+        Ok(stored) => {
+            let _ = relay.ack(request, Some(stored));
+        }
+        Err((code, message)) => {
+            let _ = relay.fail(request, code, message);
         }
     }
 }
@@ -375,6 +420,7 @@ mod tests {
             remote_path: None,
             markdown: "# x".into(),
             annotations: serde_json::Value::Null,
+            revision: 0,
             delivery: Delivery::Remote,
         };
         let mut status = Vec::new();

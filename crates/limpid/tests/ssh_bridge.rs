@@ -347,6 +347,10 @@ fn assert_nothing_left_behind(runtime: &Path, route: &str) {
         "local bridge socket left behind"
     );
     assert!(
+        !runtime.join(format!("limpid/s-{route}.sock")).exists(),
+        "local save socket left behind"
+    );
+    assert!(
         !Path::new(&format!("/tmp/limpid-{route}.sock")).exists(),
         "remote socket left behind"
     );
@@ -704,5 +708,81 @@ fn should_set_the_route_and_remove_the_socket_when_the_remote_command_runs_in_sh
     );
     assert!(!socket.exists(), "the login's socket is removed on exit");
     assert!(!Path::new("pwned").exists());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn should_save_feedback_to_the_remote_page_when_the_local_copy_is_pushed_over_ssh() {
+    let Some(sshd) = Sshd::start("save", "") else {
+        return;
+    };
+    let dir = scratch("save-run");
+    let viewer = FakeViewer::start(&dir);
+    let launcher = isolated_binary(&dir);
+    let markdown = "# Remote plan\n\nnaïve 日本語\n\n## Questions\n\n1. Which?\n   - A\n";
+    let html = remote_page(&dir, "claude-save", markdown, "sess-save");
+    let flag = dir.join("pushed");
+    let script = format!(
+        "{LIMPID} --source-backed {page}\necho OPEN_STATUS=$?\n\
+         while [ ! -f {flag} ]; do sleep 0.1; done\nexit\n",
+        page = html.display(),
+        flag = flag.display()
+    );
+    let args = sshd.client_args();
+    let session = {
+        let (dir, launcher) = (dir.clone(), launcher.clone());
+        std::thread::spawn(move || login(&dir, &launcher, &args, &script))
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while viewer.handoffs().is_empty() {
+        assert!(Instant::now() < deadline, "the page never opened locally");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let handoff = viewer.handoffs().remove(0);
+    let meta: serde_json::Value =
+        serde_json::from_slice(&fs::read(handoff.path.with_extension("meta.json")).unwrap())
+            .unwrap();
+    let origin = &meta["remote"];
+    // What the viewer's :w does: save the local copy, then ask to push it.
+    let mut replies = limpid_core::replies::AgentReplies::default();
+    replies
+        .replies
+        .insert("q1".into(), "A, naïve 日本語".into());
+    replies
+        .save(&limpid_core::replies::sidecar_path(
+            &handoff.path.with_extension("html"),
+        ))
+        .unwrap();
+    let request = limpid_core::bridge_push::PushRequest {
+        instance: origin["instance"].as_str().unwrap().into(),
+        page_id: origin["page_id"].as_str().unwrap().into(),
+    };
+    let reply = limpid_core::bridge_push::request_push(
+        Path::new(origin["save_sock"].as_str().unwrap()),
+        &request,
+        Duration::from_secs(10),
+    );
+    assert_eq!(
+        reply.state,
+        limpid_core::bridge_push::PushState::RemoteSaved,
+        "{reply:?}"
+    );
+    let remote = limpid_core::bridge_save::read_feedback(&html).unwrap();
+    assert_eq!(remote, replies, "the remote page holds the feedback");
+    assert_eq!(
+        limpid_core::bridge_save::read_revision(&html)
+            .unwrap()
+            .revision,
+        1
+    );
+    fs::write(&flag, "").unwrap();
+    let outcome = session.join().unwrap();
+    assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
+    assert!(
+        outcome.stdout.contains("OPEN_STATUS=0"),
+        "{}",
+        outcome.stdout
+    );
+    assert_nothing_left_behind(&dir, &outcome.route.unwrap());
     fs::remove_dir_all(dir).unwrap();
 }

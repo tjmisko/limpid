@@ -58,6 +58,7 @@ fn should_hand_the_imported_markdown_to_the_native_viewer_when_the_real_launcher
         remote_path: Some("/nowhere/on/this/host/page.md".into()),
         markdown: markdown.into(),
         annotations: serde_json::json!({"replies": {"q1": "A"}}),
+        revision: 0,
         delivery: Delivery::Remote,
     };
     let imported = import_page(&cache, &page).unwrap();
@@ -122,6 +123,7 @@ fn should_open_through_the_launcher_opener_when_the_importer_uses_the_real_binar
             remote_path: None,
             markdown: "# Hi\n".into(),
             annotations: serde_json::Value::Null,
+            revision: 0,
             delivery: Delivery::Remote,
         })
         .unwrap();

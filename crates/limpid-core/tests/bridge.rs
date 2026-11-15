@@ -73,6 +73,7 @@ fn page(route: &str, session: &str, page_id: &str, instance: &str, md: &str) -> 
         remote_path: Some("/home/remote/nonexistent/page.md".into()),
         markdown: md.into(),
         annotations: json!({"replies": []}),
+        revision: 0,
         delivery: Delivery::Remote,
     }
 }

@@ -14,6 +14,7 @@
 use crate::{
     bridge::Hub,
     bridge_import::{Importer, LauncherOpener},
+    bridge_push::PushService,
     bridge_relay::{ROUTE_ENV, SOCKET_ENV},
     transport::Scheme,
 };
@@ -200,6 +201,19 @@ pub fn local_socket_for(directory: &Path, route: &str) -> Result<PathBuf, String
     Ok(path)
 }
 
+/// The socket the viewer asks to push saved feedback; private like the hub's.
+pub fn save_socket_for(directory: &Path, route: &str) -> Result<PathBuf, String> {
+    let path = directory.join(format!("s-{route}.sock"));
+    if path.as_os_str().len() > SOCKET_PATH_LIMIT {
+        return Err(format!(
+            "the save socket path {} is longer than {SOCKET_PATH_LIMIT} bytes, the limit \
+             for Unix sockets; set XDG_RUNTIME_DIR to a shorter directory",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
 fn cache_dir() -> Result<PathBuf, String> {
     if let Some(base) = std::env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(base).join("limpid/remote"));
@@ -217,16 +231,29 @@ pub fn run(args: &[OsString], ssh: &Path, limpid: &Path) -> Result<i32, String> 
     let local_socket = local_socket_for(&directory, &route)?;
     let remote_socket = remote_socket_for(&route);
     let mut command = ssh_command(ssh, &args, &local_socket, &remote_socket, &route)?;
-    let importer = Importer::new(
-        cache_dir()?,
-        args.scheme,
-        Arc::new(LauncherOpener::new(limpid.to_path_buf())),
+    let save_socket = save_socket_for(&directory, &route)?;
+    let importer = Arc::new(
+        Importer::new(
+            cache_dir()?,
+            args.scheme,
+            Arc::new(LauncherOpener::new(limpid.to_path_buf())),
+        )
+        .with_save_socket(save_socket.clone()),
     );
     // Bound before ssh starts so the forward has something to reach. The hub
-    // removes the socket it created when it drops, on every path out.
-    let hub = Hub::bind(&local_socket, Arc::new(importer))
-        .map_err(|error| format!("could not bind {}: {error}", local_socket.display()))?;
-    let status = match command.status() {
+    // removes the socket it created when shut down, on every path out.
+    let hub = Arc::new(
+        Hub::bind(&local_socket, importer.clone())
+            .map_err(|error| format!("could not bind {}: {error}", local_socket.display()))?,
+    );
+    let pushes = PushService::bind(&save_socket, importer, hub.clone())
+        .map_err(|error| format!("could not bind {}: {error}", save_socket.display()))?;
+    let outcome = command.status();
+    // Explicit: the save service holds the hub, so dropping alone would not
+    // remove the sockets on the error paths below.
+    pushes.shutdown();
+    hub.shutdown();
+    let status = match outcome {
         Ok(status) => status,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(format!(
@@ -236,7 +263,6 @@ pub fn run(args: &[OsString], ssh: &Path, limpid: &Path) -> Result<i32, String> 
         }
         Err(error) => return Err(format!("could not run {}: {error}", ssh.display())),
     };
-    hub.shutdown();
     let code = status.code().unwrap_or(255);
     if code == 255 {
         eprintln!(

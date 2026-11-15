@@ -728,6 +728,11 @@ fn check_annotation_range(
     Ok(())
 }
 
+/// Replace `path` atomically with `bytes`.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    atomic_write(path, bytes)
+}
+
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     let parent = path
         .parent()

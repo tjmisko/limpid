@@ -48,6 +48,7 @@ fn open_page(markdown: &str, annotations: serde_json::Value) -> OpenPage {
         remote_path: Some("/nonexistent/remote/page.md".into()),
         markdown: markdown.into(),
         annotations,
+        revision: 0,
         delivery: Delivery::Remote,
     }
 }
