@@ -51,6 +51,12 @@ pub fn resolve(src: &str, env: &BoxEnv) -> Result<PathBuf, Failure> {
     if src.is_empty() {
         return Err(Failure::Missing);
     }
+    // A page from another machine must not read this machine's files: every
+    // reference, absolute, relative or file://, is refused, and remote URLs
+    // are never fetched.
+    if env.remote_page {
+        return Err(Failure::Remote);
+    }
     let local = match src.strip_prefix("file://") {
         Some(rest) => rest,
         None => {
@@ -308,6 +314,23 @@ mod tests {
             resolve("img/a.png", &env_in("/docs")).unwrap(),
             PathBuf::from("/docs/img/a.png")
         );
+    }
+
+    #[test]
+    fn should_refuse_every_reference_when_the_page_is_remote() {
+        let env = BoxEnv {
+            remote_page: true,
+            ..env_in("/docs")
+        };
+        for src in [
+            "/etc/passwd.png",
+            "file:///etc/passwd.png",
+            "img/a.png",
+            "../a.png",
+            "https://x/a.png",
+        ] {
+            assert_eq!(resolve(src, &env), Err(Failure::Remote), "{src}");
+        }
     }
 
     #[test]

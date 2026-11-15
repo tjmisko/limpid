@@ -1139,12 +1139,22 @@ pub fn deliver_or_wake(request: &Handoff, message: &str) -> Result<(), Box<dyn E
     deliver_or_wake_with(request, message, &settings.reply.command)
 }
 
+/// A page imported over the bridge is a read-only preview until the return
+/// path exists; it must never reach a local pane, clipboard or listener.
+fn delivery_meta(request: &Handoff) -> Result<serde_json::Value, Box<dyn Error>> {
+    let meta = page_meta(request)?;
+    if meta.get("remote").is_some_and(|remote| !remote.is_null()) {
+        return Err("remote page preview: submission is unavailable".into());
+    }
+    Ok(meta)
+}
+
 pub fn deliver_or_wake_with(
     request: &Handoff,
     message: &str,
     command: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let meta = page_meta(request)?;
+    let meta = delivery_meta(request)?;
     if let Some(socket) = meta
         .get("feedback_sock")
         .and_then(serde_json::Value::as_str)
@@ -1174,7 +1184,7 @@ pub fn deliver_with_command(
     message: &str,
     command: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let meta = page_meta(request)?;
+    let meta = delivery_meta(request)?;
     let source = request.source.clone().or_else(|| {
         meta.get("source")
             .and_then(serde_json::Value::as_str)

@@ -10,7 +10,7 @@ use crate::{
         Feedback, FeedbackHandle, Focus,
         review::{self, ReviewKey},
     },
-    layout::{Layout, LayoutOptions, lay_out_with, rail::RailFollow},
+    layout::{Layout, LayoutOptions, boxes::default_env, lay_out_in, rail::RailFollow},
     nav::{
         Bands, CloseKind, Io, Nav, NavOptions, NoActions, PageActions, Request, ZoomStep,
         cursor::{self, Env, StopKind},
@@ -88,6 +88,15 @@ pub fn options_for(settings: &Settings) -> LayoutOptions {
         rail: settings.view.rail,
         contents_open: false,
     }
+}
+
+/// Whether the sidecar meta of the page at `path` marks it as imported over
+/// the bridge.
+fn is_remote_page(path: &Path) -> bool {
+    std::fs::read(path.with_extension("meta.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|meta| meta.get("remote").is_some_and(|remote| !remote.is_null()))
 }
 
 /// How the page named by `handoff` is parsed. An agent page is the Markdown
@@ -208,6 +217,8 @@ pub struct DocPage {
     base_font_size: f32,
     zoom: f32,
     options: LayoutOptions,
+    /// The page was imported over the bridge; images may not read local files.
+    remote_page: bool,
     input_mode: InputMode,
     settings: Settings,
     path: Option<PathBuf>,
@@ -461,6 +472,7 @@ impl DocPage {
             zoom: 1.0,
             theme,
             options,
+            remote_page: false,
             input_mode: InputMode::default(),
             settings: settings.clone(),
             path: None,
@@ -502,6 +514,7 @@ impl DocPage {
             command: self.settings.reply.command.clone(),
             source: path.clone(),
         });
+        self.remote_page = path.as_deref().is_some_and(is_remote_page);
         self.path = path;
         self
     }
@@ -690,13 +703,16 @@ impl DocPage {
         });
         let anchor = from_source.or(from_layout);
         let mut fonts = self.fonts.borrow_mut();
-        let mut layout = lay_out_with(
+        let mut env = default_env();
+        env.remote_page = self.remote_page;
+        let mut layout = lay_out_in(
             &self.doc,
             key.width,
             &self.theme,
             key.scale,
             &mut fonts,
             self.options,
+            env,
         );
         if let Some((index, offset)) = anchor {
             layout.ensure_block(index, &self.doc, &mut fonts);

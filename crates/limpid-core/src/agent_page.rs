@@ -39,7 +39,7 @@ fn markdown_for(kind: &str, turns: &[(usize, &Turn)]) -> String {
     markdown
 }
 
-fn first_line(source: &str) -> String {
+pub fn first_line(source: &str) -> String {
     source
         .lines()
         .map(|line| line.trim_start_matches('#').trim())
