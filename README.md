@@ -42,7 +42,7 @@ Native viewer (default):
 |---|---|
 | Wayland or X11 session | the window |
 | `nvim` | reply and comment editing; `editor.command` names another binary |
-| `wl-copy` | the default reply command; `wezterm` only if `reply.command = "limpid-core send"` |
+| `codex`, `wezterm`, or `wl-copy` | the default reply helper queues Codex feedback, types into a known terminal pane for other pages, or copies to the clipboard |
 | a TeX install (with `dvisvgm` or `pdftocairo`) or `typst` | optional: better math typesetting. `math.backend = "auto"` tries them in that order and falls back to the built-in MathJax, so math works with none installed |
 
 With `LIMPID_WEBKIT=1` the build also produces `limpid-host`, which shows
@@ -177,6 +177,11 @@ The pi extension and the Claude Code plugin each bind a per-session socket.
 starting a turn. `:wq` writes the answers and wakes that session. Without a socket the viewer falls back to the
 configured `reply.command`.
 
+The default `reply.command = "limpid-core send"` queues Codex feedback to the
+thread recorded in the page and requests that it resume. A page opened before
+forking a conversation still targets the original thread. Explicit reply
+commands override this behavior; use `"wl-copy"` for clipboard-only delivery.
+
 ## Configure
 
 All keys are optional in `~/.config/limpid/config.toml`; an unknown key is an
@@ -191,8 +196,7 @@ theme = "default"            # page palette; code tokens use Catppuccin Mocha
 headings = ["Questions", "Open questions", "Questions for you"]
 
 [reply]
-command = "wl-copy"
-codex = false
+command = "limpid-core send" # or "wl-copy" for clipboard-only delivery
 
 [view]
 font = "sans-serif"          # family name, or sans-serif / serif / monospace

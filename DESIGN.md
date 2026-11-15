@@ -130,7 +130,7 @@ theme = "default"
 headings = ["Questions", "Open questions", "Questions for you"]
 
 [reply]
-command = "wl-copy"            # or "limpid-core send"
+command = "limpid-core send"   # or "wl-copy" for clipboard-only delivery
 
 [view]
 font = "sans-serif"            # family, or sans-serif / serif / monospace
@@ -369,8 +369,10 @@ and these environment variables:
 | `LIMPID_SOURCE` | Path of the page's source | page meta |
 | `LIMPID_PANE` | Terminal pane that opened the page | `$WEZTERM_PANE`, captured by `limpid` and sent in the handoff |
 
-The default command copies the message to the clipboard (`wl-copy`).
-`limpid-core send` types the message into the agent's pane with
+The default command, `limpid-core send`, queues Codex feedback to the page's
+session ID with `codex queue --thread ID --message TEXT --resume`. Queue or
+resume errors are reported without retrying a possibly queued message.
+For other pages it types the message into the agent's pane with
 `wezterm cli send-text --pane-id $LIMPID_PANE` and does **not** press Enter, so
 you can still review it in the agent's own prompt. It falls back to the
 clipboard when no pane is known. Agent-specific delivery (for example a pi

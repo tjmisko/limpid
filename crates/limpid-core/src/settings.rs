@@ -76,7 +76,7 @@ pub struct Reply {
 impl Default for Reply {
     fn default() -> Self {
         Self {
-            command: "wl-copy".into(),
+            command: "limpid-core send".into(),
         }
     }
 }

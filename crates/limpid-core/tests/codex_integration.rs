@@ -14,11 +14,10 @@ impl Harness {
     fn new(name: &str) -> Self {
         let root = std::env::temp_dir().join(format!("limpid-codex-{name}-{}", std::process::id()));
         fs::create_dir_all(root.join("bin")).unwrap();
-        fs::copy(
-            env!("CARGO_BIN_EXE_limpid-core"),
-            root.join("bin/limpid-core"),
-        )
-        .unwrap();
+        let executable = root.join("bin/limpid-core");
+        fs::hard_link(env!("CARGO_BIN_EXE_limpid-core"), &executable)
+            .or_else(|_| fs::copy(env!("CARGO_BIN_EXE_limpid-core"), &executable).map(|_| ()))
+            .unwrap();
         fs::copy(
             concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -194,6 +193,122 @@ fn send_targets_page_session_and_reports_queue_and_resume_failures() {
         .unwrap();
     child.stdin.take().unwrap().write_all(b"answer").unwrap();
     assert!(!child.wait_with_output().unwrap().status.success());
+}
+
+#[test]
+fn default_delivery_reaches_codex_and_preserves_explicit_clipboard_override() {
+    const CHILD_ROOT: &str = "LIMPID_TEST_DELIVERY_ROOT";
+    const MESSAGE: &str = "q1: yes; $(touch SHOULD_NOT_EXIST)\ncomment: café";
+    if let Some(root) = std::env::var_os(CHILD_ROOT) {
+        let request = limpid_core::transport::Handoff {
+            path: PathBuf::from(root).join("page.html"),
+            theme: limpid_core::transport::Scheme::Dark,
+            pane: Some("unrelated-pane".into()),
+            source: None,
+            source_hash: None,
+            source_backed: true,
+        };
+        let result = limpid_core::replies::deliver_or_wake(&request, MESSAGE);
+        if std::env::var_os("LIMPID_TEST_DELIVERY_ERROR").is_some() {
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("do not resend"), "{error}");
+        } else {
+            result.unwrap();
+        }
+        return;
+    }
+
+    let h = Harness::new("default-delivery");
+    let page = h.root.join("page.html");
+    fs::write(&page, "<article>Response</article>").unwrap();
+    fs::write(
+        page.with_extension("meta.json"),
+        json!({"agent":"codex", "session_id":"page-thread", "turn_spec":"0"}).to_string(),
+    )
+    .unwrap();
+    let saved = r#"{"replies":{"q1":"yes"},"comments":{}}"#;
+    fs::write(page.with_extension("replies.json"), saved).unwrap();
+    h.script("codex", "printf '%s\\n' \"$@\" > \"$LIMPID_TEST_ARGS\"");
+    h.script("wl-copy", "cat > \"$LIMPID_TEST_CLIPBOARD\"");
+    h.script("wezterm", "exit 91");
+    let run = |expect_error: bool| {
+        let environment = h.command();
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child.current_dir(&h.root);
+        for (key, value) in environment.get_envs() {
+            match value {
+                Some(value) => {
+                    child.env(key, value);
+                }
+                None => {
+                    child.env_remove(key);
+                }
+            }
+        }
+        child
+            .args([
+                "--exact",
+                "default_delivery_reaches_codex_and_preserves_explicit_clipboard_override",
+                "--nocapture",
+            ])
+            .env(CHILD_ROOT, &h.root)
+            .env("CODEX_THREAD_ID", "unrelated-active-thread")
+            .env("LIMPID_TEST_CLIPBOARD", h.root.join("clipboard"));
+        if expect_error {
+            child.env("LIMPID_TEST_DELIVERY_ERROR", "1");
+        } else {
+            child.env_remove("LIMPID_TEST_DELIVERY_ERROR");
+        }
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    run(false);
+    assert!(
+        h.root.join("args").exists(),
+        "default Codex delivery must queue feedback, rather than only copy it"
+    );
+    let message = limpid_core::replies::wake_message(&page, MESSAGE);
+    assert_eq!(
+        fs::read_to_string(h.root.join("args")).unwrap(),
+        format!("queue\n--thread\npage-thread\n--message\n{message}\n--resume\n")
+    );
+    assert!(!h.root.join("clipboard").exists());
+
+    fs::remove_file(h.root.join("args")).unwrap();
+    fs::create_dir_all(h.root.join("limpid")).unwrap();
+    fs::write(
+        h.root.join("limpid/config.toml"),
+        "[reply]\ncommand = 'wl-copy'\n",
+    )
+    .unwrap();
+    run(false);
+    assert!(
+        !h.root.join("args").exists(),
+        "explicit reply commands take precedence"
+    );
+    assert_eq!(
+        fs::read_to_string(h.root.join("clipboard")).unwrap(),
+        message
+    );
+
+    fs::write(
+        h.root.join("limpid/config.toml"),
+        "[editor]\ninit = 'clean'\n",
+    )
+    .unwrap();
+    h.script("codex", "echo 'warning: could not resume' >&2\nexit 0");
+    run(true);
+    assert_eq!(
+        fs::read_to_string(page.with_extension("replies.json")).unwrap(),
+        saved
+    );
+    assert!(!h.root.join("SHOULD_NOT_EXIST").exists());
 }
 
 #[test]
