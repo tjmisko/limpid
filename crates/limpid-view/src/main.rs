@@ -129,7 +129,7 @@ fn run_windows(args: Args, settings: Settings, fonts: SharedFonts) -> Result<(),
         .build()
         .map_err(|error| error.to_string())?;
     let proxy = event_loop.create_proxy();
-    // One nvim for the whole process, lent to one window's box at a time.
+    // Each active window gets its own editor; idle processes are reused.
     let editor_host = EditorHost::shared_nvim();
     let factory_proxy = proxy.clone();
     let factory: PageFactory = Box::new(move |request: &Handoff| {

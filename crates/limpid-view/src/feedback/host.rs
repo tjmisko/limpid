@@ -1,11 +1,8 @@
-//! The one editor process of a view process, shared by every window's
-//! [`Feedback`](super::Feedback).
+//! Embedded editor processes shared by the windows of a view process.
 //!
-//! nvim is expensive, so a view process starts at most one and lends it to
-//! one box at a time. A window claims the editor when its box opens and
-//! releases it when the box closes; a second window that asks meanwhile is
-//! told the editor is in use. The idle timer is the host's: it runs from the
-//! last release, whichever window made it.
+//! Each active box gets its own process. Released editors remain available
+//! for reuse until their individual idle deadlines, so sequential edits do
+//! not pay for another Neovim startup.
 
 use super::boxes::{EditorPort, EditorSpawner, nvim_spawner};
 use crate::editor::{BoxKind, EditorConfig, EditorError, EditorEvent, Grid};
@@ -15,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// What every window of a process holds.
+/// The editor pool held by every window of a process.
 pub type SharedEditor = Rc<RefCell<EditorHost>>;
 
 /// Names a window to the host.
@@ -23,43 +20,39 @@ pub type OwnerId = u64;
 
 #[derive(Debug)]
 pub enum BeginError {
-    /// Another window's box has the editor.
-    InUse,
-    /// The editor could not be started.
     Spawn(EditorError),
-    /// The editor started but would not open the box.
     Open(EditorError),
 }
 
-/// What [`EditorHost::poll`] found.
 pub struct Polled {
     pub events: Vec<EditorEvent>,
     pub running: bool,
 }
 
+struct Session {
+    port: Box<dyn EditorPort>,
+    owner: OwnerId,
+    /// None while a box is active; otherwise when the box was released.
+    idle_since: Option<Instant>,
+    sized: Option<(u16, u16)>,
+}
+
 pub struct EditorHost {
     spawner: EditorSpawner,
-    port: Option<Box<dyn EditorPort>>,
-    owner: Option<OwnerId>,
-    idle_since: Option<Instant>,
+    sessions: Vec<Session>,
     next_owner: OwnerId,
-    /// The size the editor's grid was last set to, whichever window set it.
-    sized: Option<(u16, u16)>,
 }
 
 impl EditorHost {
     pub fn new(spawner: EditorSpawner) -> Self {
         Self {
             spawner,
-            port: None,
-            owner: None,
-            idle_since: None,
+            sessions: Vec::new(),
             next_owner: 1,
-            sized: None,
         }
     }
 
-    /// A host that starts a real `nvim --embed` when first asked.
+    /// A pool that starts real `nvim --embed` processes on demand.
     pub fn shared_nvim() -> SharedEditor {
         Self::shared(nvim_spawner())
     }
@@ -74,18 +67,12 @@ impl EditorHost {
         id
     }
 
-    /// Whether an editor process exists (running a box or idling).
     pub fn has_editor(&self) -> bool {
-        self.port.is_some()
+        !self.sessions.is_empty()
     }
 
-    /// Whether a box of some other window has the editor.
-    pub fn in_use_by_other(&self, id: OwnerId) -> bool {
-        self.owner.is_some_and(|owner| owner != id)
-    }
-
-    /// Give `id` the editor and open `text` in it, starting the process if
-    /// there is none or it died.
+    /// Open a private box, reusing an idle process or starting another when
+    /// every existing process belongs to an active box.
     pub fn begin(
         &mut self,
         id: OwnerId,
@@ -93,108 +80,100 @@ impl EditorHost {
         text: &str,
         kind: BoxKind,
     ) -> Result<(), BeginError> {
-        if self.in_use_by_other(id) {
-            return Err(BeginError::InUse);
-        }
-        let alive = self.port.as_mut().is_some_and(|port| port.is_running());
-        if !alive {
-            self.port = None;
-            self.port = Some((self.spawner)(config).map_err(BeginError::Spawn)?);
-            self.sized = None;
-        }
-        let Some(port) = self.port.as_mut() else {
-            return Err(BeginError::Open(EditorError::Protocol(
-                "editor not running".into(),
-            )));
+        // Prefer this window's previous process, then any idle process.
+        let reusable = self
+            .sessions
+            .iter()
+            .position(|s| s.owner == id)
+            .or_else(|| self.sessions.iter().position(|s| s.idle_since.is_some()));
+        let mut session = if let Some(index) = reusable {
+            self.sessions.swap_remove(index)
+        } else {
+            Session {
+                port: (self.spawner)(config).map_err(BeginError::Spawn)?,
+                owner: id,
+                idle_since: None,
+                sized: None,
+            }
         };
-        if let Err(error) = port.open(text, kind) {
-            self.port = None;
-            return Err(BeginError::Open(error));
+        if !session.port.is_running() {
+            session.port = (self.spawner)(config).map_err(BeginError::Spawn)?;
+            session.sized = None;
         }
-        self.owner = Some(id);
-        self.idle_since = None;
+        // Idle redraws or mode changes belong to the previous box.
+        if session.idle_since.is_some() {
+            session.port.poll();
+        }
+        session.port.open(text, kind).map_err(BeginError::Open)?;
+        session.owner = id;
+        session.idle_since = None;
+        self.sessions.push(session);
         Ok(())
     }
 
-    /// `id`'s box closed: the idle timer starts.
     pub fn release(&mut self, id: OwnerId, now: Instant) {
-        if self.owner != Some(id) {
-            return;
+        if let Some(session) = self.session_mut(id)
+            && session.idle_since.is_none()
+        {
+            session.idle_since = Some(now);
         }
-        self.owner = None;
-        self.idle_since = Some(now);
     }
 
-    /// Stop the process now (it died, or its box was abandoned with it).
+    /// Discard only this window's process, including any abandoned buffer.
     pub fn discard(&mut self, id: OwnerId) {
-        if self.in_use_by_other(id) {
-            return;
-        }
-        self.port = None;
-        self.sized = None;
-        self.owner = None;
-        self.idle_since = None;
+        self.sessions.retain(|session| session.owner != id);
     }
 
-    /// Keys from the owner. Never waits for an answer. Dropped when `id`
-    /// does not own the editor.
+    fn session_mut(&mut self, id: OwnerId) -> Option<&mut Session> {
+        self.sessions.iter_mut().find(|session| session.owner == id)
+    }
+
+    /// Keys never wait for an answer and only reach this window's active box.
     pub fn input(&mut self, id: OwnerId, keys: &str) {
-        if self.owner != Some(id) {
-            return;
-        }
-        if let Some(port) = self.port.as_mut() {
-            port.input(keys);
+        if let Some(session) = self.session_mut(id)
+            && session.idle_since.is_none()
+        {
+            session.port.input(keys);
         }
     }
 
-    /// Size the editor's grid for the owner's box. The host remembers the
-    /// last size it sent, so a window whose box has the size it had last
-    /// time still resizes an editor another window left at a different one.
     pub fn resize(&mut self, id: OwnerId, cols: u16, rows: u16) {
-        if self.owner != Some(id) || self.sized == Some((cols, rows)) {
+        let Some(session) = self.session_mut(id) else {
+            return;
+        };
+        if session.idle_since.is_some() || session.sized == Some((cols, rows)) {
             return;
         }
-        self.sized = Some((cols, rows));
-        if let Some(port) = self.port.as_mut() {
-            port.resize(cols, rows);
-        }
+        session.sized = Some((cols, rows));
+        session.port.resize(cols, rows);
     }
 
-    /// What the editor reported since the last call. `None` when there is no
-    /// editor or another window's box has it (its events are not ours).
+    /// Poll only this window's session; another box's events stay queued.
     pub fn poll(&mut self, id: OwnerId) -> Option<Polled> {
-        if self.in_use_by_other(id) {
-            return None;
-        }
-        let port = self.port.as_mut()?;
-        let events = port.poll();
-        let running = port.is_running();
+        let session = self.session_mut(id)?;
+        let events = session.port.poll();
+        let running = session.port.is_running();
         Some(Polled { events, running })
     }
 
-    /// Stop the process once it has had no box for `idle`.
+    /// Expire idle processes independently, preserving all active boxes.
     pub fn stop_if_idle(&mut self, now: Instant, idle: Duration) {
-        let Some(deadline) = self.idle_deadline(idle) else {
-            return;
-        };
-        if now < deadline {
-            return;
-        }
-        self.port = None;
-        self.idle_since = None;
+        self.sessions
+            .retain(|session| session.idle_since.is_none_or(|since| now < since + idle));
     }
 
-    /// When the idle timer will stop the process; `None` while a box has it
-    /// or when there is no process.
+    /// The earliest idle deadline, even if another box is still active.
     pub fn idle_deadline(&self, idle: Duration) -> Option<Instant> {
-        if self.owner.is_some() || self.port.is_none() {
-            return None;
-        }
-        self.idle_since.map(|since| since + idle)
+        self.sessions
+            .iter()
+            .filter_map(|session| session.idle_since.map(|since| since + idle))
+            .min()
     }
 
-    /// The editor's grid, for painting the owner's box.
-    pub fn grid(&self) -> Option<&Grid> {
-        self.port.as_ref().map(|port| port.grid())
+    pub fn grid(&self, id: OwnerId) -> Option<&Grid> {
+        self.sessions
+            .iter()
+            .find(|session| session.owner == id)
+            .map(|session| session.port.grid())
     }
 }
