@@ -42,8 +42,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// How long a window with nothing to poll sleeps while another window's box
-/// has the editor, or when no idle deadline is running.
+/// How long a window with nothing to poll sleeps when no idle deadline runs.
 const BYSTANDER_PERIOD: Duration = Duration::from_secs(1);
 
 /// Settings of the feedback layer that are not part of the theme.
@@ -192,7 +191,7 @@ impl Feedback {
         self.with_host(EditorHost::shared(spawner))
     }
 
-    /// Share `host` (one per view process) with the other windows.
+    /// Share the editor pool (one per view process) with the other windows.
     pub fn with_host(mut self, host: SharedEditor) -> Self {
         self.owner = host.borrow_mut().register();
         self.host = host;
@@ -354,9 +353,6 @@ impl Feedback {
             return TICK_INTERVAL;
         }
         let host = self.host.borrow();
-        if host.in_use_by_other(self.owner) {
-            return BYSTANDER_PERIOD;
-        }
         let Some(deadline) = host.idle_deadline(self.options.idle) else {
             return BYSTANDER_PERIOD;
         };
@@ -389,9 +385,6 @@ impl Feedback {
             .begin(self.owner, &config, text, kind);
         match begun {
             Ok(()) => {}
-            Err(BeginError::InUse) => {
-                return ActionResult::Nothing("editor in use in another window".into());
-            }
             Err(BeginError::Spawn(error)) => {
                 return ActionResult::Failed(format!(
                     "{error} (set [editor] command to your nvim)"
@@ -453,6 +446,9 @@ impl Feedback {
         self.host
             .borrow_mut()
             .input(self.owner, "<C-\\><C-n>:q!<CR>");
+        // Drop an abandoned buffer with its process so late RPC events can
+        // never reach another box that reuses an idle editor.
+        self.host.borrow_mut().discard(self.owner);
         self.finish_box(leaves);
         self.flashes.push("editor closed, buffer discarded".into());
     }
@@ -541,7 +537,7 @@ impl Feedback {
         let Some(open) = self.open.as_mut() else {
             return;
         };
-        let content = self.host.borrow().grid().map(boxes::content_rows);
+        let content = self.host.borrow().grid(self.owner).map(boxes::content_rows);
         let Some(content) = content else {
             return;
         };
@@ -595,9 +591,7 @@ impl Feedback {
     /// Returns whether the page needs a repaint.
     pub fn tick(&mut self, now: Instant) -> bool {
         let handled = self.drain_editor();
-        if self.open.is_none() {
-            self.host.borrow_mut().stop_if_idle(now, self.options.idle);
-        }
+        self.host.borrow_mut().stop_if_idle(now, self.options.idle);
         handled || self.stale
     }
 
@@ -639,7 +633,7 @@ impl Feedback {
         self.grid_size = size;
         self.host.borrow_mut().resize(self.owner, size.0, size.1);
         let host = self.host.borrow();
-        let Some(grid) = host.grid() else {
+        let Some(grid) = host.grid(self.owner) else {
             return;
         };
         boxes::paint(canvas, fonts, theme, scale, outer, grid, open);

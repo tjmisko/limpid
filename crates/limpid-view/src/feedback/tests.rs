@@ -521,6 +521,10 @@ fn should_discard_the_buffer_and_close_when_force_closing() {
         "{:?}",
         h.script.borrow().inputs
     );
+    assert!(
+        h.fb.host.borrow().grid(h.fb.owner).is_none(),
+        "an abandoned editor cannot be reused with late events"
+    );
     assert_eq!(h.fb.take_flashes(), ["editor closed, buffer discarded"]);
     h.fb.force_close();
     assert!(
@@ -1005,7 +1009,7 @@ fn should_flash_a_problem_when_the_sidecar_cannot_be_read() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-// ---- one editor per process, idle ticks, key path, IME ----
+// ---- concurrent editors, idle ticks, key path, IME ----
 
 /// A second window's feedback sharing `h`'s editor host.
 fn second_window(h: &Harness) -> Feedback {
@@ -1038,20 +1042,196 @@ fn should_start_one_editor_when_two_windows_open_boxes_in_turn() {
     assert_eq!(h.script.borrow().opened.len(), 2);
 }
 
-#[test]
-fn should_refuse_a_second_box_when_another_window_has_the_editor() {
+type SpawnedScripts = Rc<RefCell<Vec<Rc<RefCell<Script>>>>>;
+
+/// Give each spawned process an independent script, just like real Neovim.
+fn pooled_harness() -> (Harness, SpawnedScripts) {
     let mut h = harness(QUESTIONS, false);
+    let scripts = Rc::new(RefCell::new(Vec::new()));
+    let spawned = scripts.clone();
+    let first = h.script.clone();
+    let spawner: EditorSpawner = Box::new(move |_| {
+        let script = if spawned.borrow().is_empty() {
+            first.clone()
+        } else {
+            Rc::new(RefCell::new(Script {
+                running: true,
+                ..Script::default()
+            }))
+        };
+        script.borrow_mut().spawns += 1;
+        spawned.borrow_mut().push(script.clone());
+        Ok(Box::new(Fake {
+            script,
+            grid: Grid::new(40, 6),
+        }) as Box<dyn EditorPort>)
+    });
+    h.fb = Feedback::new(h.fb.handoff().clone(), "Plan".into(), &Settings::default())
+        .with_spawner(spawner);
+    h.fb.index_document(&h.doc.blocks, &h.doc.source);
+    h.fb.overlay(&h.doc.blocks);
+    (h, scripts)
+}
+
+#[test]
+fn should_edit_save_and_resize_two_windows_independently() {
+    let (mut h, scripts) = pooled_harness();
     let mut other = second_window(&h);
     let src = h.field_src("q2");
     h.fb.act(FeedbackAction::OpenReply, Some(&src));
-    let result = other.act(FeedbackAction::OpenReply, Some(&src));
     assert_eq!(
-        result,
-        ActionResult::Nothing("editor in use in another window".into())
+        other.act(FeedbackAction::OpenReply, Some(&src)),
+        ActionResult::Done(String::new())
     );
+    assert!(h.fb.box_open() && other.box_open());
+    assert_eq!(scripts.borrow().len(), 2);
+    let second = scripts.borrow()[1].clone();
+    h.fb.input("first");
+    other.input("second");
+    assert_eq!(h.script.borrow().inputs, ["first"]);
+    assert_eq!(second.borrow().inputs, ["second"]);
+    h.fb.host.borrow_mut().resize(h.fb.owner, 100, 8);
+    other.host.borrow_mut().resize(other.owner, 60, 12);
+    assert_eq!(h.script.borrow().resizes, [(100, 8)]);
+    assert_eq!(second.borrow().resizes, [(60, 12)]);
+    h.script
+        .borrow_mut()
+        .events
+        .push_back(EditorEvent::Save("mine".into()));
+    second
+        .borrow_mut()
+        .events
+        .push_back(EditorEvent::Save("theirs".into()));
+    other.tick(Instant::now());
+    assert_eq!(
+        h.script.borrow().events.len(),
+        1,
+        "another window cannot consume our events"
+    );
+    assert_eq!(other.pending().reply("q2"), Some("theirs"));
+    assert_eq!(h.fb.pending().reply("q2"), None);
+    h.fb.tick(Instant::now());
+    assert_eq!(h.fb.pending().reply("q2"), Some("mine"));
+    h.fb.force_close();
+    other.input("still editing");
+    assert!(other.box_open());
+    assert_eq!(second.borrow().inputs, ["second", "still editing"]);
+    assert_eq!(other.pending().reply("q2"), Some("theirs"));
+}
+
+#[test]
+fn should_ignore_abandoned_editors_late_events_when_reopening_immediately() {
+    let (mut h, scripts) = pooled_harness();
+    let src = h.field_src("q2");
+    h.fb.act(FeedbackAction::OpenReply, Some(&src));
+    h.fb.force_close();
+    h.script.borrow_mut().events.extend([
+        EditorEvent::Save("abandoned".into()),
+        EditorEvent::Quit { discard: true },
+    ]);
+    h.fb.act(FeedbackAction::OpenReply, Some(&src));
+    h.fb.tick(Instant::now());
+    assert_eq!(
+        scripts.borrow().len(),
+        2,
+        "forced close must retire its process"
+    );
+    assert!(h.fb.box_open(), "a delayed quit cannot close the new box");
+    assert_eq!(h.fb.pending().reply("q2"), None);
+}
+
+#[test]
+fn should_edit_and_save_in_two_real_neovims_at_the_same_time() {
+    if std::process::Command::new("nvim")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping: nvim is not installed");
+        return;
+    }
+    let mut h = harness(QUESTIONS, false);
+    let settings = Settings::parse("[editor]\ninit = 'clean'\n").unwrap();
+    h.fb = Feedback::new(h.fb.handoff().clone(), "Plan".into(), &settings);
+    h.fb.index_document(&h.doc.blocks, &h.doc.source);
+    h.fb.overlay(&h.doc.blocks);
+    let mut other = second_window(&h);
+    other.settings = settings;
+    let src = h.field_src("q2");
+    assert_eq!(
+        h.fb.act(FeedbackAction::OpenReply, Some(&src)),
+        ActionResult::Done(String::new())
+    );
+    assert_eq!(
+        other.act(FeedbackAction::OpenReply, Some(&src)),
+        ActionResult::Done(String::new())
+    );
+    // Input is queued even while both processes are still starting.
+    h.fb.input("first window<Esc>:wq<CR>");
+    other.input("second window");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while h.fb.box_open() && Instant::now() < deadline {
+        h.fb.tick(Instant::now());
+        other.tick(Instant::now());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!h.fb.box_open());
+    assert_eq!(h.fb.pending().reply("q2"), Some("first window"));
+    assert!(
+        other.box_open(),
+        "saving one box leaves the other editor open"
+    );
+    assert_eq!(other.pending().reply("q2"), None);
+    // Reopen the first editor, then abandon it while the second stays live.
+    h.fb.act(FeedbackAction::OpenReply, Some(&src));
+    h.fb.input("A abandoned");
+    h.fb.force_close();
+    other.input("<Esc>A remains<Esc>:wq<CR>");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while other.box_open() && Instant::now() < deadline {
+        other.tick(Instant::now());
+        std::thread::sleep(Duration::from_millis(10));
+    }
     assert!(!other.box_open());
-    assert!(h.fb.box_open(), "the first box is undisturbed");
-    assert_eq!(h.script.borrow().opened.len(), 1);
+    assert_eq!(h.fb.pending().reply("q2"), Some("first window"));
+    assert_eq!(other.pending().reply("q2"), Some("second window remains"));
+}
+
+#[test]
+fn should_paint_only_the_owning_windows_grid() {
+    let (mut h, scripts) = pooled_harness();
+    let mut other = second_window(&h);
+    let src = h.field_src("q2");
+    h.fb.act(FeedbackAction::OpenReply, Some(&src));
+    other.act(FeedbackAction::OpenReply, Some(&src));
+    h.script.borrow_mut().grid = Some(Grid::new(100, 8));
+    scripts.borrow()[1].borrow_mut().grid = Some(Grid::new(60, 12));
+    h.fb.tick(Instant::now());
+    other.tick(Instant::now());
+    let host = h.fb.host.borrow();
+    assert_eq!(host.grid(h.fb.owner).unwrap().cols, 100);
+    assert_eq!(host.grid(other.owner).unwrap().cols, 60);
+}
+
+#[test]
+fn should_expire_an_idle_editor_while_another_window_keeps_editing() {
+    let (mut h, scripts) = pooled_harness();
+    let mut other = second_window(&h);
+    let src = h.field_src("q2");
+    h.fb.act(FeedbackAction::OpenReply, Some(&src));
+    other.act(FeedbackAction::OpenReply, Some(&src));
+    h.say(EditorEvent::Quit { discard: false });
+    let now = Instant::now();
+    let deadline = h.fb.host.borrow().idle_deadline(Duration::from_secs(300));
+    assert!(
+        deadline.is_some(),
+        "an active editor must not hide another editor's deadline"
+    );
+    other.tick(now + Duration::from_secs(301));
+    assert!(h.fb.host.borrow().grid(h.fb.owner).is_none());
+    assert!(other.box_open());
+    other.input("still here");
+    assert_eq!(scripts.borrow()[1].borrow().inputs, ["still here"]);
 }
 
 #[test]
@@ -1230,20 +1410,26 @@ fn should_escape_only_less_than_when_converting_ime_text() {
 }
 
 #[test]
-fn should_let_another_window_open_when_the_owner_is_dropped_with_its_box_open() {
-    let mut h = harness(QUESTIONS, false);
+fn should_keep_another_windows_editor_when_an_active_window_is_dropped() {
+    let (mut h, scripts) = pooled_harness();
     let mut other = second_window(&h);
     let src = h.field_src("q2");
     h.fb.act(FeedbackAction::OpenReply, Some(&src));
-    assert_eq!(
-        other.act(FeedbackAction::OpenReply, Some(&src)),
-        ActionResult::Nothing("editor in use in another window".into())
-    );
+    other.act(FeedbackAction::OpenReply, Some(&src));
+    let first_owner = h.fb.owner;
     let host = h.fb.host.clone();
     drop(h);
-    assert!(!host.borrow().in_use_by_other(other.owner));
-    let result = other.act(FeedbackAction::OpenReply, Some(&src));
-    assert_eq!(result, ActionResult::Done(String::new()));
+    assert!(host.borrow().grid(first_owner).is_none());
+    assert!(host.borrow().grid(other.owner).is_some());
+    other.input("survived");
+    let second = scripts.borrow()[1].clone();
+    assert_eq!(second.borrow().inputs, ["survived"]);
+    second
+        .borrow_mut()
+        .events
+        .push_back(EditorEvent::Save("saved after close".into()));
+    other.tick(Instant::now());
+    assert_eq!(other.pending().reply("q2"), Some("saved after close"));
 }
 
 #[test]
@@ -1257,11 +1443,15 @@ fn should_resize_the_editor_when_ownership_passes_to_a_window_with_its_old_size(
     };
     h.fb.act(FeedbackAction::OpenReply, Some(&src));
     size_for(&h.fb, 100);
-    h.fb.force_close();
+    h.say(EditorEvent::Quit { discard: false });
     let mut other = other;
     other.act(FeedbackAction::OpenReply, Some(&src));
     size_for(&other, 60);
-    other.force_close();
+    h.script
+        .borrow_mut()
+        .events
+        .push_back(EditorEvent::Quit { discard: false });
+    other.tick(Instant::now());
     h.fb.act(FeedbackAction::OpenReply, Some(&src));
     size_for(&h.fb, 100);
     drop(host);
