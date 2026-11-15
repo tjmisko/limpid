@@ -3,7 +3,7 @@
 
 use super::boxes::EditorPort;
 use super::*;
-use crate::editor::{Cell, EditorError, Grid};
+use crate::editor::{EditorError, Grid};
 use limpid_core::{
     doc::{Doc, Mode, parse},
     transport::Scheme,
@@ -403,16 +403,11 @@ fn should_show_the_box_in_the_overlay_while_it_is_open() {
 }
 
 #[test]
-fn should_follow_the_content_when_the_editor_redraws() {
+fn should_follow_the_whole_buffer_height_when_the_editor_reports_it() {
     let mut h = harness(QUESTIONS, false);
     h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
     h.fb.take_stale();
-    let mut grid = Grid::new(40, 10);
-    for (row, ch) in [(0usize, 'a'), (1, 'b'), (2, 'c'), (3, 'd'), (4, 'e')] {
-        grid.cells[row * 40] = Cell { ch, hl: 0 };
-    }
-    h.script.borrow_mut().grid = Some(grid);
-    h.say(EditorEvent::Redraw);
+    h.say(EditorEvent::ContentRows(5));
     assert_eq!(h.fb.open_box().unwrap().plan.rows, 6);
     assert!(
         h.fb.take_stale(),
@@ -420,18 +415,21 @@ fn should_follow_the_content_when_the_editor_redraws() {
     );
     h.say(EditorEvent::Redraw);
     assert!(!h.fb.take_stale(), "no change, no re-layout");
+    h.say(EditorEvent::ContentRows(5));
+    assert!(!h.fb.take_stale(), "identical metrics do not re-layout");
+    h.say(EditorEvent::ContentRows(2));
+    assert_eq!(
+        h.fb.open_box().unwrap().plan.rows,
+        3,
+        "deleting shrinks the box"
+    );
 }
 
 #[test]
 fn should_give_the_footer_its_own_row_when_a_message_or_command_line_shows() {
     let mut h = harness(QUESTIONS, false);
     h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
-    let mut grid = Grid::new(40, 10);
-    for (row, ch) in [(0usize, 'a'), (1, 'b'), (2, 'c'), (3, 'd'), (4, 'e')] {
-        grid.cells[row * 40] = Cell { ch, hl: 0 };
-    }
-    h.script.borrow_mut().grid = Some(grid);
-    h.say(EditorEvent::Redraw);
+    h.say(EditorEvent::ContentRows(5));
     let plain = h.fb.open_box().unwrap().plan.rows;
     h.say(EditorEvent::Message(
         "unsaved changes: :wq to save, :q! to discard".into(),
@@ -444,6 +442,30 @@ fn should_give_the_footer_its_own_row_when_a_message_or_command_line_shows() {
     assert_eq!(h.fb.open_box().unwrap().plan.rows, plain + 1);
     h.say(EditorEvent::CmdlineHide);
     assert_eq!(h.fb.open_box().unwrap().plan.rows, plain);
+}
+
+#[test]
+fn should_cap_growth_at_the_viewport_and_refit_after_the_viewport_changes() {
+    let mut h = harness(QUESTIONS, false);
+    h.fb.act(FeedbackAction::OpenReply, Some(&h.field_src("q2")));
+    h.fb.viewport_rows = Some(20);
+    h.say(EditorEvent::ContentRows(200));
+    assert_eq!(h.fb.open_box().unwrap().plan.rows, 20);
+    h.fb.viewport_rows = Some(8);
+    h.fb.fit_box_to_content();
+    assert_eq!(h.fb.open_box().unwrap().plan.rows, 8);
+    h.fb.viewport_rows = Some(30);
+    h.fb.fit_box_to_content();
+    assert_eq!(h.fb.open_box().unwrap().plan.rows, 30);
+    h.say(EditorEvent::ContentRows(3));
+    assert_eq!(h.fb.open_box().unwrap().plan.rows, 4);
+    h.fb.viewport_rows = Some(1);
+    h.fb.fit_box_to_content();
+    assert_eq!(
+        h.fb.open_box().unwrap().plan.rows,
+        1,
+        "tiny viewports override the usual minimum"
+    );
 }
 
 #[test]

@@ -369,7 +369,8 @@ impl Feedback {
     fn limits(&self) -> BoxLimits {
         let mut limits = self.options.limits;
         if let Some(rows) = self.viewport_rows {
-            limits.max_rows = rows.max(limits.min_rows);
+            limits.max_rows = rows.max(1);
+            limits.min_rows = limits.min_rows.min(limits.max_rows);
         }
         limits
     }
@@ -399,8 +400,11 @@ impl Feedback {
             }
             Err(BeginError::Open(error)) => return ActionResult::Failed(error.to_string()),
         }
-        let rows = self.limits().rows_for(text.lines().count() as u16);
-        self.open = Some(OpenBox::new(BoxPlan { target, rows }));
+        let content_rows = text.split('\n').count().min(usize::from(u16::MAX)) as u16;
+        let rows = self.limits().rows_for(content_rows);
+        let mut open = OpenBox::new(BoxPlan { target, rows });
+        open.content_rows = content_rows;
+        self.open = Some(open);
         self.stale = true;
         self.focus = Some(Focus::Box);
         ActionResult::Done(String::new())
@@ -418,6 +422,7 @@ impl Feedback {
         // A message stays until the next key, as in nvim.
         if open.message.take().is_some() {
             self.stale = true;
+            self.fit_box_to_content();
         }
         self.host.borrow_mut().input(self.owner, keys);
     }
@@ -499,7 +504,13 @@ impl Feedback {
 
     fn handle_event(&mut self, event: EditorEvent) {
         match event {
-            EditorEvent::Redraw => self.fit_box_to_content(),
+            EditorEvent::Redraw => {}
+            EditorEvent::ContentRows(rows) => {
+                if let Some(open) = self.open.as_mut() {
+                    open.content_rows = rows;
+                }
+                self.fit_box_to_content();
+            }
             EditorEvent::Mode(mode) => {
                 if let Some(open) = self.open.as_mut() {
                     open.mode = mode;
@@ -541,13 +552,9 @@ impl Feedback {
         let Some(open) = self.open.as_mut() else {
             return;
         };
-        let content = self.host.borrow().grid().map(boxes::content_rows);
-        let Some(content) = content else {
-            return;
-        };
         // The footer takes a row of its own while it shows.
         let footer = u16::from(open.footer().is_some());
-        let rows = limits.rows_for(content.saturating_add(footer));
+        let rows = limits.rows_for(open.content_rows.saturating_add(footer));
         if open.plan.rows != rows {
             open.plan.rows = rows;
             self.stale = true;

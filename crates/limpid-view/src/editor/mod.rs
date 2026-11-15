@@ -120,6 +120,8 @@ const UNSAVED_CHANGES: &str = "unsaved changes: :wq to save, :q! to discard";
 pub enum EditorEvent {
     /// The grid changed and is consistent; repaint.
     Redraw,
+    /// Display rows in the whole buffer, including wrapped and blank lines.
+    ContentRows(u16),
     Mode(String),
     /// `:w` ran: the whole buffer text.
     Save(String),
@@ -365,6 +367,13 @@ impl Editor {
             return;
         };
         match (kind, params.get(1)) {
+            ("content_rows", Some(rows)) => {
+                if let Some(rows) = rows.as_u64() {
+                    events.push(EditorEvent::ContentRows(
+                        rows.clamp(1, u16::MAX as u64) as u16
+                    ));
+                }
+            }
             ("save", Some(Value::String(text))) => {
                 events.push(EditorEvent::Save(
                     text.as_str().unwrap_or_default().to_string(),
@@ -524,6 +533,44 @@ mod tests {
         editor.input("typed<Esc>:w<CR>");
         collect_until(&mut editor, |_, seen| {
             seen.contains(&EditorEvent::Save("typed".into()))
+        });
+    }
+
+    #[test]
+    fn should_report_wrapped_buffer_height_beyond_the_grid_and_recompute_on_resize() {
+        let Some(mut editor) = started() else { return };
+        editor.open(&"a".repeat(400), BoxKind::Comment).unwrap();
+        collect_until(&mut editor, |_, seen| {
+            seen.contains(&EditorEvent::ContentRows(10))
+        });
+        editor.resize(20, 8);
+        collect_until(&mut editor, |_, seen| {
+            seen.contains(&EditorEvent::ContentRows(20))
+        });
+        editor.resize(80, 8);
+        collect_until(&mut editor, |_, seen| {
+            seen.contains(&EditorEvent::ContentRows(5))
+        });
+        editor.input(&format!("A{}", "a".repeat(400)));
+        collect_until(&mut editor, |_, seen| {
+            seen.contains(&EditorEvent::ContentRows(10))
+        });
+    }
+
+    #[test]
+    fn should_report_inserted_blank_lines_and_shrink_after_deletion() {
+        let Some(mut editor) = started() else { return };
+        editor.open("", BoxKind::Reply).unwrap();
+        collect_until(&mut editor, |_, seen| {
+            seen.contains(&EditorEvent::ContentRows(1))
+        });
+        editor.input("one<CR><CR>four<CR>");
+        collect_until(&mut editor, |_, seen| {
+            seen.contains(&EditorEvent::ContentRows(4))
+        });
+        editor.input("<Esc>ggdG");
+        collect_until(&mut editor, |_, seen| {
+            seen.contains(&EditorEvent::ContentRows(1))
         });
     }
 
