@@ -22,8 +22,8 @@ Remote machine (`nlessfun`):
 - `limpid` and `limpid-core` on the login shell's `PATH` (headless build is
   fine; no viewer is needed there), and the Claude Code `/read` integration
   installed.
-- `sshd` allows stream-local forwarding: `AllowStreamLocalForwarding` is not
-  `no` or `remote` (the default `yes` works).
+- `sshd` allows stream-local forwarding: `AllowStreamLocalForwarding` is
+  `yes`, `all` or `remote`, not `no` or `local` (the default `yes` works).
 - `/tmp` is writable; the login's socket is `/tmp/limpid-<route>.sock`.
 
 ## Steps
@@ -100,3 +100,40 @@ acknowledges each prompt to its listener. Restart Claude after updating it.
 5. `:wq` with no feedback just closes the window and contacts nobody.
 6. `Possibly sent, not confirmed` means the agent may have started a turn
    without confirming. Look at the session before sending again.
+
+## Stage 6: failures, concurrency and installation
+
+Manual check against `nlessfun`, run by hand; nothing in the test suite or
+`scripts/measure-ssh-bridge` connects to it. The automated equivalents (two
+clients, several pages, shell exit, killed ssh) run against a loopback sshd in
+`crates/limpid/tests/ssh_bridge.rs` and `crates/limpid-core/tests/bridge_resilience.rs`.
+
+1. Install: `./install.sh` locally. On `nlessfun`, install only `limpid` and
+   `limpid-core` (`cargo install --path crates/limpid-core --locked`, same for
+   `crates/limpid`) and the Claude plugin; confirm `limpid --help` and
+   `limpid-core --help` run in a login shell. A build of a different
+   protocol version there makes `/read` fail with a message about incompatible
+   versions.
+2. Two clients: from two desktops (or two local accounts) run `limpid ssh
+   nlessfun`, start `claude` in each, `/read` in each. Two independent windows
+   open, one per desktop. `:wq` in one starts a turn only in that client's
+   session. Open the same remote page from both with `limpid-core`'s page path;
+   save from one, then the other: the second says `stale revision`.
+3. Several pages: run `/read` three times in one login without closing the
+   windows. Each window saves and submits to its own page.
+4. Shell exit: with a window open, `exit` the remote shell. The local `ssh` ends promptly; `pgrep -af 'limpid --bridge-relay'`
+   on the remote prints nothing.
+5. Network loss: with a window open, edit and `:w` (remote saved), edit again,
+   then drop the connection (kill the local `ssh` process, or disable the
+   network briefly). `:w` now says the login is gone. On the desktop,
+   `limpid recover` lists the page; `limpid recover --text NAME` prints the
+   feedback. Paste it into a new Claude session if wanted. Then
+   `rm ~/.cache/limpid/remote/NAME.*`.
+6. Restarts: close the Limpid window and reopen the same page from the cache
+   (`limpid --viewer view ~/.cache/limpid/remote/NAME.html`), then `:w`: it still
+   pushes while the login lives. Quit `limpid ssh` and start a new one: the old
+   import cannot push and is listed by `limpid recover`.
+7. Measurements: on the desktop run `LIMPID_MEASURE_COLD=1
+   scripts/measure-ssh-bridge` for the cold and warm viewer start (real
+   windows), and note the time `/read` takes against `nlessfun` over the real
+   link. Add all three, with date and link, to `SSH-BRIDGE.md`.

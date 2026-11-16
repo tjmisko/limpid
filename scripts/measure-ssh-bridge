@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Measure the SSH bridge. Never connects to a real host.
+#
+#   scripts/measure-ssh-bridge          warm opening and feedback acknowledgment
+#                                       over an isolated loopback sshd
+#   LIMPID_MEASURE_COLD=1 scripts/measure-ssh-bridge
+#                                       also time a cold and a warm native viewer
+#                                       start (opens two real windows; needs a
+#                                       display and an installed limpid-view)
+#
+# Output lines start with MEASURE. Record numbers in SSH-BRIDGE.md with the
+# date and machine; do not quote a number that was not measured here.
+set -euo pipefail
+
+root="$(CDPATH="" cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+echo "== warm opening and acknowledgments (isolated sshd, stand-in viewer and agent)"
+cargo test -p limpid --test ssh_bridge --release -- --ignored --nocapture 2>&1 | grep -E '^MEASURE|test result|panicked' || true
+
+if [ "${LIMPID_MEASURE_COLD:-0}" != 1 ]; then
+  echo "(set LIMPID_MEASURE_COLD=1 to time a cold viewer start)"
+  exit 0
+fi
+
+if [ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
+  echo "no display: cannot time the native viewer" >&2
+  exit 1
+fi
+if pgrep -x limpid-view >/dev/null; then
+  echo "limpid-view is already running; close it so the first start is cold" >&2
+  exit 1
+fi
+command -v limpid >/dev/null || { echo "limpid is not installed (./install.sh)" >&2; exit 1; }
+
+fixture="$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/limpid-measure.XXXXXX")"
+trap 'rm -rf "$fixture"' EXIT
+printf '# Measure\n\nA short page.\n' >"$fixture/cold.md"
+printf '# Measure\n\nAnother short page.\n' >"$fixture/warm.md"
+
+now_ms() { date +%s%3N; }
+
+echo "== cold viewer start (no viewer running)"
+start=$(now_ms)
+limpid --viewer view "$fixture/cold.md"
+echo "MEASURE cold_viewer_start: $(( $(now_ms) - start ))ms"
+
+echo "== warm open (viewer running)"
+start=$(now_ms)
+limpid --viewer view "$fixture/warm.md"
+echo "MEASURE warm_viewer_open: $(( $(now_ms) - start ))ms"
+
+echo "Close the two Limpid windows and the viewer when done."

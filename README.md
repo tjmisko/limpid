@@ -94,6 +94,9 @@ the Claude Code plugin adds `/read`; both render the current turn with
 `limpid-core` and then open it with `limpid`, so the window takes focus like
 any other.
 
+To read a response from a Claude Code session on another machine in a local
+window, log in with `limpid ssh HOST`; see [SSH-BRIDGE.md](SSH-BRIDGE.md).
+
 For a Codex session, run `limpid codex` or `limpid codex 0..2`. The core reader
 also has a [Codex integration](integrations/codex/README.md): `$read` in the
 CLI, or the read skill in the app, with `:wq` feedback delivered to the

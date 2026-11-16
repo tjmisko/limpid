@@ -214,7 +214,8 @@ pub fn save_socket_for(directory: &Path, route: &str) -> Result<PathBuf, String>
     Ok(path)
 }
 
-fn cache_dir() -> Result<PathBuf, String> {
+/// Where this machine keeps the pages it imported from remote logins.
+pub fn cache_dir() -> Result<PathBuf, String> {
     if let Some(base) = std::env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(base).join("limpid/remote"));
     }

@@ -235,6 +235,13 @@ fn connect_message(socket: &Path, error: &BridgeError) -> String {
              AllowStreamLocalForwarding?)",
             socket.display()
         ),
+        BridgeError::Remote {
+            code: ErrorCode::IncompatibleVersion,
+            message,
+        } => format!(
+            "this host and the machine that ran `limpid ssh` run incompatible limpid versions \
+             ({message}); install the same limpid release on both"
+        ),
         BridgeError::Remote { code, message } => {
             format!("the local limpid refused the connection ({code:?}): {message}")
         }
@@ -446,5 +453,23 @@ mod tests {
         assert!(error.contains("forwarding"), "{error}");
         assert!(String::from_utf8(status).unwrap().starts_with("error: "));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_name_both_sides_and_the_remedy_when_the_versions_are_incompatible() {
+        let error = BridgeError::Remote {
+            code: ErrorCode::IncompatibleVersion,
+            message: "peer speaks version 2; this side speaks 1".into(),
+        };
+        let message = connect_message(Path::new("/tmp/x.sock"), &error);
+        assert!(
+            message.contains("incompatible limpid versions"),
+            "{message}"
+        );
+        assert!(
+            message.contains("speaks version 2") && message.contains("speaks 1"),
+            "{message}"
+        );
+        assert!(message.contains("same limpid release"), "{message}");
     }
 }

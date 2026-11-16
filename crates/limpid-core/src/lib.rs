@@ -2,6 +2,7 @@ pub mod agent_page;
 pub mod bridge;
 pub mod bridge_import;
 pub mod bridge_push;
+pub mod bridge_recover;
 pub mod bridge_relay;
 pub mod bridge_save;
 pub mod bridge_ssh;

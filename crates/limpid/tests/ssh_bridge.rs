@@ -787,3 +787,496 @@ fn should_save_feedback_to_the_remote_page_when_the_local_copy_is_pushed_over_ss
     assert_nothing_left_behind(&dir, &outcome.route.unwrap());
     fs::remove_dir_all(dir).unwrap();
 }
+
+// ---- stage 6: concurrency, failures, recovery and measurement --------------
+
+use limpid_core::{
+    bridge_push::{PushReply, PushRequest, PushState, request_push},
+    replies::{AgentReplies, sidecar_path},
+};
+
+/// One desktop: its own runtime and cache directories, viewer and launcher.
+struct Client {
+    dir: PathBuf,
+    viewer: FakeViewer,
+    launcher: PathBuf,
+}
+
+impl Client {
+    fn new(name: &str) -> Self {
+        let dir = scratch(name);
+        let viewer = FakeViewer::start(&dir);
+        let launcher = isolated_binary(&dir);
+        Self {
+            dir,
+            viewer,
+            launcher,
+        }
+    }
+
+    /// A login on its own thread: `script` runs in the remote shell.
+    fn login(&self, sshd: &Sshd, script: String) -> std::thread::JoinHandle<Outcome> {
+        let (dir, launcher, args) = (self.dir.clone(), self.launcher.clone(), sshd.client_args());
+        std::thread::spawn(move || login(&dir, &launcher, &args, &script))
+    }
+
+    fn wait_for_handoffs(&self, count: usize) -> Vec<Handoff> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let handoffs = self.viewer.handoffs();
+            if handoffs.len() >= count {
+                return handoffs;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "only {} of {count} pages opened locally",
+                handoffs.len()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// The cache directory `limpid recover` reads on this client.
+    fn cache(&self) -> PathBuf {
+        self.dir.join("limpid/remote")
+    }
+
+    fn recover(&self, args: &[&str]) -> std::process::Output {
+        spawn_retry(
+            Command::new(&self.launcher)
+                .arg("recover")
+                .args(args)
+                .env("XDG_CACHE_HOME", &self.dir)
+                .env("PATH", "/usr/bin:/bin")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .wait_with_output()
+        .unwrap()
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn origin_of(handoff: &Handoff) -> serde_json::Value {
+    let meta: serde_json::Value =
+        serde_json::from_slice(&fs::read(handoff.path.with_extension("meta.json")).unwrap())
+            .unwrap();
+    meta["remote"].clone()
+}
+
+fn feedback(pairs: &[(&str, &str)]) -> AgentReplies {
+    let mut replies = AgentReplies::default();
+    for (field, text) in pairs {
+        replies.replies.insert((*field).into(), (*text).into());
+    }
+    replies
+}
+
+/// What the viewer's `:w` (or `:wq`) does: save the local copy, then ask the
+/// login's launcher to push it.
+fn viewer_saves(handoff: &Handoff, replies: &AgentReplies, submit: bool) -> (PushReply, Duration) {
+    replies
+        .save(&sidecar_path(&handoff.path.with_extension("html")))
+        .unwrap();
+    let origin = origin_of(handoff);
+    let request = PushRequest {
+        instance: origin["instance"].as_str().unwrap().into(),
+        page_id: origin["page_id"].as_str().unwrap().into(),
+        submit,
+    };
+    let started = Instant::now();
+    let reply = request_push(
+        Path::new(origin["save_sock"].as_str().unwrap()),
+        &request,
+        Duration::from_secs(15),
+    );
+    (reply, started.elapsed())
+}
+
+fn open_script(pages: &[&Path], flag: &Path) -> String {
+    let mut script = String::new();
+    for page in pages {
+        script.push_str(&format!(
+            "{LIMPID} --source-backed {}\necho OPEN_STATUS=$?\n",
+            page.display()
+        ));
+    }
+    script.push_str(&format!(
+        "while [ ! -f {} ]; do sleep 0.1; done\nexit\n",
+        flag.display()
+    ));
+    script
+}
+
+#[test]
+fn should_keep_two_clients_apart_and_refuse_the_stale_one_when_both_open_the_same_remote_page() {
+    let Some(sshd) = Sshd::start("clients", "") else {
+        return;
+    };
+    let (one, two) = (Client::new("client-one"), Client::new("client-two"));
+    let html = remote_page(
+        &one.dir,
+        "shared",
+        "# Shared\n\n## Questions\n\n1. Which?\n",
+        "sess-shared",
+    );
+    let (flag_one, flag_two) = (one.dir.join("done"), two.dir.join("done"));
+    let first = one.login(&sshd, open_script(&[&html], &flag_one));
+    let second = two.login(&sshd, open_script(&[&html], &flag_two));
+    let (handoff_one, handoff_two) = (
+        one.wait_for_handoffs(1).remove(0),
+        two.wait_for_handoffs(1).remove(0),
+    );
+    assert_ne!(
+        origin_of(&handoff_one)["route"],
+        origin_of(&handoff_two)["route"],
+        "each client has its own login"
+    );
+    assert_ne!(handoff_one.path, handoff_two.path, "and its own cache");
+
+    let (reply, _) = viewer_saves(&handoff_one, &feedback(&[("q1", "from one")]), false);
+    assert_eq!(reply.state, PushState::RemoteSaved, "{reply:?}");
+    let (reply, _) = viewer_saves(&handoff_two, &feedback(&[("q1", "from two")]), false);
+    assert_eq!(reply.state, PushState::LocalOnly, "{reply:?}");
+    assert!(
+        reply.describe().contains("stale revision"),
+        "{}",
+        reply.describe()
+    );
+    assert_eq!(
+        limpid_core::bridge_save::read_feedback(&html).unwrap(),
+        feedback(&[("q1", "from one")]),
+        "the second client did not overwrite the first"
+    );
+    assert_eq!(
+        AgentReplies::load(&sidecar_path(&handoff_two.path.with_extension("html"))).unwrap(),
+        feedback(&[("q1", "from two")]),
+        "the second client keeps its local copy"
+    );
+    let listing = String::from_utf8(two.recover(&[]).stdout).unwrap();
+    assert!(listing.contains("unsent feedback"), "{listing}");
+    assert!(
+        String::from_utf8(one.recover(&[]).stdout)
+            .unwrap()
+            .contains("No unsent")
+    );
+
+    fs::write(&flag_one, "").unwrap();
+    fs::write(&flag_two, "").unwrap();
+    let (first, second) = (first.join().unwrap(), second.join().unwrap());
+    for outcome in [&first, &second] {
+        assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
+    }
+    assert_nothing_left_behind(&one.dir, &first.route.unwrap());
+    assert_nothing_left_behind(&two.dir, &second.route.unwrap());
+}
+
+#[test]
+fn should_save_each_page_to_its_own_remote_file_when_one_login_opens_several_pages() {
+    let Some(sshd) = Sshd::start("several", "") else {
+        return;
+    };
+    let client = Client::new("several-pages");
+    let pages: Vec<PathBuf> = ["a", "b", "c"]
+        .iter()
+        .map(|name| {
+            remote_page(
+                &client.dir,
+                name,
+                &format!("# Page {name}\n"),
+                &format!("sess-{name}"),
+            )
+        })
+        .collect();
+    let flag = client.dir.join("done");
+    let refs: Vec<&Path> = pages.iter().map(PathBuf::as_path).collect();
+    let session = client.login(&sshd, open_script(&refs, &flag));
+    let handoffs = client.wait_for_handoffs(3);
+    let routes: std::collections::HashSet<String> = handoffs
+        .iter()
+        .map(|handoff| origin_of(handoff)["route"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(routes.len(), 1, "one login, one route");
+    for handoff in &handoffs {
+        let title = fs::read_to_string(&handoff.path).unwrap();
+        let name = title.trim().rsplit(' ').next().unwrap().to_string();
+        let index = ["a", "b", "c"].iter().position(|n| *n == name).unwrap();
+        let (reply, took) = viewer_saves(
+            handoff,
+            &feedback(&[("q1", &format!("note {name}"))]),
+            false,
+        );
+        assert_eq!(reply.state, PushState::RemoteSaved, "{reply:?}");
+        assert!(took < Duration::from_secs(5), "save took {took:?}");
+        assert_eq!(
+            limpid_core::bridge_save::read_feedback(&pages[index]).unwrap(),
+            feedback(&[("q1", &format!("note {name}"))])
+        );
+    }
+    fs::write(&flag, "").unwrap();
+    let outcome = session.join().unwrap();
+    assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
+    assert_eq!(
+        outcome.stdout.matches("OPEN_STATUS=0").count(),
+        3,
+        "{}",
+        outcome.stdout
+    );
+    assert_nothing_left_behind(&client.dir, &outcome.route.unwrap());
+}
+
+/// Pids of `ssh` clients that carry this login's forward.
+fn ssh_clients_for(route: &str) -> Vec<u32> {
+    let needle = format!("/tmp/limpid-{route}.sock:");
+    fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
+        .filter(|pid| {
+            fs::read_to_string(format!("/proc/{pid}/comm"))
+                .map(|comm| comm.trim() == "ssh")
+                .unwrap_or(false)
+                && fs::read(format!("/proc/{pid}/cmdline"))
+                    .map(|bytes| String::from_utf8_lossy(&bytes).contains(&needle))
+                    .unwrap_or(false)
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+enum Ending {
+    /// The remote shell exits.
+    ShellExit,
+    /// The network goes: the ssh client is killed without a goodbye.
+    ConnectionLost,
+}
+
+/// Open a page, save feedback locally and remotely, edit it, end the login
+/// the given way, and check that the edit survives only locally and is
+/// recoverable.
+fn unsent_feedback_survives(name: &str, ending: Ending) {
+    let Some(sshd) = Sshd::start(name, "") else {
+        return;
+    };
+    let client = Client::new(&format!("{name}-client"));
+    let html = remote_page(
+        &client.dir,
+        "p",
+        "# Plan\n\n## Questions\n\n1. Which?\n",
+        "sess-end",
+    );
+    let flag = client.dir.join("done");
+    let session = client.login(&sshd, open_script(&[&html], &flag));
+    let handoff = client.wait_for_handoffs(1).remove(0);
+    let route = origin_of(&handoff)["route"].as_str().unwrap().to_string();
+    let (reply, _) = viewer_saves(&handoff, &feedback(&[("q1", "first")]), false);
+    assert_eq!(reply.state, PushState::RemoteSaved, "{reply:?}");
+    feedback(&[("q1", "second, naïve 日本語")])
+        .save(&sidecar_path(&handoff.path.with_extension("html")))
+        .unwrap();
+
+    match ending {
+        Ending::ShellExit => fs::write(&flag, "").unwrap(),
+        Ending::ConnectionLost => {
+            let pids = ssh_clients_for(&route);
+            assert_eq!(pids.len(), 1, "ssh clients for {route}: {pids:?}");
+            let status = Command::new("kill")
+                .args(["-9", &pids[0].to_string()])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+    }
+    let started = Instant::now();
+    let outcome = session.join().unwrap();
+    assert!(
+        started.elapsed() < TIMEOUT,
+        "the launcher hung after the login ended"
+    );
+    if matches!(ending, Ending::ConnectionLost) {
+        assert_ne!(
+            outcome.code,
+            Some(0),
+            "a lost connection is not a clean exit"
+        );
+        // Let the abandoned remote shell finish so nothing is left running.
+        fs::write(&flag, "").unwrap();
+    }
+
+    // The launcher is gone: the push cannot happen, and says why.
+    let (reply, took) = viewer_saves(&handoff, &feedback(&[("q1", "second, naïve 日本語")]), true);
+    assert_eq!(reply.state, PushState::LocalOnly, "{reply:?}");
+    assert!(!reply.submitted());
+    assert!(took < Duration::from_secs(5), "{took:?}");
+    assert!(
+        reply
+            .describe()
+            .contains("login that opened this page is gone"),
+        "{}",
+        reply.describe()
+    );
+    assert_eq!(
+        limpid_core::bridge_save::read_feedback(&html).unwrap(),
+        feedback(&[("q1", "first")]),
+        "the remote holds the last acknowledged copy"
+    );
+
+    let listing = client.recover(&[]);
+    assert!(listing.status.success());
+    let listing = String::from_utf8(listing.stdout).unwrap();
+    assert!(listing.contains("unsent feedback"), "{listing}");
+    let stem = handoff
+        .path
+        .file_stem()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(listing.contains(&stem), "{listing}");
+    let text = client.recover(&["--text", &stem]);
+    assert!(text.status.success());
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("q1: second, naïve 日本語"), "{text}");
+    assert_eq!(client.cache(), handoff.path.parent().unwrap());
+
+    assert_nothing_left_behind(&client.dir, &route);
+}
+
+#[test]
+fn should_keep_unsent_feedback_recoverable_when_the_shell_exits() {
+    unsent_feedback_survives("shellexit", Ending::ShellExit);
+}
+
+#[test]
+fn should_keep_unsent_feedback_recoverable_when_the_connection_is_lost() {
+    unsent_feedback_survives("netloss", Ending::ConnectionLost);
+}
+
+#[test]
+fn should_list_nothing_and_succeed_when_there_is_no_unsent_feedback() {
+    let client = Client::new("recover-empty");
+    let output = client.recover(&[]);
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "No unsent feedback.\n"
+    );
+    let output = client.recover(&["--text", "remote-missing"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("no unsent feedback"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = client.recover(&["--bogus"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Usage: limpid recover"));
+}
+
+// ---- measurements (run by hand: scripts/measure-ssh-bridge) ----------------
+
+fn percentile(samples: &[Duration], fraction: f64) -> Duration {
+    samples[((samples.len() - 1) as f64 * fraction).round() as usize]
+}
+
+fn report(name: &str, samples: &mut [Duration]) {
+    samples.sort();
+    println!(
+        "MEASURE {name}: n={} min={:?} p50={:?} max={:?}",
+        samples.len(),
+        samples[0],
+        percentile(samples, 0.5),
+        samples[samples.len() - 1]
+    );
+}
+
+/// Warm opening (viewer already running) and feedback acknowledgment, over
+/// the isolated sshd with a stand-in viewer and agent listener. Cold viewer
+/// startup needs a real viewer and display; the script measures that.
+#[test]
+#[ignore = "measurement; run through scripts/measure-ssh-bridge"]
+fn measure_warm_open_and_feedback_acknowledgment_latency() {
+    let sshd = Sshd::start("measure", "").expect("measurement needs OpenSSH");
+    let client = Client::new("measure-run");
+    const ROUNDS: usize = 12;
+    let listener_path = client.dir.join("agent.sock");
+    let listener = UnixListener::bind(&listener_path).unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut line = String::new();
+            let _ = std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line);
+            let _ = (&stream).write_all(b"{\"ok\":true}\n");
+        }
+    });
+    let pages: Vec<PathBuf> = (0..ROUNDS)
+        .map(|index| {
+            let html = remote_page(
+                &client.dir,
+                &format!("m{index}"),
+                &format!("# Measure {index}\n\n## Questions\n\n1. Which?\n"),
+                &format!("sess-m{index}"),
+            );
+            let meta = html.with_extension("meta.json");
+            fs::write(
+                &meta,
+                format!(
+                    r#"{{"agent":"claude","session_id":"sess-m{index}","title":"m","feedback_sock":"{}"}}"#,
+                    listener_path.display()
+                ),
+            )
+            .unwrap();
+            html
+        })
+        .collect();
+    let flag = client.dir.join("done");
+    let mut script = String::new();
+    for page in &pages {
+        script.push_str(&format!(
+            "t0=$(date +%s%N)\n{LIMPID} --source-backed {}\nt1=$(date +%s%N)\n\
+             echo OPEN_MS=$(( (t1 - t0) / 1000000 ))\n",
+            page.display()
+        ));
+    }
+    script.push_str(&format!(
+        "while [ ! -f {} ]; do sleep 0.1; done\nexit\n",
+        flag.display()
+    ));
+    let session = client.login(&sshd, script);
+    let handoffs = client.wait_for_handoffs(ROUNDS);
+    let (mut saves, mut submits) = (Vec::new(), Vec::new());
+    for (index, handoff) in handoffs.iter().enumerate() {
+        let (reply, took) = viewer_saves(
+            handoff,
+            &feedback(&[("q1", &format!("save {index}"))]),
+            false,
+        );
+        assert_eq!(reply.state, PushState::RemoteSaved, "{reply:?}");
+        saves.push(took);
+        let (reply, took) = viewer_saves(
+            handoff,
+            &feedback(&[("q1", &format!("send {index}"))]),
+            true,
+        );
+        assert!(reply.submitted(), "{reply:?}");
+        submits.push(took);
+    }
+    fs::write(&flag, "").unwrap();
+    let outcome = session.join().unwrap();
+    let mut opens: Vec<Duration> = outcome
+        .stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("OPEN_MS="))
+        .map(|ms| Duration::from_millis(ms.trim().parse().unwrap()))
+        .collect();
+    assert_eq!(opens.len(), ROUNDS, "{}", outcome.stdout);
+    report(
+        "warm_open (remote /read-style command, stand-in viewer)",
+        &mut opens,
+    );
+    report("save_ack (viewer :w to remote saved)", &mut saves);
+    report("submit_ack (viewer :wq to agent accepted)", &mut submits);
+}
