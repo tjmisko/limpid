@@ -203,6 +203,132 @@ fn e_edits_only_the_focused_block_and_returns_focus_to_its_replacement() {
 }
 
 #[test]
+fn edit_only_pages_review_export_and_submit_the_diff_as_an_edit() {
+    for file_backed in [false, true] {
+        let name = format!("edit-submission-{file_backed}");
+        let dir =
+            std::env::temp_dir().join(format!("limpid-feedback-it-{}-{name}", std::process::id()));
+        let output = dir.join("submitted.txt");
+        let config = format!("[reply]\ncommand = \"cat > '{}'\"\n", output.display());
+        let mut world = world_from(
+            &name,
+            "original wording\n\nuntouched\n",
+            file_backed,
+            &config,
+            None,
+        );
+        world.press("E");
+        world.say(EditorEvent::Save("revised wording".into()));
+        world.say(EditorEvent::Quit { discard: false });
+        let saved = AgentReplies::load(&sidecar_path(&world.file)).unwrap();
+        assert!(saved.has_feedback());
+        assert!(saved.replies.is_empty() && saved.comments.is_empty());
+        assert_eq!(saved.edits.len(), 1);
+        assert_eq!(saved.edits[0].before, "original wording\n");
+        assert_eq!(saved.edits[0].after, "revised wording\n");
+        // Reopen from disk: the edit marker and original wording survive.
+        let settings = Settings::parse(&config).unwrap();
+        let handoff = Handoff {
+            path: world.file.clone(),
+            theme: Scheme::Dark,
+            pane: None,
+            source: file_backed.then(|| world.file.clone()),
+            source_hash: None,
+            source_backed: false,
+        };
+        let reopened =
+            DocPage::open(&world.file, &settings, Scheme::Dark, common::fonts()).unwrap();
+        let feedback = Feedback::new(handoff, reopened.title(), &settings)
+            .with_spawner(fake_spawner(&world.script));
+        assert!(feedback.has_edits());
+        world.page = reopened
+            .with_feedback(feedback)
+            .with_closer(Box::new(Closes(world.closed.clone())));
+        paint(&mut world.page);
+        world.press("S");
+        assert!(
+            world.page.review_open(),
+            "edits alone are reviewable feedback"
+        );
+        world.press("escape");
+        world.command("export");
+        let exported =
+            std::fs::read_to_string(format!("{}.feedback.md", world.file.display())).unwrap();
+        assert!(
+            exported
+                .contains("User edits (already saved in the viewer's copy; diffs in save order):")
+        );
+        assert!(exported.contains("-original wording\n+revised wording\n"));
+        world.command("wq");
+        let message = std::fs::read_to_string(&output).unwrap();
+        assert!(message.contains("User edits"), "{message}");
+        assert!(message.contains("```diff\n"), "{message}");
+        assert!(
+            message.contains("-original wording\n+revised wording\n"),
+            "{message}"
+        );
+        assert_eq!(world.closed.get(), Some(CloseKind::Window));
+    }
+}
+
+#[test]
+fn comment_saves_preserve_the_edit_journal() {
+    for file_backed in [false, true] {
+        let mut world = world_from(
+            &format!("edit-then-comment-{file_backed}"),
+            "original\n\nuntouched\n",
+            file_backed,
+            "",
+            None,
+        );
+        world.press("E");
+        world.say(EditorEvent::Save("revised".into()));
+        world.say(EditorEvent::Quit { discard: false });
+        world.press("j");
+        world.press("c");
+        world.say(EditorEvent::Save("comment on untouched".into()));
+        world.say(EditorEvent::Quit { discard: false });
+        world.command("w");
+        let saved = AgentReplies::load(&sidecar_path(&world.file)).unwrap();
+        assert_eq!(saved.edits.len(), 1);
+        assert_eq!(saved.edits[0].before, "original\n");
+        assert_eq!(saved.edits[0].after, "revised\n");
+    }
+}
+
+#[test]
+fn reverting_a_block_edit_preserves_comments_that_move_back_to_their_original_keys() {
+    let mut world = world_from(
+        "edit-revert-comments",
+        "original\n\nuntouched\n",
+        false,
+        "",
+        None,
+    );
+    world.press("j");
+    world.press("c");
+    world.say(EditorEvent::Save("keep this comment".into()));
+    world.say(EditorEvent::Quit { discard: false });
+    world.command("w");
+    world.press("g");
+    world.press("g");
+    world.press("E");
+    world.say(EditorEvent::Save("a much longer revision".into()));
+    world.say(EditorEvent::Quit { discard: false });
+    world.press("E");
+    world.say(EditorEvent::Save("original".into()));
+    world.say(EditorEvent::Quit { discard: false });
+    world.command("w");
+    let saved = AgentReplies::load(&sidecar_path(&world.file)).unwrap();
+    assert!(saved.edits.is_empty(), "the source edit was reverted");
+    assert_eq!(saved.comments.len(), 1);
+    assert_eq!(
+        saved.comments.values().next().unwrap().text,
+        "keep this comment"
+    );
+}
+
+#[test]
 fn block_editing_retains_code_fences_list_markers_and_crlf_endings() {
     let cases = [
         (

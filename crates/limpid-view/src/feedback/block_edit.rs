@@ -1,7 +1,6 @@
 //! Editing a focused Markdown block, distinct from writing feedback about it.
 
 use super::*;
-use limpid_core::replies::FileRevision;
 use std::sync::Arc;
 
 // A list item's first marker sits before its source span. Present its content
@@ -94,13 +93,11 @@ impl Feedback {
         source: &str,
         text: &str,
     ) -> Result<(), String> {
-        let path = self.handoff.source.as_ref().unwrap_or(&self.handoff.path);
-        let revision = FileRevision::open_checked(path, &replies::source_hash(source.as_bytes()))
-            .map_err(|error| error.to_string())?;
         let text = replacement(source, &target, text);
-        let updated = revision
-            .replace_range(target.clone(), &text)
-            .map_err(|error| error.to_string())?;
+        let (updated, edit_count) =
+            replies::replace_block_with_feedback(&self.handoff, source, target.clone(), &text)
+                .map_err(|error| error.to_string())?;
+        self.recorded_edits = edit_count;
         self.pending
             .rebase_block(&target, text.len(), &updated, self.file_backed);
         if self.file_backed {
@@ -116,7 +113,14 @@ impl Feedback {
         self.source = updated;
         self.reload = true;
         self.focus = Some(Focus::Real(new_target));
-        self.flashes.push("Block saved".into());
+        self.flashes.push(
+            if edit_count > 0 {
+                "Block saved; edit recorded for submission"
+            } else {
+                "Block unchanged"
+            }
+            .into(),
+        );
         Ok(())
     }
 

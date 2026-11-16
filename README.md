@@ -126,7 +126,11 @@ question is an answer to it.
 Inside that editor, `:w`, `:wq` or `Ctrl-Enter` replaces the block in its
 Markdown file and returns to the page; `:q!` cancels. List items retain their
 markers and indentation. On an agent page or standard-input page, this edits
-the local cached Markdown, leaving the original conversation unchanged.
+the local cached Markdown. Saved replacements are flagged `EDITED` and kept
+as edits in the feedback sidecar. Review (`S`), export and submission include
+unified diffs showing the original and revised wording, even if there are no
+replies or comments. Consecutive revisions of the same block are combined;
+remaining edits are presented in save order. The edit history survives reopening.
 The binding can be remapped with `edit_block` under `[view.keys]`.
 
 Replies and comments are written in your own Neovim, embedded in the box

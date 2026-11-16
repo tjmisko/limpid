@@ -8,11 +8,17 @@ use std::{
     process::{Command, Stdio},
 };
 
+mod edits;
+pub use edits::{BlockEdit, replace_block_with_feedback};
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentReplies {
     pub replies: BTreeMap<String, String>,
     pub comments: BTreeMap<String, Comment>,
+    /// Source replacements in save order, distinct from comments about text.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<BlockEdit>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -58,6 +64,26 @@ pub fn compose_message(title: &str, agent: &str, context: &str, replies: &AgentR
             "\"{quoted}\" ({location}): user commented: \"{}\"",
             text.replace('"', "\\\"")
         ));
+    }
+    let edits: Vec<_> = replies
+        .edits
+        .iter()
+        .filter(|edit| edit.before != edit.after)
+        .collect();
+    if !edits.is_empty() {
+        lines
+            .push("\nUser edits (already saved in the viewer's copy; diffs in save order):".into());
+        for (index, edit) in edits.into_iter().enumerate() {
+            let diff = edit.unified_diff();
+            let longest = diff.split(|ch| ch != '`').map(str::len).max().unwrap_or(0);
+            let fence = "`".repeat(3.max(longest + 1));
+            lines.push(format!(
+                "\nEdit {} (original L{}-{}):\n{fence}diff\n{diff}{fence}",
+                index + 1,
+                edit.start_line,
+                edit.end_line
+            ));
+        }
     }
     lines.join("\n")
 }
@@ -304,6 +330,7 @@ impl AgentReplies {
                 .comments
                 .values()
                 .any(|comment| !comment.text.trim().is_empty())
+            || self.edits.iter().any(|edit| edit.before != edit.after)
     }
 
     pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
@@ -937,9 +964,16 @@ pub fn compose_for_page(
 /// else the page's own annotations.
 pub fn saved_replies(request: &Handoff) -> Result<AgentReplies, Box<dyn Error>> {
     if let Some(source) = &request.source {
-        return Ok(from_file_annotations(&fs::read_to_string(source)?));
+        return read_file_feedback(source, &request.path);
     }
     read_annotations_file(&request.path)
+}
+
+/// In-file answers and comments plus the source-edit journal beside the page.
+pub fn read_file_feedback(source: &Path, page: &Path) -> Result<AgentReplies, Box<dyn Error>> {
+    let mut saved = from_file_annotations(&fs::read_to_string(source)?);
+    saved.edits = AgentReplies::load(&sidecar_path(page))?.edits;
+    Ok(saved)
 }
 
 pub fn compose_review(request: &Handoff, title: &str) -> Result<String, Box<dyn Error>> {

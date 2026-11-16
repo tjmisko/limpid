@@ -6,6 +6,69 @@ use std::{
 };
 
 #[test]
+fn feedback_reads_edit_only_journals_for_files_and_cached_agent_pages() {
+    use limpid_core::{
+        replies::replace_block_with_feedback,
+        transport::{Handoff, Scheme},
+    };
+    let root = std::env::temp_dir().join(format!("limpid-edits-cli-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    for agent in [false, true] {
+        let dir = root.join(if agent { "agent" } else { "file" });
+        fs::create_dir_all(&dir).unwrap();
+        let markdown = dir.join("page.md");
+        fs::write(&markdown, "old wording\n").unwrap();
+        if agent {
+            fs::write(
+                markdown.with_extension("html"),
+                "<html><body>page</body></html>",
+            )
+            .unwrap();
+            fs::write(markdown.with_extension("meta.json"), serde_json::json!({
+                "agent": "codex", "session_id": "test", "turn_spec": "0", "source": null, "title": "Plan"
+            }).to_string()).unwrap();
+        }
+        let request = Handoff {
+            path: markdown.clone(),
+            source: (!agent).then(|| markdown.clone()),
+            source_hash: None,
+            source_backed: false,
+            theme: Scheme::Dark,
+            pane: None,
+        };
+        replace_block_with_feedback(&request, "old wording\n", 0..12, "new wording\n").unwrap();
+        let run = |json: bool| {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_limpid-core"));
+            command.arg("feedback");
+            if json {
+                command.arg("--json");
+            }
+            command
+                .arg(&markdown)
+                .env("XDG_CONFIG_HOME", &root)
+                .env("XDG_CACHE_HOME", &root)
+                .output()
+                .unwrap()
+        };
+        let output = run(false);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("User edits"), "{text}");
+        assert!(text.contains("-old wording\n+new wording\n"), "{text}");
+        let output = run(true);
+        assert!(output.status.success());
+        let saved: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(saved["edits"][0]["before"], "old wording\n");
+        assert_eq!(saved["edits"][0]["after"], "new wording\n");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn pi_command_writes_page_and_metadata() {
     let temp = std::env::temp_dir().join(format!("limpid-pi-cli-{}", std::process::id()));
     fs::create_dir_all(&temp).unwrap();

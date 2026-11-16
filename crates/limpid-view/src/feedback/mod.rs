@@ -165,6 +165,7 @@ pub struct Feedback {
     /// Failed source writes reopen the editor with this text after its queued
     /// quit event, so an error never throws away the user's wording.
     retry_block: Option<(String, String, bool)>,
+    recorded_edits: usize,
 }
 
 impl Drop for Feedback {
@@ -194,16 +195,26 @@ impl Feedback {
         }
         let file_backed = handoff.source.is_some() && handoff.source_hash.is_some();
         let mut flashes = Vec::new();
+        let saved = match if file_backed {
+            AgentReplies::load(&replies::sidecar_path(&handoff.path))
+        } else {
+            replies::read_annotations_file(&handoff.path)
+        } {
+            Ok(saved) => saved,
+            Err(error) => {
+                flashes.push(format!("could not read saved feedback: {error}"));
+                AgentReplies::default()
+            }
+        };
+        let recorded_edits = saved
+            .edits
+            .iter()
+            .filter(|edit| edit.before != edit.after)
+            .count();
         let pending = if file_backed {
             Pending::default()
         } else {
-            match replies::read_annotations_file(&handoff.path) {
-                Ok(saved) => Pending::from_saved(&saved),
-                Err(error) => {
-                    flashes.push(format!("could not read saved feedback: {error}"));
-                    Pending::default()
-                }
-            }
+            Pending::from_saved(&saved)
         };
         let host = EditorHost::shared_nvim();
         let owner = host.borrow_mut().register();
@@ -240,6 +251,7 @@ impl Feedback {
                 }
             },
             retry_block: None,
+            recorded_edits,
         }
     }
 
@@ -274,6 +286,10 @@ impl Feedback {
 
     pub fn is_file_backed(&self) -> bool {
         self.file_backed
+    }
+
+    pub fn has_edits(&self) -> bool {
+        self.recorded_edits > 0
     }
 
     // ---- the document ----
@@ -1068,6 +1084,13 @@ impl Feedback {
 
     pub fn write(&mut self) -> ActionResult {
         if !self.pending.has_unsaved() {
+            if self.has_edits() {
+                return if self.push_remote(false) {
+                    ActionResult::Done("Edits saved locally, saving to the remote".into())
+                } else {
+                    ActionResult::Done("Edits saved".into())
+                };
+            }
             return ActionResult::Nothing("nothing to save".into());
         }
         match self.save() {

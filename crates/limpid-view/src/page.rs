@@ -1256,6 +1256,13 @@ impl Page for DocPage {
         let mut view = self.nav.status_view(now);
         if let Some(feedback) = &self.feedback {
             let feedback = feedback.borrow();
+            if feedback.has_edits() {
+                view.right = if view.right.is_empty() {
+                    "EDITED".into()
+                } else {
+                    format!("{} · EDITED", view.right)
+                };
+            }
             if let Some(open_review) = feedback.review() {
                 view.state = status::StateName::Review;
                 review::paint(

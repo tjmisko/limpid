@@ -270,6 +270,46 @@ fn should_deliver_the_composed_feedback_to_the_listener_when_the_page_is_saved_a
 }
 
 #[test]
+fn edit_only_feedback_reaches_the_originating_remote_agent_as_a_diff() {
+    let root = scratch("edit-only");
+    let listener = Listener::bind(&root.join("a.sock"), Answer::Accept);
+    let html = agent_page(&root.join("sender"), "sess-a", Some(&listener.path));
+    let login = login(&root, "r1");
+    let (page, _relay) = login.open(&html);
+    let imported = login.imported(&page);
+    // The receiver edits its own Markdown; the sender keeps the original
+    // document and receives an explicit edit through the feedback channel.
+    let handoff = limpid_core::bridge_import::handoff_for(&imported, Scheme::Dark);
+    let start = page.markdown.find("Which store?").unwrap();
+    limpid_core::replies::replace_block_with_feedback(
+        &handoff,
+        &page.markdown,
+        start..start + "Which store?".len(),
+        "Which database should we use?",
+    )
+    .unwrap();
+    let reply = login.submit(&page);
+    assert!(reply.submitted(), "{reply:?}");
+    let frames = listener.frames();
+    assert_eq!(frames.len(), 1);
+    let message = &frames[0].message;
+    assert!(message.contains("User edits"), "{message}");
+    assert!(
+        message.contains("-1. Which store?\n+1. Which database should we use?\n"),
+        "{message}"
+    );
+    let saved = read_feedback(&html).unwrap();
+    assert!(saved.replies.is_empty() && saved.comments.is_empty());
+    assert_eq!(saved.edits.len(), 1);
+    assert_eq!(
+        fs::read_to_string(html.with_extension("md")).unwrap(),
+        MARKDOWN
+    );
+    assert_eq!(login.local(&page).edits, saved.edits);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn should_start_a_turn_only_in_the_originating_session_when_two_sessions_have_pages_open() {
     let root = scratch("two");
     let listener_a = Listener::bind(&root.join("a.sock"), Answer::Accept);

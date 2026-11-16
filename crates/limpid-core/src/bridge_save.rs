@@ -63,6 +63,9 @@ pub fn read_feedback(html: &Path) -> Result<AgentReplies, String> {
     let sidecar = AgentReplies::load(&sidecar_path(html)).map_err(|error| error.to_string())?;
     merged.replies.extend(sidecar.replies);
     merged.comments.extend(sidecar.comments);
+    if sidecar_path(html).exists() {
+        merged.edits = sidecar.edits;
+    }
     Ok(merged)
 }
 

@@ -94,6 +94,13 @@ pub fn parse_annotations(value: &serde_json::Value) -> Result<AgentReplies, Stri
             "malformed annotations: comment {key:?} ends before it starts"
         )));
     }
+    if replies
+        .edits
+        .iter()
+        .any(|edit| edit.start_line == 0 || edit.start_line > edit.end_line)
+    {
+        return Err(reject("malformed annotations: invalid edit line range"));
+    }
     Ok(replies)
 }
 

@@ -277,6 +277,10 @@ impl Pending {
             }
             self.comments.insert(entry.key.clone(), entry);
         }
+        // A later edit can move a comment back onto one of its old keys.
+        // Keep that key: sidecar saves apply deletions after upserts.
+        self.deletions
+            .retain(|key| !self.comments.contains_key(key));
         self.unsaved |= self.comments != before.comments || self.deletions != before.deletions;
     }
 

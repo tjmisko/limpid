@@ -463,12 +463,17 @@ fn agent_page_annotations(
         limpid_core::replies::AgentReplies::load(&limpid_core::replies::sidecar_path(page))?;
     merged.replies.extend(sidecar.replies);
     merged.comments.extend(sidecar.comments);
+    if limpid_core::replies::sidecar_path(page).exists() {
+        merged.edits = sidecar.edits;
+    }
     Ok(merged)
 }
 
 fn page_has_feedback(page: &Path) -> bool {
     match agent_page_annotations(page) {
-        Ok(replies) => !replies.replies.is_empty() || !replies.comments.is_empty(),
+        Ok(replies) => {
+            !replies.replies.is_empty() || !replies.comments.is_empty() || !replies.edits.is_empty()
+        }
         Err(_) => false,
     }
 }
@@ -588,7 +593,6 @@ fn feedback(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
     };
     let (title, agent, context, replies) =
         if page.extension().and_then(|extension| extension.to_str()) == Some("md") {
-            let source = std::fs::read_to_string(&page)?;
             let title = page
                 .file_stem()
                 .map(|name| name.to_string_lossy().into_owned())
@@ -597,7 +601,7 @@ fn feedback(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
                 title,
                 "file".to_owned(),
                 "file".to_owned(),
-                limpid_core::replies::from_file_annotations(&source),
+                limpid_core::replies::read_file_feedback(&page, &page)?,
             )
         } else {
             let mut meta_path = page.clone();
@@ -629,7 +633,7 @@ fn feedback(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
         };
     if parsed.json {
         println!("{}", serde_json::to_string(&replies)?);
-    } else if replies.replies.is_empty() && replies.comments.is_empty() {
+    } else if !replies.has_feedback() {
         println!("No feedback for {}.", page.display());
     } else {
         println!(
