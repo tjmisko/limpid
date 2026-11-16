@@ -178,7 +178,7 @@ fn e_edits_only_the_focused_block_and_returns_focus_to_its_replacement() {
         None,
     );
     world.press("j");
-    world.press("E");
+    world.press("e");
     assert_eq!(
         world.script.borrow().opened.last(),
         Some(&("Original *wording*.".into(), BoxKind::Block))
@@ -217,7 +217,7 @@ fn edit_only_pages_review_export_and_submit_the_diff_as_an_edit() {
             &config,
             None,
         );
-        world.press("E");
+        world.press("e");
         world.say(EditorEvent::Save("revised wording".into()));
         world.say(EditorEvent::Quit { discard: false });
         let saved = AgentReplies::load(&sidecar_path(&world.file)).unwrap();
@@ -281,7 +281,7 @@ fn comment_saves_preserve_the_edit_journal() {
             "",
             None,
         );
-        world.press("E");
+        world.press("e");
         world.say(EditorEvent::Save("revised".into()));
         world.say(EditorEvent::Quit { discard: false });
         world.press("j");
@@ -312,10 +312,10 @@ fn reverting_a_block_edit_preserves_comments_that_move_back_to_their_original_ke
     world.command("w");
     world.press("g");
     world.press("g");
-    world.press("E");
+    world.press("e");
     world.say(EditorEvent::Save("a much longer revision".into()));
     world.say(EditorEvent::Quit { discard: false });
-    world.press("E");
+    world.press("e");
     world.say(EditorEvent::Save("original".into()));
     world.say(EditorEvent::Quit { discard: false });
     world.command("w");
@@ -365,7 +365,7 @@ fn block_editing_retains_code_fences_list_markers_and_crlf_endings() {
         for _ in 0..moves {
             world.press("j");
         }
-        world.press("E");
+        world.press("e");
         assert_eq!(
             world.script.borrow().opened.last(),
             Some(&(initial.into(), BoxKind::Block)),
@@ -386,7 +386,7 @@ fn block_editing_retains_code_fences_list_markers_and_crlf_endings() {
 fn discarding_a_block_edit_leaves_the_markdown_unchanged() {
     let source = "original\n\nuntouched\n";
     let mut world = world_from("block-discard", source, true, "", None);
-    world.press("E");
+    world.press("e");
     world.say(EditorEvent::Quit { discard: true });
     assert_eq!(std::fs::read_to_string(&world.file).unwrap(), source);
     assert_eq!(world.page.doc().source, source);
@@ -396,7 +396,7 @@ fn discarding_a_block_edit_leaves_the_markdown_unchanged() {
 #[test]
 fn a_stale_block_save_preserves_the_file_and_reopens_the_unsaved_wording() {
     let mut world = world_from("block-stale", "original\n", true, "", None);
-    world.press("E");
+    world.press("e");
     std::fs::write(&world.file, "edited elsewhere\n").unwrap();
     // A watcher may replace the page before the editor sends its save.
     world.page.replace_source("edited elsewhere\n");
@@ -443,7 +443,7 @@ fn block_edits_rebase_pending_comments_before_a_file_save() {
     world.say(EditorEvent::Quit { discard: false });
     world.press("g");
     world.press("g");
-    world.press("E");
+    world.press("e");
     world.say(EditorEvent::Save("one revised\n\nextra paragraph".into()));
     world.say(EditorEvent::Quit { discard: false });
     world.command("w");
@@ -472,7 +472,7 @@ fn editing_cached_markdown_rekeys_saved_sidecar_comments() {
     let old_key = old.comments.keys().next().unwrap().clone();
     world.press("g");
     world.press("g");
-    world.press("E");
+    world.press("e");
     world.say(EditorEvent::Save("one revised\n\nextra paragraph".into()));
     world.say(EditorEvent::Quit { discard: false });
     world.command("w");
@@ -505,7 +505,7 @@ fn a_real_nvim_can_rewrite_a_focused_block_with_wq() {
         "[editor]\ninit = 'clean'\n",
         Some(limpid_view::feedback::boxes::nvim_spawner()),
     );
-    world.press("E");
+    world.press("e");
     for ch in "ggcGnew wording".chars() {
         let text = ch.to_string();
         let key = if ch == ' ' {
