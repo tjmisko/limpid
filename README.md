@@ -142,6 +142,19 @@ match like Vim's `nzz`. `v` and `y` select and copy, `Y` copies the page,
 `h` and `l` scroll a focused table or code block sideways. Every key can be
 remapped under `[view.keys]`.
 
+The native viewer also accepts mouse input. Click a block to focus it, or
+click and drag across blocks to select a range; `y` copies that selection.
+Double-click a block to copy it directly to the system clipboard (`wl-copy`
+on Wayland, `xclip` on X11), using the same Markdown and code-block text as a
+keyboard copy. Click a heading in the contents sidebar to jump to it, and
+drag the sidebar's right edge to resize it for that window.
+
+The latest keyboard or mouse input sets the input mode. Mouse motion changes
+the mode without moving block focus; clicking chooses focus. Keyboard input
+resumes from that block or selection and interrupts any mouse drag. The focus
+highlight is stronger in keyboard mode and quieter in mouse mode.
+The status bar shows `KEYS` or `MOUSE` alongside the current page state.
+
 Agent pages save replies beside their cached page. Replies to a markdown file
 are stored as HTML comments in that file. limpid refuses to write an annotation
 if the file changed since it was rendered.

@@ -238,6 +238,10 @@ impl Page for WatchedPage {
         self.page.pointer(event)
     }
 
+    fn cursor_icon(&self) -> winit::window::CursorIcon {
+        self.page.cursor_icon()
+    }
+
     fn ime(&mut self, event: &Ime) -> bool {
         self.page.ime(event)
     }

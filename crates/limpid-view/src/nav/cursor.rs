@@ -424,10 +424,16 @@ impl Cursor {
             };
         }
         let head = heads[target as usize];
-        let bound = heads
-            .get(target as usize + 1)
-            .copied()
-            .unwrap_or(usize::MAX);
+        self.go_to_section(env, head)
+    }
+
+    /// Jump directly to a heading, using the same alignment as `{` and `}`.
+    pub fn go_to_section(&mut self, env: &mut Env, head: usize) -> bool {
+        let heads = heading_blocks(env.doc);
+        let Ok(target) = heads.binary_search(&head) else {
+            return false;
+        };
+        let bound = heads.get(target + 1).copied().unwrap_or(usize::MAX);
         env.lay_out_through(head);
         let Some(head_rect) = env.layout.blocks.get(head).map(|block| block.rect) else {
             return false;

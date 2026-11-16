@@ -8,11 +8,11 @@ use std::{collections::HashMap, num::NonZeroU32, rc::Rc, time::Duration};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
-    event::{Ime, KeyEvent, MouseScrollDelta, WindowEvent},
+    event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, OwnedDisplayHandle},
     keyboard::ModifiersState,
     platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11},
-    window::{Window, WindowId},
+    window::{CursorIcon, Window, WindowId},
 };
 
 /// What a window shows.
@@ -27,6 +27,9 @@ pub trait Page {
     /// The mouse moved, clicked or scrolled. Returns whether the page changed.
     fn pointer(&mut self, _event: PointerEvent) -> bool {
         false
+    }
+    fn cursor_icon(&self) -> CursorIcon {
+        CursorIcon::Default
     }
     /// An input-method event (committed text, uncommitted preedit text, or
     /// the method turning on or off). Returns whether the page changed.
@@ -65,7 +68,12 @@ pub enum PointerEvent {
     /// A trackpad scroll of `dy` device pixels, positive for a scroll down.
     Scroll { dy: f32 },
     /// A button was pressed or released.
-    Button,
+    Button {
+        button: MouseButton,
+        state: ElementState,
+    },
+    /// The pointer left the window or the window lost focus.
+    Cancel,
 }
 
 impl PointerEvent {
@@ -166,6 +174,7 @@ impl OpenWindow {
         let mut canvas = Canvas::new(&mut buffer, width.get(), height.get());
         self.page
             .paint(&mut canvas, self.window.scale_factor() as f32);
+        self.window.set_cursor(self.page.cursor_icon());
         if let Err(error) = buffer.present() {
             eprintln!("limpid-view: could not present: {error}");
         }
@@ -312,6 +321,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if changed {
                     open.request_redraw();
                 }
+                open.window.set_cursor(open.page.cursor_icon());
                 self.reap_closing(event_loop);
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -322,6 +332,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if open.page.pointer(event) {
                     open.request_redraw();
                 }
+                open.window.set_cursor(open.page.cursor_icon());
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let event = PointerEvent::from_scroll_delta(delta);
@@ -329,10 +340,15 @@ impl ApplicationHandler<UserEvent> for App {
                     open.request_redraw();
                 }
             }
-            WindowEvent::MouseInput { .. } => {
-                if open.page.pointer(PointerEvent::Button) {
+            WindowEvent::MouseInput { button, state, .. } => {
+                if open.page.pointer(PointerEvent::Button { button, state }) {
                     open.request_redraw();
                 }
+                open.window.set_cursor(open.page.cursor_icon());
+            }
+            WindowEvent::CursorLeft { .. } | WindowEvent::Focused(false) => {
+                open.page.pointer(PointerEvent::Cancel);
+                open.window.set_cursor(open.page.cursor_icon());
             }
             WindowEvent::Ime(ime) if open.page.ime(&ime) => open.request_redraw(),
             _ => {}

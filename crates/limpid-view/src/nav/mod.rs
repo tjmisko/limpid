@@ -266,21 +266,37 @@ impl Nav {
         }
     }
 
-    /// Focus the stop under document point `(x, y)`. Returns whether the
-    /// focus moved.
-    pub fn focus_at(&mut self, env: &mut Env, x: f32, y: f32) -> bool {
-        let stops = collect_stops(env.layout);
-        let hit = stops.iter().rev().find(|stop| {
-            stop.rect.y <= y && y < stop.rect.bottom() && stop.rect.x <= x && x < stop.rect.right()
-        });
-        let Some(stop) = hit else {
-            return false;
+    /// Mouse focus and selection share the keyboard's block cursor. A pointer
+    /// action also cancels incomplete key sequences such as `y` and `gg`.
+    pub fn focus_source(&mut self, src: Range<usize>, anchor: Option<Range<usize>>) -> bool {
+        let changed = self.cursor.src.as_ref() != Some(&src)
+            || self.visual_anchor != anchor
+            || self.operator.is_some()
+            || self.keymap.has_pending();
+        self.cursor.src = Some(src);
+        self.visual_anchor = anchor;
+        self.operator = None;
+        self.keymap.reset();
+        changed
+    }
+
+    pub fn jump_section(&mut self, env: &mut Env, block: usize) -> bool {
+        let cleared = self.clear();
+        self.cursor.go_to_section(env, block) || cleared
+    }
+
+    /// Copy using the supplied clipboard, without invoking page actions.
+    pub fn copy_focused(&mut self, now_ms: u64, env: &mut Env, clipboard: &mut dyn Clipboard) {
+        let mut actions = NoActions;
+        let mut io = Io {
+            actions: &mut actions,
+            clipboard,
         };
-        if self.cursor.src.as_ref() == Some(&stop.src) {
-            return false;
+        if self.visual_anchor.is_some() {
+            self.yank_selection(now_ms, env, &mut io);
+        } else {
+            self.yank_target(Target::Block, now_ms, env, &mut io);
         }
-        self.cursor.src = Some(stop.src.clone());
-        true
     }
 
     /// Keep the focused stop on screen after a scroll: when it has left the

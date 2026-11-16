@@ -111,6 +111,8 @@ pub struct RailLayout {
     pub title: RichText,
     pub entries: Vec<RailEntry>,
     active_text: Option<(usize, RichText)>,
+    /// Offset used by the last paint, shared with pointer hit testing.
+    paint_offset: f32,
 }
 
 pub fn build(doc: &Doc, width: f32, theme: &Theme, scale: f32, fonts: &mut Fonts) -> RailLayout {
@@ -166,6 +168,7 @@ pub fn build(doc: &Doc, width: f32, theme: &Theme, scale: f32, fonts: &mut Fonts
         title,
         entries,
         active_text: None,
+        paint_offset: 0.0,
     }
 }
 
@@ -373,6 +376,18 @@ impl RailEntry {
 }
 
 impl RailLayout {
+    /// The section under a point in the window, using the visible rows.
+    pub fn section_at(&self, x: f32, y: f32) -> Option<usize> {
+        if x < 0.0 || x >= self.width || y < 0.0 {
+            return None;
+        }
+        let y = y + self.paint_offset;
+        self.entries
+            .iter()
+            .find(|entry| entry.top <= y && y < entry.top + entry.height)
+            .and_then(|entry| entry.block_index)
+    }
+
     /// The entry that follows top-level block `block_index`: the last
     /// heading at or above it.
     pub fn active_for(&self, block_index: usize) -> Option<usize> {
@@ -405,6 +420,7 @@ impl RailLayout {
         let offset = active
             .and_then(|index| self.entries.get(index))
             .map_or(0.0, |entry| (entry.top + entry.height - reach).max(0.0));
+        self.paint_offset = offset;
 
         let active = active.filter(|&index| index < self.entries.len());
         if let Some(index) = active {

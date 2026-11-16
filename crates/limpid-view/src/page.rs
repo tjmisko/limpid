@@ -4,6 +4,7 @@
 //! go to [`Nav`], which moves the cursor, searches, yanks and runs commands.
 
 use self::load::{Input, Loader, Waker};
+mod mouse;
 use crate::{
     editor::keys::translate_key,
     feedback::{
@@ -17,7 +18,7 @@ use crate::{
         help,
         keymap::{KeyInput, Keymap},
         search, selection_tint, status,
-        yank::{Clipboard, NoClipboard, ReplyCommand},
+        yank::{Clipboard, NoClipboard, ReplyCommand, SystemClipboard},
     },
     paint::Canvas,
     shell::{self, Shell},
@@ -220,6 +221,7 @@ pub struct DocPage {
     /// The page was imported over the bridge; images may not read local files.
     remote_page: bool,
     input_mode: InputMode,
+    mouse: mouse::Mouse,
     settings: Settings,
     path: Option<PathBuf>,
     fonts: SharedFonts,
@@ -227,6 +229,7 @@ pub struct DocPage {
     laid_for: Option<LayoutKey>,
     scale: f32,
     scroll: f32,
+    viewport_width: f32,
     /// Height of the area the document shows in, device pixels (the canvas
     /// less the status bar).
     viewport_height: f32,
@@ -234,6 +237,7 @@ pub struct DocPage {
     nav: Nav,
     actions: Box<dyn PageActions>,
     clipboard: Box<dyn Clipboard>,
+    mouse_clipboard: Box<dyn Clipboard>,
     closer: Option<Box<dyn Closer>>,
     /// Paint the focus band, search highlights and status bar.
     chrome: bool,
@@ -474,6 +478,7 @@ impl DocPage {
             options,
             remote_page: false,
             input_mode: InputMode::default(),
+            mouse: mouse::Mouse::default(),
             settings: settings.clone(),
             path: None,
             fonts,
@@ -481,11 +486,13 @@ impl DocPage {
             laid_for: None,
             scale: 1.0,
             scroll: 0.0,
+            viewport_width: 0.0,
             viewport_height: 0.0,
             modifiers: ModifiersState::empty(),
             nav,
             actions: Box::new(NoActions),
             clipboard: Box::new(NoClipboard),
+            mouse_clipboard: Box::new(NoClipboard),
             closer: None,
             chrome: false,
             pending_anchor: None,
@@ -514,6 +521,7 @@ impl DocPage {
             command: self.settings.reply.command.clone(),
             source: path.clone(),
         });
+        self.mouse_clipboard = Box::new(SystemClipboard);
         self.remote_page = path.as_deref().is_some_and(is_remote_page);
         self.path = path;
         self
@@ -590,17 +598,9 @@ impl DocPage {
 
     pub fn set_input_mode(&mut self, mode: InputMode) {
         self.input_mode = mode;
-    }
-
-    /// Move focus to the stop under the pointer, in device pixels.
-    fn focus_at(&mut self, x: f32, y: f32) -> bool {
-        let Some(column_x) = self.layout.as_ref().map(|layout| layout.column_x) else {
-            return false;
-        };
-        let doc_x = x - column_x;
-        let doc_y = self.scroll + y;
-        self.with_nav(|nav, env, _| nav.focus_at(env, doc_x, doc_y))
-            .unwrap_or(false)
+        if mode == InputMode::Keyboard {
+            self.mouse.interrupt();
+        }
     }
 
     /// A wheel turn of `lines`, positive for a scroll down.
@@ -736,6 +736,7 @@ impl DocPage {
     /// Show `new_doc` in place of the current document, keeping the viewport
     /// on the same part of the text. The window title follows the document.
     fn install_doc(&mut self, new_doc: Doc) {
+        self.mouse.interrupt();
         self.pending_anchor = self.layout.as_ref().and_then(|layout| {
             let index = layout.block_at(self.scroll)?;
             let block = layout.blocks.get(index)?;
@@ -1034,18 +1035,18 @@ impl DocPage {
     /// Handle one key press. Returns true when the page changed and needs a
     /// repaint.
     pub fn handle_input(&mut self, input: &KeyInput) -> bool {
-        self.input_mode = InputMode::Keyboard;
+        let switched = self.keyboard_mode();
         if self.box_open() {
             // Every key belongs to the editor; they arrive through
             // [`DocPage::editor_key`].
-            return false;
+            return switched;
         }
         if self.review_open() {
-            return self.review_input(input);
+            return self.review_input(input) || switched;
         }
         let now = self.now_ms();
         let Some(outcome) = self.with_nav(|nav, env, io| nav.handle(input, now, env, io)) else {
-            return false;
+            return switched;
         };
         let mut changed = outcome.redraw;
         for request in outcome.requests {
@@ -1053,7 +1054,7 @@ impl DocPage {
             changed = true;
         }
         changed |= self.sync_feedback();
-        changed
+        changed || switched
     }
 
     /// Whether a reply or comment box is open.
@@ -1148,6 +1149,7 @@ impl Page for DocPage {
     }
 
     fn paint(&mut self, canvas: &mut Canvas, scale: f32) {
+        self.viewport_width = canvas.width() as f32;
         let scale = if scale.is_finite() && scale > 0.0 {
             scale
         } else {
@@ -1270,6 +1272,15 @@ impl Page for DocPage {
                 view.right = open.mode_label().to_owned();
             }
         }
+        let input_label = match self.input_mode {
+            InputMode::Keyboard => "KEYS",
+            InputMode::Mouse => "MOUSE",
+        };
+        view.right = if view.right.is_empty() {
+            input_label.into()
+        } else {
+            format!("{} · {input_label}", view.right)
+        };
         if let Some(text) = self.nav.search_box() {
             let mut fonts = self.fonts.borrow_mut();
             search::paint_box(canvas, &mut fonts, &self.theme, scale, bar, text);
@@ -1301,8 +1312,7 @@ impl Page for DocPage {
         if event.state != ElementState::Pressed {
             return false;
         }
-        let left_mouse_mode = self.input_mode == InputMode::Mouse;
-        self.input_mode = InputMode::Keyboard;
+        let left_mouse_mode = self.keyboard_mode();
         if self.box_open() {
             return self.editor_key(&event.logical_key, event.text.as_deref(), self.modifiers)
                 || left_mouse_mode;
@@ -1317,20 +1327,21 @@ impl Page for DocPage {
     }
 
     fn pointer(&mut self, event: PointerEvent) -> bool {
-        let left_keyboard = self.input_mode != InputMode::Mouse;
-        self.input_mode = InputMode::Mouse;
-        let changed = match event {
-            PointerEvent::Moved { x, y } => self.focus_at(x, y),
-            PointerEvent::Wheel { lines } => self.wheel(lines),
-            PointerEvent::Scroll { dy } => self.scroll_by(dy),
-            PointerEvent::Button => false,
-        };
-        changed || left_keyboard
+        self.pointer_at(event, self.now_ms())
+    }
+
+    fn cursor_icon(&self) -> winit::window::CursorIcon {
+        self.mouse_cursor()
     }
 
     fn ime(&mut self, event: &Ime) -> bool {
+        let switched = if matches!(event, Ime::Commit(_) | Ime::Preedit(_, _)) {
+            self.keyboard_mode()
+        } else {
+            false
+        };
         let Some(feedback) = self.feedback.clone() else {
-            return false;
+            return switched;
         };
         let mut feedback = feedback.borrow_mut();
         match event {
@@ -1339,7 +1350,7 @@ impl Page for DocPage {
                 feedback.ime_preedit(None);
                 true
             }
-            Ime::Preedit(text, _) => feedback.ime_preedit(Some(text)),
+            Ime::Preedit(text, _) => feedback.ime_preedit(Some(text)) || switched,
             Ime::Enabled => false,
             Ime::Disabled => feedback.ime_preedit(None),
         }
@@ -1350,7 +1361,8 @@ impl Page for DocPage {
     }
 
     fn wants_ticks(&self) -> bool {
-        self.loader.busy()
+        self.drag_scroll_delta() != 0.0
+            || self.loader.busy()
             || self.shell.busy()
             || self
                 .feedback
@@ -1359,6 +1371,9 @@ impl Page for DocPage {
     }
 
     fn tick_period(&self) -> Duration {
+        if self.drag_scroll_delta() != 0.0 {
+            return TICK_INTERVAL;
+        }
         let feedback_period = match self.feedback.as_ref() {
             Some(feedback) if feedback.borrow().wants_ticks() => {
                 feedback.borrow().tick_period(Instant::now())
@@ -1379,6 +1394,11 @@ impl Page for DocPage {
     fn tick(&mut self) -> bool {
         let mut changed = self.poll_loaded();
         changed |= self.poll_shell();
+        let delta = self.drag_scroll_delta();
+        if delta != 0.0 {
+            changed |= self.scroll_by(delta);
+            changed |= self.move_mouse();
+        }
         let Some(feedback) = self.feedback.clone() else {
             return changed;
         };
@@ -2480,7 +2500,7 @@ mod tests {
     }
 
     #[test]
-    fn should_focus_the_block_under_the_pointer_when_the_mouse_moves() {
+    fn should_focus_the_block_under_the_pointer_when_the_mouse_clicks() {
         let mut page = chrome_page("one\n\ntwo\n");
         paint(&mut page, 800, 600, 1.0);
         assert_eq!(focused(&page), "one");
@@ -2489,6 +2509,11 @@ mod tests {
         let x = layout.column_x + 10.0;
         let y = second.y + second.h / 2.0 - page.scroll();
         assert!(page.pointer(PointerEvent::Moved { x, y }));
+        assert_eq!(focused(&page), "one", "hover does not move the cursor");
+        assert!(page.pointer(PointerEvent::Button {
+            button: winit::event::MouseButton::Left,
+            state: ElementState::Pressed,
+        }));
         assert_eq!(focused(&page), "two");
         assert!(
             !page.pointer(PointerEvent::Moved { x, y }),

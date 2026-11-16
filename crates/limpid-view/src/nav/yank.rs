@@ -37,6 +37,24 @@ impl Clipboard for ReplyCommand {
     }
 }
 
+/// The desktop clipboard, independent of the configured feedback command.
+pub struct SystemClipboard;
+
+impl Clipboard for SystemClipboard {
+    fn copy(&mut self, text: &str) -> Result<(), String> {
+        let command = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            "wl-copy"
+        } else {
+            "xclip -selection clipboard"
+        };
+        ReplyCommand {
+            command: command.into(),
+            source: None,
+        }
+        .copy(text)
+    }
+}
+
 /// A clipboard that is not there. Pages built without one fail loudly rather
 /// than run a command nobody configured.
 pub struct NoClipboard;
