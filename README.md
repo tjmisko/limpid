@@ -111,6 +111,12 @@ passed to `limpid`, and writes the Markdown it rendered from beside it as
 Turn specs include `0`, `3`, `0..2`, `1..=3`, `2..`, `..4`, and `..`. Ranges are
 limited to ten turns.
 
+In Claude Code, `0` is the latest nonempty assistant response and `1` is the
+previous one. Each visible assistant message counts, including progress text
+before tool calls and follow-ups after background agents finish. Several
+responses to the same prompt stay separately readable. Tool output, empty
+messages, and `/read` commands do not consume an index.
+
 ## Answer from the keyboard
 
 A block cursor selects one block at a time: a paragraph, code block, diagram,
