@@ -32,6 +32,74 @@ local function buffer_text(buf)
   return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
 end
 
+-- Clipboard providers may choose an image as their default target. Inspect
+-- the offered types before getreg('+') can turn those bytes into buffer text.
+local function clipboard_image()
+  local wayland = vim.env.WAYLAND_DISPLAY and vim.env.WAYLAND_DISPLAY ~= ""
+    and vim.fn.executable("wl-paste") == 1
+  local x11 = not wayland and vim.env.DISPLAY and vim.env.DISPLAY ~= ""
+    and vim.fn.executable("xclip") == 1
+  if not wayland and not x11 then
+    return nil
+  end
+  local function read(args)
+    if not vim.system then
+      local pipe = assert(io.popen(table.concat(vim.tbl_map(vim.fn.shellescape, args), " "), "r"))
+      local bytes = pipe:read("*a")
+      local ok = pipe:close()
+      return ok and bytes or nil
+    end
+    local result = vim.system(args, { text = false }):wait(5000)
+    if result.code ~= 0 then
+      return nil
+    end
+    return result.stdout
+  end
+  local types = read(wayland and { "wl-paste", "--list-types" }
+    or { "xclip", "-selection", "clipboard", "-o", "-t", "TARGETS" })
+  if not types then
+    return nil
+  end
+  local offered = {}
+  for mime in types:gmatch("[^\r\n]+") do
+    offered[mime] = true
+  end
+  for _, format in ipairs({
+    { "image/png", "png" }, { "image/jpeg", "jpg" },
+    { "image/webp", "webp" }, { "image/gif", "gif" },
+    { "image/bmp", "bmp" }, { "image/tiff", "tiff" },
+  }) do
+    local mime, extension = unpack(format)
+    if offered[mime] then
+      local bytes = read(wayland and { "wl-paste", "--no-newline", "--type", mime }
+        or { "xclip", "-selection", "clipboard", "-o", "-t", mime })
+      if not bytes or bytes == "" then
+        error("could not read clipboard image (" .. mime .. ")")
+      end
+      local uv = vim.uv or vim.loop
+      -- Neovim deletes tempname()'s directory on exit. Use an independent
+      -- private directory so the link survives :wq and closing the viewer.
+      local directory = assert(uv.fs_mkdtemp(uv.os_tmpdir() .. "/limpid-clipboard-XXXXXX"))
+      local path = directory .. "/screenshot." .. extension
+      local fd, open_error = uv.fs_open(path, "wx", 384) -- private, exclusive (0600)
+      if not fd then
+        uv.fs_rmdir(directory)
+        error(open_error)
+      end
+      local written, write_error = uv.fs_write(fd, bytes, 0)
+      local closed, close_error = uv.fs_close(fd)
+      if written ~= #bytes or not closed then
+        uv.fs_unlink(path)
+        uv.fs_rmdir(directory)
+        error(write_error or close_error or "incomplete clipboard image write")
+      end
+      -- Keep the file after the editor closes: submitted feedback links to it.
+      return "[Screenshot](<" .. path .. ">)"
+    end
+  end
+  return nil
+end
+
 -- The UI grid only contains the visible slice of the buffer (and filler
 -- rows). Measure the whole buffer so wrapped and off-screen lines can grow
 -- limpid's box without making its height depend on the previous grid size.
@@ -139,7 +207,13 @@ function limpid.open(text, kind)
   -- mappings and autoindent, and visual selections are replaced normally.
   for _, key in ipairs({ "<C-v>", "<C-S-v>" }) do
     vim.keymap.set({ "n", "i", "x", "s", "c" }, key, function()
-      local pasted = vim.fn.getreg("+")
+      local ok, pasted = pcall(function()
+        return clipboard_image() or vim.fn.getreg("+")
+      end)
+      if not ok then
+        vim.api.nvim_err_writeln("limpid: " .. tostring(pasted))
+        return
+      end
       if pasted ~= "" then
         vim.api.nvim_paste(pasted, true, -1)
       end

@@ -138,7 +138,9 @@ Replies and comments are written in your own Neovim, embedded in the box
 one). Inside a box, `:w` saves, `:q` cancels, and `Ctrl-Enter` saves directly.
 `Ctrl-V` and `Ctrl-Shift-V` paste from the system clipboard in normal, insert,
 visual and command-line modes, using Neovim's clipboard provider (`wl-paste`
-on Wayland, `xclip` on X11). `S` opens the composed message for review;
+on Wayland, `xclip` on X11). Clipboard images are saved in a private temporary
+file and pasted as a Markdown link; the file survives closing the editor.
+`S` opens the composed message for review;
 `Ctrl-Enter` there runs the configured reply command.
 
 Multiple windows can keep editors open at the same time. Each active editor
@@ -154,6 +156,12 @@ match like Vim's `nzz`. `v` and `y` select and copy, `Y` copies the page,
 `t` or `F1` toggles the contents rail, `r` reloads, and `+`, `-` and `0` zoom.
 `h` and `l` scroll a focused table or code block sideways. Every key can be
 remapped under `[view.keys]`.
+
+`yy` copies a block, `yG` copies from the cursor to the end, and `yas` / `yis`
+copy the section with / without its heading. Copies include your replies and
+comments in their document positions, including changes you have not saved to
+the page yet. A response copied on its own yields its text; a larger selection
+keeps responses as `<!-- limpid … -->` annotations alongside the Markdown.
 
 The native viewer also accepts mouse input. Click a block to focus it, or
 click and drag across blocks to select a range; `y` copies that selection.

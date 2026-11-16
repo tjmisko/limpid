@@ -5,7 +5,7 @@ use super::boxes::EditorPort;
 use super::*;
 use crate::editor::{EditorError, Grid};
 use limpid_core::{
-    doc::{Doc, Mode, parse},
+    doc::{BlockKind, Doc, Mode, parse},
     transport::Scheme,
 };
 use std::{
@@ -140,6 +140,114 @@ fn harness_with(name: &str, source: &str, file_backed: bool, settings: &str) -> 
 
 fn harness(source: &str, file_backed: bool) -> Harness {
     harness_with("h", source, file_backed, "")
+}
+
+fn yank_document(h: &mut Harness) -> crate::nav::yank::Document {
+    let mut doc = h.doc.clone();
+    doc.blocks = h.fb.overlay(&h.doc.blocks);
+    let saved =
+        h.fb.index
+            .notes
+            .iter()
+            .map(|note| note.src.clone())
+            .collect::<Vec<_>>();
+    crate::nav::yank::Document::new(&doc, &saved)
+}
+
+#[test]
+fn yanks_current_replies_and_replaced_comments_without_deleted_or_stale_notes() {
+    let source = format!(
+        "{QUESTIONS}\n<!-- limpid reply q1\nold reply\n-->\n\n<!-- limpid comment\nold comment\n-->\n\n<!-- limpid comment\ndeleted comment\n-->\n"
+    );
+    let mut h = harness(&source, true);
+    let src = h.field_src("q1");
+    h.fb.act(FeedbackAction::PickOption(2), Some(&src));
+    let notes = h.fb.index.notes.clone();
+    h.fb.act(FeedbackAction::OpenComment, Some(&notes[1].src));
+    h.say(EditorEvent::Save("new **comment**".into()));
+    h.say(EditorEvent::Quit { discard: false });
+    h.fb.act(FeedbackAction::DeleteComment, Some(&notes[2].src));
+    let text = yank_document(&mut h).page_text();
+    assert!(
+        text.contains("Postgres") && text.contains("new **comment**"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("old reply")
+            && !text.contains("old comment")
+            && !text.contains("deleted comment"),
+        "{text}"
+    );
+    assert_eq!(text.matches("<!-- limpid reply q1").count(), 1);
+    assert_eq!(
+        std::fs::read_to_string(&h.page).unwrap(),
+        source,
+        "yank must not save pending feedback"
+    );
+}
+
+#[test]
+fn yanks_nested_list_comments_at_their_items_and_keeps_saved_indentation() {
+    let mut h = harness(
+        "- one\n- two\n\n  <!-- limpid comment\n  old\n  -->\n- three\n",
+        true,
+    );
+    let note = h.fb.index.notes[0].src.clone();
+    h.fb.act(FeedbackAction::OpenComment, Some(&note));
+    h.say(EditorEvent::Save("new\nmultiline".into()));
+    h.say(EditorEvent::Quit { discard: false });
+    let text = yank_document(&mut h).page_text();
+    assert!(
+        text.contains("<!-- limpid comment\n  new\n  multiline\n  -->"),
+        "{text}"
+    );
+    let parsed = parse(&text, Mode::File, &Settings::default());
+    let index = DocIndex::from_blocks(&parsed.blocks, &parsed.source);
+    assert_eq!(index.notes.len(), 1);
+    assert_eq!(index.notes[0].text, "new\nmultiline");
+    assert!(text.find("- two").unwrap() < text.find("new").unwrap());
+    assert!(text.find("multiline").unwrap() < text.find("- three").unwrap());
+}
+
+#[test]
+fn yanks_multiple_new_comments_inside_nested_list_items_in_display_order() {
+    let mut h = harness("- outer\n  - inner\n  - next\n- last\n", false);
+    let BlockKind::List { items, .. } = &h.doc.blocks[0].kind else {
+        panic!("list");
+    };
+    let BlockKind::List { items: nested, .. } = &items[0].blocks[1].kind else {
+        panic!("nested list");
+    };
+    let target = crate::layout::list::item_source(&nested[0].blocks, &items[0].blocks[1].src);
+    for (key, text) in [("first", "first note"), ("second", "second note")] {
+        h.fb.pending.set_comment(CommentEntry {
+            key: key.into(),
+            text: text.into(),
+            target: target.clone(),
+            turn: String::new(),
+            quote: String::new(),
+            start_line: 1,
+            end_line: 1,
+        });
+    }
+    let text = yank_document(&mut h).page_text();
+    assert!(
+        text.find("inner").unwrap() < text.find("first note").unwrap(),
+        "{text}"
+    );
+    assert!(
+        text.find("first note").unwrap() < text.find("second note").unwrap(),
+        "{text}"
+    );
+    assert!(
+        text.find("second note").unwrap() < text.find("- next").unwrap(),
+        "{text}"
+    );
+    let parsed = parse(&text, Mode::File, &Settings::default());
+    let index = DocIndex::from_blocks(&parsed.blocks, &parsed.source);
+    assert_eq!(index.notes.len(), 2, "{text}");
+    assert_eq!(index.notes[0].text, "first note");
+    assert_eq!(index.notes[1].text, "second note");
 }
 
 impl Harness {

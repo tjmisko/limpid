@@ -1,13 +1,204 @@
 //! Yanking: the text of blocks, sections and the page as Markdown source, and
 //! the `y` operator (`yy`, `yj`, `3yk`, `yis`, `yas`, `yG`).
 //!
-//! The text is a slice of the original source by `src` range, so nothing is
-//! reconstructed from layout. A single code block yields its code without the
-//! fences. The text leaves through the `reply.command` setting.
+//! Original Markdown is preserved, with the visible feedback spliced into its
+//! source positions. A single code block yields its code without the fences.
+//! The text leaves through the `reply.command` setting.
 
 use crate::nav::keymap::Chord;
-use limpid_core::doc::{BlockKind, Doc};
-use std::{ops::Range, path::PathBuf};
+use limpid_core::doc::{AnnotationKind, Block, BlockKind, Doc};
+use std::{collections::HashMap, ops::Range, path::PathBuf};
+
+struct Edit {
+    range: Range<usize>,
+    text: String,
+    stop: Option<Range<usize>>,
+    output: Range<usize>,
+}
+
+/// A source snapshot with feedback included, and a mapping from navigation's
+/// original (including synthetic) ranges into that snapshot. Synthetic ranges
+/// are cursor identities, not byte positions at which text can be sliced.
+pub struct Document {
+    source: String,
+    edits: Vec<Edit>,
+    notes: HashMap<Range<usize>, String>,
+}
+
+impl Document {
+    pub fn new(doc: &Doc, saved_notes: &[Range<usize>]) -> Self {
+        let mut edits: Vec<Edit> = saved_notes
+            .iter()
+            .map(|range| Edit {
+                range: range.clone(),
+                text: String::new(),
+                stop: None,
+                output: 0..0,
+            })
+            .collect();
+        let mut notes = HashMap::new();
+        fn walk(
+            blocks: &[Block],
+            source: &str,
+            edits: &mut Vec<Edit>,
+            notes: &mut HashMap<Range<usize>, String>,
+        ) {
+            for block in blocks {
+                match &block.kind {
+                    BlockKind::Annotation {
+                        target,
+                        kind,
+                        text,
+                        field,
+                    } => {
+                        notes.insert(block.src.clone(), text.clone());
+                        let existing = edits.iter().position(|edit| {
+                            edit.range == block.src
+                                || (block.src.is_empty() && edit.range == *target)
+                        });
+                        if !block.src.is_empty() && existing.is_none() {
+                            continue; // A saved annotation already present in the source.
+                        }
+                        let range =
+                            existing.map_or(target.end..target.end, |at| edits[at].range.clone());
+                        let header = match kind {
+                            AnnotationKind::Reply => {
+                                format!("reply {}", field.as_deref().unwrap_or(""))
+                            }
+                            AnnotationKind::Comment => "comment".into(),
+                        };
+                        let text = format!(
+                            "<!-- limpid {header}\n{}\n-->\n",
+                            text.replace("-->", "--&gt;")
+                        );
+                        // Keep annotations on list items inside their item.
+                        let anchor = if range.is_empty() {
+                            target.start
+                        } else {
+                            range.start
+                        };
+                        let prefix = source[..anchor].rsplit('\n').next().unwrap_or("");
+                        let indent = if prefix.chars().all(|c| {
+                            c.is_ascii_whitespace() || c.is_ascii_digit() || "-*+.)".contains(c)
+                        }) {
+                            prefix.len()
+                        } else {
+                            0
+                        };
+                        let padding = " ".repeat(indent);
+                        let text = text
+                            .lines()
+                            .enumerate()
+                            .map(|(at, line)| {
+                                let prefix = if at == 0 && !range.is_empty() {
+                                    ""
+                                } else {
+                                    &padding
+                                };
+                                format!("{prefix}{line}\n")
+                            })
+                            .collect::<String>();
+                        let text = if !block.src.is_empty() {
+                            // Unchanged saved annotations keep their exact Markdown.
+                            source[block.src.clone()].to_owned()
+                        } else if range.is_empty() {
+                            format!("\n\n{text}\n")
+                        } else {
+                            text
+                        };
+                        let edit = Edit {
+                            range,
+                            text,
+                            stop: Some(block.src.clone()),
+                            output: 0..0,
+                        };
+                        if let Some(at) = existing {
+                            edits[at] = edit;
+                        } else {
+                            edits.push(edit);
+                        }
+                    }
+                    BlockKind::List { items, .. } => {
+                        for item in items {
+                            walk(&item.blocks, source, edits, notes);
+                        }
+                    }
+                    BlockKind::Quote { blocks, .. } | BlockKind::FootnoteDef { blocks, .. } => {
+                        walk(blocks, source, edits, notes)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        walk(&doc.blocks, &doc.source, &mut edits, &mut notes);
+        edits.sort_by_key(|edit| edit.range.start);
+        let mut source = String::new();
+        let mut cursor = 0;
+        for edit in &mut edits {
+            source.push_str(&doc.source[cursor..edit.range.start]);
+            let start = source.len();
+            source.push_str(&edit.text);
+            edit.output = start..source.len();
+            cursor = edit.range.end;
+        }
+        source.push_str(&doc.source[cursor..]);
+        Self {
+            source,
+            edits,
+            notes,
+        }
+    }
+
+    fn offset(&self, at: usize, end: bool) -> usize {
+        let mut shift = 0isize;
+        for edit in &self.edits {
+            if edit.range.start > at || (edit.range.start == at && (!edit.range.is_empty() || end))
+            {
+                break;
+            }
+            if at < edit.range.end {
+                return edit.output.start;
+            }
+            shift += edit.text.len() as isize - edit.range.len() as isize;
+        }
+        at.saturating_add_signed(shift)
+    }
+
+    pub fn blocks_text(&self, ranges: &[Range<usize>]) -> String {
+        if let [range] = ranges
+            && let Some(text) = self.notes.get(range)
+        {
+            return finish(text);
+        }
+        let ranges: Vec<_> = ranges
+            .iter()
+            .map(|range| {
+                self.edits
+                    .iter()
+                    .find(|edit| edit.stop.as_ref() == Some(range))
+                    .map_or_else(
+                        || self.offset(range.start, false)..self.offset(range.end, true),
+                        |edit| edit.output.clone(),
+                    )
+            })
+            .collect();
+        blocks_text(&self.source, &ranges)
+    }
+
+    pub fn page_text(&self) -> String {
+        finish(&self.source)
+    }
+
+    pub fn section_text(&self, doc: &Doc, block: usize, inner: bool) -> String {
+        let range = section_range(doc, block, inner);
+        let end = if range.end == doc.source.len() {
+            self.source.len()
+        } else {
+            self.offset(range.end, true)
+        };
+        finish(slice(&self.source, &(self.offset(range.start, true)..end)))
+    }
+}
 
 /// How long the operator waits for its next key.
 pub const OPERATOR_TIMEOUT_MS: u64 = 2000;
@@ -146,6 +337,10 @@ fn finish(text: &str) -> String {
 /// The section holding top-level block `block`: from its heading to the next
 /// heading of the same or a shallower level. `inner` leaves the heading out.
 pub fn section_text(doc: &Doc, block: usize, inner: bool) -> String {
+    finish(slice(&doc.source, &section_range(doc, block, inner)))
+}
+
+fn section_range(doc: &Doc, block: usize, inner: bool) -> Range<usize> {
     let headings: Vec<(usize, u8)> = doc
         .blocks
         .iter()
@@ -161,7 +356,7 @@ pub fn section_text(doc: &Doc, block: usize, inner: bool) -> String {
         let end = headings
             .first()
             .map_or(doc.source.len(), |&(index, _)| doc.blocks[index].src.start);
-        return finish(slice(&doc.source, &(0..end)));
+        return 0..end;
     };
     let (head_index, level) = headings[current];
     let head = &doc.blocks[head_index];
@@ -170,7 +365,7 @@ pub fn section_text(doc: &Doc, block: usize, inner: bool) -> String {
         .find(|&&(_, next)| next <= level)
         .map_or(doc.source.len(), |&(index, _)| doc.blocks[index].src.start);
     let start = if inner { head.src.end } else { head.src.start };
-    finish(slice(&doc.source, &(start..end.max(start))))
+    start..end.max(start)
 }
 
 pub fn page_text(doc: &Doc) -> String {

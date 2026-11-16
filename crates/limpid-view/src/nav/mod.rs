@@ -123,6 +123,10 @@ pub enum ActionResult {
 /// What the page can do about feedback. The defaults are those of a page with
 /// no editor.
 pub trait PageActions {
+    fn yank_document(&self, doc: &Doc) -> yank::Document {
+        yank::Document::new(doc, &[])
+    }
+
     fn export(&mut self) -> ActionResult {
         ActionResult::Nothing("no feedback to export".into())
     }
@@ -583,7 +587,7 @@ impl Nav {
             Action::Yank if self.visual_anchor.is_some() => self.yank_selection(now_ms, env, io),
             Action::Yank => self.operator = Some(Operator::start_with_count(now_ms, count)),
             Action::YankPage => {
-                let text = yank::page_text(env.doc);
+                let text = io.actions.yank_document(env.doc).page_text();
                 self.copy(&text, "page", now_ms, io);
             }
             Action::Clear => out.redraw = self.clear(),
@@ -876,23 +880,26 @@ impl Nav {
         match target {
             Target::Section { inner } => {
                 let top = self.cursor_block(env);
-                let text = yank::section_text(env.doc, top, inner);
+                let text = io
+                    .actions
+                    .yank_document(env.doc)
+                    .section_text(env.doc, top, inner);
                 self.copy(&text, "section", now_ms, io);
             }
             Target::Block => {
                 let ranges = [src];
-                let text = yank::blocks_text(&env.doc.source, &ranges);
+                let text = io.actions.yank_document(env.doc).blocks_text(&ranges);
                 self.copy_blocks(&text, &ranges, env, now_ms, io);
             }
             Target::Motion(delta) => {
                 let ranges = self.stops_from_cursor(env, delta);
-                let text = yank::blocks_text(&env.doc.source, &ranges);
+                let text = io.actions.yank_document(env.doc).blocks_text(&ranges);
                 self.copy_blocks(&text, &ranges, env, now_ms, io);
             }
             Target::ToEnd => {
                 env.lay_out_all();
                 let ranges = self.stops_from_cursor(env, i64::MAX / 2);
-                let text = yank::blocks_text(&env.doc.source, &ranges);
+                let text = io.actions.yank_document(env.doc).blocks_text(&ranges);
                 self.copy_blocks(&text, &ranges, env, now_ms, io);
             }
         }
@@ -933,7 +940,7 @@ impl Nav {
         };
         let (low, high) = (from.min(to), from.max(to));
         let ranges: Vec<Range<usize>> = stops[low..=high].iter().map(|s| s.src.clone()).collect();
-        let text = yank::blocks_text(&env.doc.source, &ranges);
+        let text = io.actions.yank_document(env.doc).blocks_text(&ranges);
         self.copy_blocks(&text, &ranges, env, now_ms, io);
     }
 
@@ -1817,6 +1824,51 @@ mod tests {
         world.press("shift+y");
         assert_eq!(world.clipboard.copied, vec!["# T\n\nbody\n"]);
         assert_eq!(world.message(), "Yanked page");
+    }
+
+    #[test]
+    fn should_yank_responses_in_document_order_with_every_yank_motion() {
+        use crate::feedback::fields::{self, CommentEntry, DocIndex, Pending};
+        let mut world = World::new("# Plan\n\nfirst\n\nsecond\n", 900.0);
+        let mut pending = Pending::default();
+        for (at, text) in [(1, "日本語 **first note**"), (2, "last note")] {
+            let target = world.doc.blocks[at].src.clone();
+            pending.set_comment(CommentEntry {
+                key: fields::range_text(&target),
+                target,
+                text: text.into(),
+                turn: String::new(),
+                quote: String::new(),
+                start_line: 1,
+                end_line: 1,
+            });
+        }
+        let index = DocIndex::from_blocks(&world.doc.blocks, &world.doc.source);
+        world.doc.blocks =
+            fields::overlay(&world.doc.blocks, &index, &pending, None, &world.doc.source).blocks;
+        world.layout = lay_out(&world.doc, 900.0, &Theme::dark(), 1.0, &mut world.fonts);
+        let expected = "# Plan\n\nfirst\n\n\n<!-- limpid comment\n日本語 **first note**\n-->\n\n\nsecond\n\n\n<!-- limpid comment\nlast note\n-->\n";
+        for keys in [
+            vec!["g", "g", "y", "G"],
+            vec!["Y"],
+            vec!["g", "g", "v", "G", "y"],
+            vec!["g", "g", "y", "a", "s"],
+        ] {
+            world.keys(&keys);
+            assert_eq!(world.clipboard.copied.last().unwrap(), expected, "{keys:?}");
+        }
+        world.keys(&["g", "g", "j", "y", "y"]);
+        assert_eq!(world.clipboard.copied.last().unwrap(), "first\n");
+        world.keys(&["j", "y", "y"]);
+        assert_eq!(
+            world.clipboard.copied.last().unwrap(),
+            "日本語 **first note**\n"
+        );
+        world.keys(&["y", "G"]);
+        let tail = world.clipboard.copied.last().unwrap();
+        assert!(!tail.contains("# Plan") && !tail.contains("first\n"));
+        assert!(tail.find("first note").unwrap() < tail.find("second").unwrap());
+        assert!(tail.find("second").unwrap() < tail.find("last note").unwrap());
     }
 
     #[test]

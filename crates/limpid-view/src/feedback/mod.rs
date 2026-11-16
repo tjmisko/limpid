@@ -1159,6 +1159,18 @@ impl Feedback {
 pub struct FeedbackHandle(pub Rc<RefCell<Feedback>>);
 
 impl PageActions for FeedbackHandle {
+    fn yank_document(&self, doc: &limpid_core::doc::Doc) -> crate::nav::yank::Document {
+        let saved = self
+            .0
+            .borrow()
+            .index
+            .notes
+            .iter()
+            .map(|note| note.src.clone())
+            .collect::<Vec<_>>();
+        crate::nav::yank::Document::new(doc, &saved)
+    }
+
     fn export(&mut self) -> ActionResult {
         self.0.borrow_mut().export()
     }

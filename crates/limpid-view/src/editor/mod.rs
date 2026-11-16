@@ -548,6 +548,8 @@ mod tests {
             vec![
                 Value::from(r#"
                     local text = ...
+                    vim.env.WAYLAND_DISPLAY = nil
+                    vim.env.DISPLAY = nil
                     vim.g.clipboard = {
                       name = 'limpid-test',
                       copy = { ['+'] = function() end, ['*'] = function() end },
@@ -660,6 +662,133 @@ mod tests {
                     && seen.contains(&EditorEvent::Quit { discard: false })
             });
         }
+    }
+
+    #[test]
+    fn should_paste_clipboard_images_as_persistent_links_on_wayland_and_x11() {
+        use std::os::unix::fs::PermissionsExt;
+        if !nvim_available() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("limpid-image-paste-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // Includes NULs, non-UTF-8 bytes, CRs and a final newline. The bytes
+        // must survive the subprocess and file write without text conversion.
+        let bytes = b"\x89PNG\r\n\x1a\n\0\xff\x80\r\n";
+        std::fs::write(root.join("image"), bytes).unwrap();
+        for (wayland, program, list, image) in [
+            (
+                true,
+                "wl-paste",
+                "--list-types",
+                "--no-newline --type image/png",
+            ),
+            (
+                false,
+                "xclip",
+                "-selection clipboard -o -t TARGETS",
+                "-selection clipboard -o -t image/png",
+            ),
+        ] {
+            let executable = root.join(program);
+            std::fs::write(&executable, format!(
+                "#!/bin/sh\ncase \"$*\" in\n'{list}') printf 'text/plain\\nimage/png\\n' ;;\n'{image}') cat '{}/image' ;;\n*) exit 1 ;;\nesac\n", root.display()
+            )).unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let mut config = clean_config();
+            config.env = vec![
+                (
+                    "PATH".into(),
+                    format!("{}:{}", root.display(), std::env::var("PATH").unwrap()),
+                ),
+                (
+                    "WAYLAND_DISPLAY".into(),
+                    if wayland { "limpid-test" } else { "" }.into(),
+                ),
+                ("DISPLAY".into(), "limpid-test".into()),
+            ];
+            let mut editor = Editor::spawn(&config).unwrap();
+            if !wayland {
+                editor
+                    .process
+                    .as_mut()
+                    .unwrap()
+                    .rpc
+                    .request(
+                        "nvim_exec_lua",
+                        vec![
+                            Value::from("vim.env.WAYLAND_DISPLAY = nil"),
+                            Value::Array(vec![]),
+                        ],
+                    )
+                    .unwrap();
+            }
+            let mut paths = Vec::new();
+            for shortcut in paste_shortcuts() {
+                for (initial, selection, expected_prefix) in
+                    [("", "", ""), ("old", "", "old"), ("old", "gg0v$", "")]
+                {
+                    editor.open(initial, BoxKind::Comment).unwrap();
+                    editor.input(selection);
+                    editor.input(&shortcut);
+                    collect_until(&mut editor, |editor, _| {
+                        editor.grid().row_text(0).contains("Screenshot")
+                    });
+                    editor.input("<Esc>:w<CR>");
+                    let events = collect_until(&mut editor, |_, seen| {
+                        seen.iter()
+                            .any(|event| matches!(event, EditorEvent::Save(_)))
+                            && seen.contains(&EditorEvent::Quit { discard: false })
+                    });
+                    let text = events
+                        .iter()
+                        .find_map(|event| match event {
+                            EditorEvent::Save(text) => Some(text),
+                            _ => None,
+                        })
+                        .unwrap();
+                    let path = text
+                        .strip_prefix(&format!("{expected_prefix}[Screenshot](<"))
+                        .unwrap()
+                        .strip_suffix(">)")
+                        .unwrap();
+                    assert_eq!(std::fs::read(path).unwrap(), bytes);
+                    assert_eq!(
+                        std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                        0o600
+                    );
+                    paths.push(std::path::PathBuf::from(path));
+                }
+            }
+            // A failed image transfer must leave the selection intact and
+            // must not fall back to interpreting the image as register text.
+            std::fs::write(&executable, format!(
+                "#!/bin/sh\ncase \"$*\" in\n'{list}') printf 'image/png\\n' ;;\n*) exit 1 ;;\nesac\n"
+            )).unwrap();
+            for shortcut in paste_shortcuts() {
+                editor.open("keep", BoxKind::Comment).unwrap();
+                editor.input("gg0v$");
+                editor.input(&shortcut);
+                collect_until(&mut editor, |_, seen| {
+                    seen.iter().any(|event| matches!(event, EditorEvent::Error(text) if text.contains("could not read clipboard image")))
+                });
+                editor.input("<Esc>:w<CR>");
+                collect_until(&mut editor, |_, seen| {
+                    seen.contains(&EditorEvent::Save("keep".into()))
+                        && seen.contains(&EditorEvent::Quit { discard: false })
+                });
+            }
+            editor.shutdown();
+            for path in paths {
+                assert_eq!(
+                    std::fs::read(&path).unwrap(),
+                    bytes,
+                    "link must survive the editor exiting"
+                );
+                std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
