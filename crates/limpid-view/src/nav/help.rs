@@ -56,6 +56,7 @@ fn describe(action: Action) -> &'static str {
         Action::ScrollRight => "Scroll the code block right",
         Action::OpenReply => "Edit the focused reply or comment",
         Action::OpenComment => "Comment on the focused block",
+        Action::EditBlock => "Edit the focused block's Markdown",
         Action::Insert => "Edit at the cursor",
         Action::InsertStart => "Edit at the start",
         Action::InsertEnd => "Edit at the end",

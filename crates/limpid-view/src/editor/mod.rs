@@ -74,6 +74,7 @@ impl EditorConfig {
 pub enum BoxKind {
     Reply,
     Comment,
+    Block,
 }
 
 impl BoxKind {
@@ -81,6 +82,7 @@ impl BoxKind {
         match self {
             BoxKind::Reply => "reply",
             BoxKind::Comment => "comment",
+            BoxKind::Block => "block",
         }
     }
 }

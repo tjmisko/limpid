@@ -168,6 +168,256 @@ fn paint(page: &mut DocPage) -> Vec<u32> {
     pixels
 }
 
+#[test]
+fn e_edits_only_the_focused_block_and_returns_focus_to_its_replacement() {
+    let mut world = world_from(
+        "edit-block",
+        "# Title\n\nOriginal *wording*.\n\nLeave this alone.\n",
+        true,
+        "",
+        None,
+    );
+    world.press("j");
+    world.press("E");
+    assert_eq!(
+        world.script.borrow().opened.last(),
+        Some(&("Original *wording*.".into(), BoxKind::Block))
+    );
+    world.say(EditorEvent::Save("Improved **wording**.".into()));
+    world.say(EditorEvent::Quit { discard: false });
+    let expected = "# Title\n\nImproved **wording**.\n\nLeave this alone.\n";
+    assert_eq!(std::fs::read_to_string(&world.file).unwrap(), expected);
+    assert_eq!(world.page.doc().source, expected);
+    assert!(!world.page.box_open());
+    let stop = world
+        .page
+        .nav()
+        .cursor()
+        .stop(world.page.layout().unwrap())
+        .unwrap();
+    assert_eq!(
+        world.page.doc().source[stop.src].trim(),
+        "Improved **wording**."
+    );
+    assert!(world.annotations().is_empty());
+}
+
+#[test]
+fn block_editing_retains_code_fences_list_markers_and_crlf_endings() {
+    let cases = [
+        (
+            "```rust\nold();\n```\n\nafter\n",
+            "```rust\nold();\n```",
+            "```rust\nnew();\n```",
+            "```rust\nnew();\n```\n\nafter\n",
+            0,
+        ),
+        (
+            "- old wording\n- untouched\n",
+            "old wording",
+            "new wording\ncontinued",
+            "- new wording\n  continued\n- untouched\n",
+            0,
+        ),
+        (
+            "- outer\n  - old wording\n  - untouched\n",
+            "old wording",
+            "new wording\ncontinued",
+            "- outer\n  - new wording\n    continued\n  - untouched\n",
+            1,
+        ),
+        (
+            "old wording\r\n\r\nuntouched\r\n",
+            "old wording",
+            "new wording\ncontinued",
+            "new wording\r\ncontinued\r\n\r\nuntouched\r\n",
+            0,
+        ),
+    ];
+    for (index, (source, initial, revised, expected, moves)) in cases.into_iter().enumerate() {
+        let mut world = world_from(&format!("block-format-{index}"), source, true, "", None);
+        for _ in 0..moves {
+            world.press("j");
+        }
+        world.press("E");
+        assert_eq!(
+            world.script.borrow().opened.last(),
+            Some(&(initial.into(), BoxKind::Block)),
+            "case {index}"
+        );
+        world.say(EditorEvent::Save(revised.into()));
+        world.say(EditorEvent::Quit { discard: false });
+        assert_eq!(
+            std::fs::read_to_string(&world.file).unwrap(),
+            expected,
+            "case {index}"
+        );
+        assert!(!world.page.box_open());
+    }
+}
+
+#[test]
+fn discarding_a_block_edit_leaves_the_markdown_unchanged() {
+    let source = "original\n\nuntouched\n";
+    let mut world = world_from("block-discard", source, true, "", None);
+    world.press("E");
+    world.say(EditorEvent::Quit { discard: true });
+    assert_eq!(std::fs::read_to_string(&world.file).unwrap(), source);
+    assert_eq!(world.page.doc().source, source);
+    assert!(!world.page.box_open());
+}
+
+#[test]
+fn a_stale_block_save_preserves_the_file_and_reopens_the_unsaved_wording() {
+    let mut world = world_from("block-stale", "original\n", true, "", None);
+    world.press("E");
+    std::fs::write(&world.file, "edited elsewhere\n").unwrap();
+    // A watcher may replace the page before the editor sends its save.
+    world.page.replace_source("edited elsewhere\n");
+    world.say(EditorEvent::Save("my revised wording".into()));
+    assert_eq!(
+        world.script.borrow().opened.len(),
+        1,
+        "wait for the old buffer's quit before reopening"
+    );
+    world.say(EditorEvent::Quit { discard: false });
+    assert_eq!(
+        std::fs::read_to_string(&world.file).unwrap(),
+        "edited elsewhere\n"
+    );
+    assert!(world.page.box_open());
+    assert_eq!(
+        world.script.borrow().opened.last(),
+        Some(&("my revised wording".into(), BoxKind::Block))
+    );
+    assert!(
+        world
+            .script
+            .borrow()
+            .inputs
+            .iter()
+            .any(|input| input.contains("setlocal modified"))
+    );
+    world.say(EditorEvent::Quit { discard: true });
+    assert!(!world.page.box_open());
+}
+
+#[test]
+fn block_edits_rebase_pending_comments_before_a_file_save() {
+    let mut world = world_from(
+        "block-pending-comment",
+        "one\n\ntwo\n\nthree\n",
+        true,
+        "",
+        None,
+    );
+    world.press("j");
+    world.press("c");
+    world.say(EditorEvent::Save("note on two".into()));
+    world.say(EditorEvent::Quit { discard: false });
+    world.press("g");
+    world.press("g");
+    world.press("E");
+    world.say(EditorEvent::Save("one revised\n\nextra paragraph".into()));
+    world.say(EditorEvent::Quit { discard: false });
+    world.command("w");
+    let saved = std::fs::read_to_string(&world.file).unwrap();
+    assert!(saved.contains("one revised\n\nextra paragraph"));
+    let note = saved.find("note on two").unwrap();
+    assert!(
+        saved.find("two\n").unwrap() < note && note < saved.find("three\n").unwrap(),
+        "{saved}"
+    );
+    assert_eq!(
+        world.annotations(),
+        vec![(AnnotationKind::Comment, "note on two".into())]
+    );
+}
+
+#[test]
+fn editing_cached_markdown_rekeys_saved_sidecar_comments() {
+    let mut world = world_from("block-sidecar", "one\n\ntwo\n\nthree\n", false, "", None);
+    world.press("j");
+    world.press("c");
+    world.say(EditorEvent::Save("note on two".into()));
+    world.say(EditorEvent::Quit { discard: false });
+    world.command("w");
+    let old = AgentReplies::load(&sidecar_path(&world.file)).unwrap();
+    let old_key = old.comments.keys().next().unwrap().clone();
+    world.press("g");
+    world.press("g");
+    world.press("E");
+    world.say(EditorEvent::Save("one revised\n\nextra paragraph".into()));
+    world.say(EditorEvent::Quit { discard: false });
+    world.command("w");
+    let saved = AgentReplies::load(&sidecar_path(&world.file)).unwrap();
+    assert_eq!(saved.comments.len(), 1);
+    assert!(!saved.comments.contains_key(&old_key));
+    let comment = saved.comments.values().next().unwrap();
+    assert_eq!(comment.text, "note on two");
+    assert_eq!(comment.quote, "two");
+    assert_eq!(comment.start_line, 5);
+    assert_eq!(
+        std::fs::read_to_string(&world.file).unwrap(),
+        "one revised\n\nextra paragraph\n\ntwo\n\nthree\n"
+    );
+}
+
+#[test]
+fn a_real_nvim_can_rewrite_a_focused_block_with_wq() {
+    if std::process::Command::new("nvim")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let mut world = world_from(
+        "block-real-nvim",
+        "old wording\n\nuntouched\n",
+        true,
+        "[editor]\ninit = 'clean'\n",
+        Some(limpid_view::feedback::boxes::nvim_spawner()),
+    );
+    world.press("E");
+    for ch in "ggcGnew wording".chars() {
+        let text = ch.to_string();
+        let key = if ch == ' ' {
+            Key::Named(NamedKey::Space)
+        } else {
+            Key::Character(text.as_str().into())
+        };
+        world
+            .page
+            .editor_key(&key, Some(&text), ModifiersState::empty());
+    }
+    world
+        .page
+        .editor_key(&Key::Named(NamedKey::Escape), None, ModifiersState::empty());
+    for ch in ":wq".chars() {
+        let text = ch.to_string();
+        world.page.editor_key(
+            &Key::Character(text.as_str().into()),
+            Some(&text),
+            ModifiersState::empty(),
+        );
+    }
+    world
+        .page
+        .editor_key(&Key::Named(NamedKey::Enter), None, ModifiersState::empty());
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while world.page.box_open() && std::time::Instant::now() < deadline {
+        world.page.tick();
+        paint(&mut world.page);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!world.page.box_open());
+    assert_eq!(
+        std::fs::read_to_string(&world.file).unwrap(),
+        "new wording\n\nuntouched\n"
+    );
+}
+
 impl World {
     fn press(&mut self, key: &str) -> bool {
         let changed = self.page.handle_input(&KeyInput::named(key));

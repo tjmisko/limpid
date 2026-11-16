@@ -229,6 +229,57 @@ pub struct Pending {
 }
 
 impl Pending {
+    /// Keep comments attached to their blocks when a source edit changes byte
+    /// offsets. Sidecars also need their old storage keys removed on save.
+    pub fn rebase_block(
+        &mut self,
+        edited: &Range<usize>,
+        new_len: usize,
+        source: &str,
+        file_backed: bool,
+    ) {
+        let before = self.clone();
+        if file_backed {
+            self.deletions = self
+                .deletions
+                .iter()
+                .map(|key| {
+                    key.strip_prefix(FILE_KEY_PREFIX)
+                        .and_then(parse_range_text)
+                        .map(|range| file_key(&rebase_range(&range, edited, new_len)))
+                        .unwrap_or_else(|| key.clone())
+                })
+                .collect();
+        }
+        for (old_key, mut entry) in std::mem::take(&mut self.comments) {
+            entry.target = rebase_range(&entry.target, edited, new_len);
+            entry.key = if let Some(range) = old_key
+                .strip_prefix(FILE_KEY_PREFIX)
+                .and_then(parse_range_text)
+            {
+                file_key(&rebase_range(&range, edited, new_len))
+            } else if entry.turn.is_empty() {
+                range_text(&entry.target)
+            } else {
+                format!("{}:{}", entry.turn, range_text(&entry.target))
+            };
+            entry.start_line = line_of(source, entry.target.start);
+            entry.end_line = line_of(
+                source,
+                entry.target.end.saturating_sub(1).max(entry.target.start),
+            );
+            entry.quote = source
+                .get(entry.target.clone())
+                .map(|text| quote_of(text, QUOTE_CHARS))
+                .unwrap_or_default();
+            if !file_backed && old_key != entry.key {
+                self.deletions.insert(old_key);
+            }
+            self.comments.insert(entry.key.clone(), entry);
+        }
+        self.unsaved |= self.comments != before.comments || self.deletions != before.deletions;
+    }
+
     /// Everything a sidecar holds, as saved.
     pub fn from_saved(saved: &AgentReplies) -> Self {
         let mut pending = Pending {
@@ -377,6 +428,25 @@ impl Pending {
     }
 }
 
+pub(super) fn rebase_range(
+    range: &Range<usize>,
+    edited: &Range<usize>,
+    new_len: usize,
+) -> Range<usize> {
+    let shift = |offset: usize| offset - edited.len() + new_len;
+    if range.end <= edited.start {
+        range.clone()
+    } else if range.start >= edited.end {
+        shift(range.start)..shift(range.end)
+    } else {
+        range.start.min(edited.start)..if range.end > edited.end {
+            shift(range.end)
+        } else {
+            edited.start + new_len
+        }
+    }
+}
+
 /// What the editor box is editing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoxTarget {
@@ -387,6 +457,12 @@ pub enum BoxTarget {
     Comment {
         key: String,
         target: Range<usize>,
+    },
+    Block {
+        target: Range<usize>,
+        /// The revision that supplied the editor's text, even if a watcher
+        /// reloads the page while the editor remains open.
+        source: std::sync::Arc<str>,
     },
 }
 
@@ -688,13 +764,14 @@ pub fn overlay(
 ) -> Overlay {
     let editing_reply = editing.and_then(|plan| match &plan.target {
         BoxTarget::Reply { field } => Some(field.as_str()),
-        BoxTarget::Comment { .. } => None,
+        BoxTarget::Comment { .. } | BoxTarget::Block { .. } => None,
     });
     let editing_comment = editing.and_then(|plan| match &plan.target {
         BoxTarget::Comment { key, .. } => Some(key.as_str()),
-        BoxTarget::Reply { .. } => None,
+        BoxTarget::Reply { .. } | BoxTarget::Block { .. } => None,
     });
     let new_box_target = editing.and_then(|plan| match &plan.target {
+        BoxTarget::Block { target, .. } => Some(target),
         BoxTarget::Comment { key, target }
             if !pending.comments.contains_key(key) && !key.starts_with(FILE_KEY_PREFIX) =>
         {

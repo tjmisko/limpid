@@ -455,6 +455,25 @@ impl FileRevision {
         Ok(revision)
     }
 
+    /// Replace a Markdown span from this revision, refusing stale files and
+    /// byte ranges that split UTF-8 characters. Return the saved document.
+    pub fn replace_range(
+        &self,
+        range: std::ops::Range<usize>,
+        text: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        if fs::read(&self.path)? != self.source {
+            return Err("source changed since it was rendered".into());
+        }
+        let mut updated = std::str::from_utf8(&self.source)?.to_owned();
+        if updated.get(range.clone()).is_none() {
+            return Err("block source range is invalid".into());
+        }
+        updated.replace_range(range, text);
+        atomic_write(&self.path, updated.as_bytes())?;
+        Ok(updated)
+    }
+
     pub fn apply(&self, edits: &[FileEdit]) -> Result<(), Box<dyn std::error::Error>> {
         if fs::read(&self.path)? != self.source {
             return Err("source changed since it was rendered".into());
@@ -1212,6 +1231,35 @@ mod tests {
     use super::*;
     use crate::transport::Scheme;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn block_replacement_checks_utf8_ranges_and_rejects_a_changed_revision() {
+        let dir =
+            std::env::temp_dir().join(format!("limpid-block-revision-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("document.md");
+        fs::write(&path, "before\n\ncafé\n\nafter\n").unwrap();
+        let revision = FileRevision::open(&path).unwrap();
+        assert!(
+            revision.replace_range(8..12, "bad").is_err(),
+            "range splits é"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "before\n\ncafé\n\nafter\n"
+        );
+        assert_eq!(
+            revision.replace_range(8..13, "better").unwrap(),
+            "before\n\nbetter\n\nafter\n"
+        );
+        assert!(revision.replace_range(8..13, "stale").is_err());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "before\n\nbetter\n\nafter\n"
+        );
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(dir).unwrap();
+    }
 
     #[test]
     fn file_replies_are_atomic_escaped_and_refuse_stale_content() {

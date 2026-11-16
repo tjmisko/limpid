@@ -122,6 +122,13 @@ choose an option and `Enter` or `i` edits a reply. `c` comments on the focused
 block, or reopens a focused comment for editing, and `x` deletes it; `c` on a
 question is an answer to it.
 
+`E` opens the focused block's Markdown in the embedded editor for rewriting.
+Inside that editor, `:w`, `:wq` or `Ctrl-Enter` replaces the block in its
+Markdown file and returns to the page; `:q!` cancels. List items retain their
+markers and indentation. On an agent page or standard-input page, this edits
+the local cached Markdown, leaving the original conversation unchanged.
+The binding can be remapped with `edit_block` under `[view.keys]`.
+
 Replies and comments are written in your own Neovim, embedded in the box
 (`editor.init = "user"` loads your config, `"clean"` loads limpid's small
 one). Inside a box every key is Neovim's: `:w` saves, `:q` cancels, and

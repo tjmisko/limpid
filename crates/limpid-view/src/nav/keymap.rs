@@ -35,6 +35,7 @@ pub enum Action {
     ScrollRight,
     OpenReply,
     OpenComment,
+    EditBlock,
     Insert,
     InsertStart,
     InsertEnd,
@@ -82,6 +83,7 @@ const TABLE: &[(Action, &str, &str)] = &[
     (Action::InsertStart, "insert_start", "shift+i"),
     (Action::InsertEnd, "insert_end", "shift+a"),
     (Action::OpenComment, "open_comment", "c, o"),
+    (Action::EditBlock, "edit_block", "shift+e"),
     (Action::DeleteComment, "delete_comment", "x"),
     (Action::Review, "review", "shift+s"),
     (Action::FirstUnanswered, "first_unanswered", "shift+q"),
@@ -617,6 +619,35 @@ fn check_conflicts(bindings: &[(Sequence, Action)]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_editing_is_uppercase_e_and_can_be_remapped() {
+        let mut map = Keymap::defaults();
+        assert_eq!(
+            map.feed(&Chord::parse("E").unwrap(), 0, true),
+            Resolved::Action {
+                action: Action::EditBlock,
+                count: None
+            }
+        );
+        assert_eq!(
+            map.feed(&Chord::parse("e").unwrap(), 1, true),
+            Resolved::Unbound
+        );
+        let mut remapped =
+            Keymap::new(&BTreeMap::from([("edit_block".into(), "ctrl+e".into())])).unwrap();
+        assert_eq!(
+            remapped.feed(&Chord::parse("E").unwrap(), 0, true),
+            Resolved::Unbound
+        );
+        assert_eq!(
+            remapped.feed(&Chord::parse("ctrl+e").unwrap(), 1, true),
+            Resolved::Action {
+                action: Action::EditBlock,
+                count: None
+            }
+        );
+    }
 
     fn map() -> Keymap {
         Keymap::defaults()

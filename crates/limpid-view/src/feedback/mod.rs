@@ -7,6 +7,7 @@
 //! table's feedback actions reach it through [`FeedbackHandle`], the
 //! [`PageActions`] implementation of the page.
 
+mod block_edit;
 pub mod boxes;
 pub mod fields;
 pub mod host;
@@ -161,6 +162,9 @@ pub struct Feedback {
     flashes: Vec<String>,
     remote: Option<RemoteLink>,
     pushes: Pushes,
+    /// Failed source writes reopen the editor with this text after its queued
+    /// quit event, so an error never throws away the user's wording.
+    retry_block: Option<(String, String, bool)>,
 }
 
 impl Drop for Feedback {
@@ -235,6 +239,7 @@ impl Feedback {
                     close: false,
                 }
             },
+            retry_block: None,
         }
     }
 
@@ -514,6 +519,7 @@ impl Feedback {
     }
 
     fn finish_box(&mut self, plan: BoxPlan) {
+        self.retry_block = None;
         self.open = None;
         self.host.borrow_mut().release(self.owner, Instant::now());
         self.stale = true;
@@ -530,6 +536,7 @@ impl Feedback {
                     Focus::Real(target.clone())
                 }
             }
+            BoxTarget::Block { target, .. } => Focus::Real(target.clone()),
         });
     }
 
@@ -542,6 +549,15 @@ impl Feedback {
         let handled = !polled.events.is_empty();
         for event in polled.events {
             self.handle_event(event);
+        }
+        if self
+            .retry_block
+            .as_ref()
+            .is_some_and(|(_, _, closed)| *closed || crashed)
+            && let Some((text, error, _)) = self.retry_block.take()
+        {
+            self.reopen_block(&text, &error);
+            return true;
         }
         if crashed && let Some(open) = self.open.as_ref() {
             let plan = open.plan.clone();
@@ -569,7 +585,9 @@ impl Feedback {
             }
             EditorEvent::Save(text) => self.apply_buffer(&text),
             EditorEvent::Quit { .. } => {
-                if let Some(open) = self.open.as_ref() {
+                if let Some((_, _, closed)) = self.retry_block.as_mut() {
+                    *closed = true;
+                } else if let Some(open) = self.open.as_ref() {
                     let plan = open.plan.clone();
                     self.finish_box(plan);
                 }
@@ -644,6 +662,11 @@ impl Feedback {
                     end_line: line_of(&self.source, last),
                     target,
                 });
+            }
+            BoxTarget::Block { target, source } => {
+                if let Err(error) = self.save_block(target, &source, text) {
+                    self.retry_block = Some((text.to_owned(), error, false));
+                }
             }
         }
         self.stale = true;
@@ -1082,6 +1105,7 @@ impl Feedback {
             FeedbackAction::PickOption(number) => self.pick_option(number, stop),
             FeedbackAction::OpenReply => self.open_reply(stop),
             FeedbackAction::OpenComment => self.open_comment(stop),
+            FeedbackAction::EditBlock => self.open_block(stop),
             FeedbackAction::Edit(at) => self.edit_at(at, stop),
             FeedbackAction::DeleteComment => self.delete_comment(stop),
             FeedbackAction::Review => self.open_review(),
