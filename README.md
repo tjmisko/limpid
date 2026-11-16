@@ -135,8 +135,10 @@ The binding can be remapped with `edit_block` under `[view.keys]`.
 
 Replies and comments are written in your own Neovim, embedded in the box
 (`editor.init = "user"` loads your config, `"clean"` loads limpid's small
-one). Inside a box every key is Neovim's: `:w` saves, `:q` cancels, and
-`Ctrl-Enter` saves directly. `S` opens the composed message for review;
+one). Inside a box, `:w` saves, `:q` cancels, and `Ctrl-Enter` saves directly.
+`Ctrl-V` and `Ctrl-Shift-V` paste from the system clipboard in normal, insert,
+visual and command-line modes, using Neovim's clipboard provider (`wl-paste`
+on Wayland, `xclip` on X11). `S` opens the composed message for review;
 `Ctrl-Enter` there runs the configured reply command.
 
 Multiple windows can keep editors open at the same time. Each active editor

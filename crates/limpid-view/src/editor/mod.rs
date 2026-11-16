@@ -538,6 +538,130 @@ mod tests {
         });
     }
 
+    /// A real clipboard provider with deterministic contents, without touching
+    /// the desktop clipboard. The primary selection deliberately differs.
+    fn clipboard_editor(text: &str) -> Option<Editor> {
+        let mut editor = started()?;
+        let rpc = &mut editor.process.as_mut().unwrap().rpc;
+        rpc.request(
+            "nvim_exec_lua",
+            vec![
+                Value::from(r#"
+                    local text = ...
+                    vim.g.clipboard = {
+                      name = 'limpid-test',
+                      copy = { ['+'] = function() end, ['*'] = function() end },
+                      paste = {
+                        ['+'] = function() return { vim.split(text, '\n', { plain = true }), 'v' } end,
+                        ['*'] = function() return { { 'wrong selection' }, 'v' } end,
+                      },
+                      cache_enabled = 0,
+                    }
+                    for _, key in ipairs({ '<C-v>', '<C-S-v>' }) do
+                      vim.keymap.set({ 'n', 'i', 'x', 's', 'c' }, key, function()
+                        error('global user mapping must not override box paste')
+                      end)
+                    end
+                "#),
+                Value::Array(vec![Value::from(text)]),
+            ],
+        ).unwrap();
+        Some(editor)
+    }
+
+    fn paste_shortcuts() -> [String; 2] {
+        use winit::keyboard::{Key, ModifiersState};
+        [
+            ("v", ModifiersState::CONTROL),
+            ("V", ModifiersState::CONTROL | ModifiersState::SHIFT),
+        ]
+        .map(|(key, modifiers)| {
+            keys::translate_key(&Key::Character(key.into()), None, modifiers).unwrap()
+        })
+    }
+
+    #[test]
+    fn should_paste_system_clipboard_literally_with_both_shortcuts_in_insert_mode() {
+        let text = "first <Esc>\n  日本語\n\tlast\n";
+        let Some(mut editor) = clipboard_editor(text) else {
+            return;
+        };
+        for shortcut in paste_shortcuts() {
+            editor.open("", BoxKind::Reply).unwrap();
+            // Also exercises keys queued while the box is still opening.
+            editor.input(&shortcut);
+            collect_until(&mut editor, |editor, _| {
+                editor.grid().row_text(0).starts_with("first <Esc>")
+            });
+            editor.input("<Esc>:w<CR>");
+            collect_until(&mut editor, |_, seen| {
+                seen.contains(&EditorEvent::Save(text.into()))
+                    && seen.contains(&EditorEvent::Quit { discard: false })
+            });
+        }
+    }
+
+    #[test]
+    fn should_paste_after_normal_cursor_or_replace_visual_selection_with_both_shortcuts() {
+        let Some(mut editor) = clipboard_editor("new\n  text") else {
+            return;
+        };
+        for shortcut in paste_shortcuts() {
+            for (select, expected) in [("", "oldnew\n  text"), ("gg0v$", "new\n  text")] {
+                editor.open("old", BoxKind::Block).unwrap();
+                editor.input(select);
+                editor.input(&shortcut);
+                collect_until(&mut editor, |editor, _| {
+                    editor.grid().row_text(1).trim_end() == "  text"
+                });
+                editor.input(":w<CR>");
+                collect_until(&mut editor, |_, seen| {
+                    seen.contains(&EditorEvent::Save(expected.into()))
+                        && seen.contains(&EditorEvent::Quit { discard: false })
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn should_paste_into_command_line_with_both_shortcuts() {
+        let Some(mut editor) = clipboard_editor("literal <Esc> 日本語") else {
+            return;
+        };
+        for shortcut in paste_shortcuts() {
+            editor.open("", BoxKind::Comment).unwrap();
+            editor.input("<Esc>:let b:pasted = '");
+            editor.input(&shortcut);
+            collect_until(&mut editor, |_, seen| {
+                seen.contains(&EditorEvent::CmdlineShow(
+                    ":let b:pasted = 'literal <Esc> 日本語".into(),
+                ))
+            });
+            editor.input("'<CR>:call setline(1, b:pasted)<CR>:w<CR>");
+            collect_until(&mut editor, |_, seen| {
+                seen.contains(&EditorEvent::Save("literal <Esc> 日本語".into()))
+                    && seen.contains(&EditorEvent::Quit { discard: false })
+            });
+        }
+    }
+
+    #[test]
+    fn should_keep_visual_selection_when_clipboard_is_empty() {
+        let Some(mut editor) = clipboard_editor("") else {
+            return;
+        };
+        for shortcut in paste_shortcuts() {
+            editor.open("keep", BoxKind::Block).unwrap();
+            editor.input("gg0v$");
+            editor.input(&shortcut);
+            editor.input("<Esc>:w<CR>");
+            collect_until(&mut editor, |_, seen| {
+                seen.contains(&EditorEvent::Save("keep".into()))
+                    && seen.contains(&EditorEvent::Quit { discard: false })
+            });
+        }
+    }
+
     #[test]
     fn should_report_wrapped_buffer_height_beyond_the_grid_and_recompute_on_resize() {
         let Some(mut editor) = started() else { return };

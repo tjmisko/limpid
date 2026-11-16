@@ -134,6 +134,17 @@ function limpid.open(text, kind)
     end,
   })
   vim.keymap.set({ "n", "i" }, "<C-CR>", "<Cmd>wq<CR>", { buffer = buf, silent = true })
+  -- Desktop paste shortcuts belong to the box even with a user's config.
+  -- Use the system (+) register and the paste API so multiline text bypasses
+  -- mappings and autoindent, and visual selections are replaced normally.
+  for _, key in ipairs({ "<C-v>", "<C-S-v>" }) do
+    vim.keymap.set({ "n", "i", "x", "s", "c" }, key, function()
+      local pasted = vim.fn.getreg("+")
+      if pasted ~= "" then
+        vim.api.nvim_paste(pasted, true, -1)
+      end
+    end, { buffer = buf, silent = true, desc = "Paste from system clipboard" })
+  end
 
   if text == "" then
     vim.cmd("startinsert")
