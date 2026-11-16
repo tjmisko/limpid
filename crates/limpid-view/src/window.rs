@@ -68,6 +68,19 @@ pub enum PointerEvent {
     Button,
 }
 
+impl PointerEvent {
+    fn from_scroll_delta(delta: MouseScrollDelta) -> Self {
+        // Winit deltas describe content motion (positive moves content down),
+        // while pages use viewport motion (positive reveals content below).
+        match delta {
+            MouseScrollDelta::LineDelta(_, lines) => Self::Wheel { lines: -lines },
+            MouseScrollDelta::PixelDelta(position) => Self::Scroll {
+                dy: -position.y as f32,
+            },
+        }
+    }
+}
+
 /// How often a page that wants ticks is woken.
 pub const TICK_INTERVAL: Duration = Duration::from_millis(16);
 
@@ -311,12 +324,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let event = match delta {
-                    MouseScrollDelta::LineDelta(_, lines) => PointerEvent::Wheel { lines },
-                    MouseScrollDelta::PixelDelta(position) => PointerEvent::Scroll {
-                        dy: position.y as f32,
-                    },
-                };
+                let event = PointerEvent::from_scroll_delta(delta);
                 if open.page.pointer(event) {
                     open.request_redraw();
                 }
@@ -335,6 +343,50 @@ impl ApplicationHandler<UserEvent> for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{page::DocPage, snapshot::render, text::Fonts};
+    use limpid_core::{settings::Settings, transport::Scheme};
+    use std::cell::RefCell;
+    use winit::dpi::PhysicalPosition;
+
+    fn assert_scroll_direction(down: MouseScrollDelta, up: MouseScrollDelta) {
+        let source: String = (0..100).map(|n| format!("paragraph {n}\n\n")).collect();
+        let mut page = DocPage::from_source(
+            &source,
+            "scroll".into(),
+            &Settings::default(),
+            Scheme::Dark,
+            Rc::new(RefCell::new(Fonts::new())),
+        );
+        render(&mut page, 400, 300, 1.0).unwrap();
+        assert_eq!(page.scroll(), 0.0);
+
+        page.pointer(PointerEvent::from_scroll_delta(down));
+        render(&mut page, 400, 300, 1.0).unwrap();
+        assert!(page.scroll() > 0.0, "scroll down must reveal later content");
+        if let MouseScrollDelta::PixelDelta(position) = down {
+            assert_eq!(page.scroll(), -position.y as f32);
+        }
+
+        page.pointer(PointerEvent::from_scroll_delta(up));
+        render(&mut page, 400, 300, 1.0).unwrap();
+        assert_eq!(page.scroll(), 0.0, "scroll up must return to the top");
+    }
+
+    #[test]
+    fn should_scroll_in_the_requested_direction_for_mouse_wheel_input() {
+        assert_scroll_direction(
+            MouseScrollDelta::LineDelta(0.0, -1.0),
+            MouseScrollDelta::LineDelta(0.0, 1.0),
+        );
+    }
+
+    #[test]
+    fn should_scroll_in_the_requested_direction_for_trackpad_input() {
+        assert_scroll_direction(
+            MouseScrollDelta::PixelDelta(PhysicalPosition::new(12.0, -37.5)),
+            MouseScrollDelta::PixelDelta(PhysicalPosition::new(-12.0, 37.5)),
+        );
+    }
 
     struct Still;
 
