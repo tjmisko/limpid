@@ -47,6 +47,8 @@ pub enum ErrorCode {
     Rejected,
     DeliveryUnavailable,
     FrameTooLarge,
+    /// A submission may or may not have reached the agent.
+    SubmitUncertain,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

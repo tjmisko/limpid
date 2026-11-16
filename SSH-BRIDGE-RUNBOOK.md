@@ -80,3 +80,23 @@ unavailable; saving never wakes Claude.
    at `~/.cache/limpid/remote/<stem>.replies.json`.
 5. Two logins that opened the same page: save from one, then from the other.
    The second says `stale revision` and keeps its local copy.
+
+## Stage 5: submitting feedback to the originating Claude session
+
+Manual check, run by hand; nothing in the test suite connects to `nlessfun`.
+The remote Claude plugin must be the one in `integrations/claude-code`, which
+acknowledges each prompt to its listener. Restart Claude after updating it.
+
+1. Open a page with `/read` over `limpid ssh nlessfun`, answer a question, and
+   `:wq`. The status line says `Saved locally, sending to the remote session`
+   and then `Sent to the agent session`; the window closes and Claude starts a
+   turn that answers the feedback.
+2. Run two `claude` sessions (two logins or two panes) and `/read` in each.
+   `:wq` in the first session's window: only that session starts a turn.
+3. `/clear` in the session, then `:wq` in its older window: the status line
+   says `Not sent` and the window stays open. The newer session does nothing.
+4. Quit Claude and `:wq` again: `Not sent`, naming a missing listener; the
+   feedback is still readable with `limpid-core feedback <page.html>`.
+5. `:wq` with no feedback just closes the window and contacts nobody.
+6. `Possibly sent, not confirmed` means the agent may have started a turn
+   without confirming. Look at the session before sending again.

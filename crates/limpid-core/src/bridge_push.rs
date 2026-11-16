@@ -8,6 +8,13 @@
 //! the sender acknowledged the digest of the local copy; the acknowledgment is
 //! recorded before the viewer is told.
 //!
+//! A request may also ask to submit: after the sender acknowledged the saved
+//! feedback, the launcher asks the sender to deliver it to the page's agent
+//! session. Submission never happens for feedback the sender does not hold,
+//! and its outcome is reported separately from the save: submitted, not
+//! submitted, or uncertain when the confirmation was lost. An uncertain
+//! outcome is never retried here.
+//!
 //! The service works over one JSON line per connection in each direction, and
 //! never runs on the viewer's event loop: the viewer asks from a worker.
 
@@ -34,8 +41,8 @@ use std::{
 };
 
 /// How long the viewer waits for the launcher's answer: the launcher's own
-/// request timeout plus headroom.
-pub const PUSH_WAIT: Duration = Duration::from_secs(15);
+/// save and submit timeouts plus headroom.
+pub const PUSH_WAIT: Duration = Duration::from_secs(30);
 const MAX_LINE: u64 = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +50,10 @@ const MAX_LINE: u64 = 64 * 1024;
 pub struct PushRequest {
     pub instance: String,
     pub page_id: String,
+    /// Also submit the feedback to the page's agent session once the sender
+    /// holds it.
+    #[serde(default)]
+    pub submit: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +65,24 @@ pub enum PushState {
     LocalOnly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmitState {
+    /// The agent session accepted the prompt.
+    Submitted,
+    /// Nothing was submitted.
+    NotSubmitted,
+    /// The prompt may have reached the agent; no confirmation arrived.
+    Uncertain,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Submission {
+    pub state: SubmitState,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PushReply {
     pub state: PushState,
@@ -61,6 +90,9 @@ pub struct PushReply {
     pub revision: Option<u64>,
     #[serde(default)]
     pub error: Option<String>,
+    /// The outcome of the submission, when one was asked for.
+    #[serde(default)]
+    pub submission: Option<Submission>,
 }
 
 impl PushReply {
@@ -69,11 +101,47 @@ impl PushReply {
             state: PushState::LocalOnly,
             revision: None,
             error: Some(error.into()),
+            submission: None,
         }
+    }
+
+    /// A reply to a request that was refused before the sender was asked: for
+    /// a submitting request that means nothing was submitted.
+    fn refused(request: &PushRequest, error: impl Into<String>) -> Self {
+        let mut reply = Self::local_only(error);
+        reply.settle_submission(request);
+        reply
+    }
+
+    /// A submitting request whose save did not reach the sender submitted
+    /// nothing; say so rather than leave the viewer guessing.
+    fn settle_submission(&mut self, request: &PushRequest) {
+        if request.submit && self.state == PushState::LocalOnly && self.submission.is_none() {
+            let why = match &self.error {
+                Some(error) => format!(" ({error})"),
+                None => String::new(),
+            };
+            self.submission = Some(Submission {
+                state: SubmitState::NotSubmitted,
+                error: Some(format!(
+                    "the feedback is not saved on the remote{why}, so it was not sent"
+                )),
+            });
+        }
+    }
+
+    /// Whether the agent session accepted the prompt.
+    pub fn submitted(&self) -> bool {
+        self.submission
+            .as_ref()
+            .is_some_and(|submission| submission.state == SubmitState::Submitted)
     }
 
     /// The line the viewer shows.
     pub fn describe(&self) -> String {
+        if let Some(submission) = &self.submission {
+            return self.describe_submission(submission);
+        }
         match (self.state, &self.error) {
             (PushState::RemoteSaved, _) => match self.revision {
                 Some(revision) => format!("Saved locally and on the remote (revision {revision})"),
@@ -83,6 +151,24 @@ impl PushReply {
                 format!("Saved locally only, not on the remote: {error}")
             }
             (PushState::LocalOnly, None) => "Saved locally only, not on the remote".into(),
+        }
+    }
+}
+
+impl PushReply {
+    fn describe_submission(&self, submission: &Submission) -> String {
+        let detail = submission.error.as_deref().unwrap_or("no reason given");
+        let kept = match self.state {
+            PushState::RemoteSaved => "feedback is saved locally and on the remote",
+            PushState::LocalOnly => "feedback is saved locally only",
+        };
+        match submission.state {
+            SubmitState::Submitted => "Sent to the agent session".into(),
+            SubmitState::NotSubmitted => format!("Not sent: {detail}; {kept}"),
+            SubmitState::Uncertain => format!(
+                "Possibly sent, not confirmed: {detail}; check the agent session before \
+                 sending again; {kept}"
+            ),
         }
     }
 }
@@ -107,6 +193,30 @@ fn describe_failure(error: &BridgeError) -> String {
     }
 }
 
+/// Whether a failed submission may have reached the agent. Only a refusal the
+/// sender reported itself proves nothing was submitted; a lost answer or a
+/// dropped connection proves nothing.
+fn submit_state_of(error: &BridgeError) -> SubmitState {
+    match error {
+        BridgeError::Remote {
+            code: ErrorCode::SubmitUncertain,
+            ..
+        }
+        | BridgeError::Timeout
+        | BridgeError::Disconnected => SubmitState::Uncertain,
+        _ => SubmitState::NotSubmitted,
+    }
+}
+
+fn describe_submit_failure(error: &BridgeError) -> String {
+    match error {
+        BridgeError::Remote { message, .. } => message.clone(),
+        BridgeError::Timeout => "the remote did not confirm in time".into(),
+        BridgeError::Disconnected => "the remote connection closed before confirming".into(),
+        other => other.to_string(),
+    }
+}
+
 pub struct PushService {
     path: PathBuf,
     core: Arc<PushCore>,
@@ -121,6 +231,32 @@ struct PushCore {
 
 impl PushCore {
     fn push(&self, request: &PushRequest) -> PushReply {
+        let mut reply = self.save(request);
+        reply.settle_submission(request);
+        if request.submit && reply.state == PushState::RemoteSaved && reply.submission.is_none() {
+            reply.submission = Some(self.submit(request, reply.revision.unwrap_or(0)));
+        }
+        reply
+    }
+
+    /// Ask the sender to submit the feedback it saved at `revision`.
+    fn submit(&self, request: &PushRequest, revision: u64) -> Submission {
+        match self
+            .hub
+            .submit(&request.instance, &request.page_id, revision)
+        {
+            Ok(_) => Submission {
+                state: SubmitState::Submitted,
+                error: None,
+            },
+            Err(error) => Submission {
+                state: submit_state_of(&error),
+                error: Some(describe_submit_failure(&error)),
+            },
+        }
+    }
+
+    fn save(&self, request: &PushRequest) -> PushReply {
         let Some((imported, page_id)) = self.importer.imported(&request.instance) else {
             return PushReply::local_only("this page is not open here; saved copy kept");
         };
@@ -149,6 +285,7 @@ impl PushCore {
                 state: PushState::RemoteSaved,
                 revision: Some(state.revision),
                 error: None,
+                submission: None,
             };
         }
         let annotations = match serde_json::to_value(&replies) {
@@ -182,6 +319,7 @@ impl PushCore {
                     state: PushState::RemoteSaved,
                     revision: Some(revision),
                     error: None,
+                    submission: None,
                 }
             }
             Err(error) => PushReply::local_only(describe_failure(&error)),
@@ -265,9 +403,10 @@ pub fn request_push(socket: &Path, request: &PushRequest, wait: Duration) -> Pus
     let stream = match UnixStream::connect(socket) {
         Ok(stream) => stream,
         Err(error) => {
-            return PushReply::local_only(format!(
-                "the login that opened this page is gone ({error}); saved copy kept"
-            ));
+            return PushReply::refused(
+                request,
+                format!("the login that opened this page is gone ({error}); saved copy kept"),
+            );
         }
     };
     let _ = stream.set_read_timeout(Some(wait));
@@ -282,7 +421,7 @@ pub fn request_push(socket: &Path, request: &PushRequest, wait: Duration) -> Pus
                 .map_err(|error| error.to_string())
         });
     if let Err(error) = sent {
-        return PushReply::local_only(format!("could not ask the launcher: {error}"));
+        return PushReply::refused(request, format!("could not ask the launcher: {error}"));
     }
     let mut line = Vec::new();
     match BufReader::new(&stream)
@@ -290,9 +429,23 @@ pub fn request_push(socket: &Path, request: &PushRequest, wait: Duration) -> Pus
         .read_until(b'\n', &mut line)
     {
         Ok(_) if line.last() == Some(&b'\n') => serde_json::from_slice(&line)
-            .unwrap_or_else(|_| PushReply::local_only("the launcher's answer was malformed")),
-        _ => PushReply::local_only(
+            .unwrap_or_else(|_| lost_answer(request, "the launcher's answer was malformed")),
+        _ => lost_answer(
+            request,
             "the launcher did not answer; the remote may or may not have saved; local copy kept",
         ),
     }
+}
+
+/// The request was written and no usable answer came back. A save may or may
+/// not have happened; a submission may or may not have started a turn.
+fn lost_answer(request: &PushRequest, error: &str) -> PushReply {
+    let mut reply = PushReply::local_only(error);
+    if request.submit {
+        reply.submission = Some(Submission {
+            state: SubmitState::Uncertain,
+            error: Some(error.into()),
+        });
+    }
+    reply
 }

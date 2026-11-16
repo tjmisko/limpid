@@ -839,6 +839,12 @@ impl DocPage {
             self.reload_quietly();
             changed = true;
         }
+        // The agent session accepted the feedback a remote :wq sent.
+        let done = feedback.borrow_mut().take_close();
+        if done {
+            self.perform(Request::Close(CloseKind::Window));
+            changed = true;
+        }
         let stale = feedback.borrow_mut().take_stale();
         if stale {
             self.rebuild_overlay();
@@ -1089,6 +1095,7 @@ impl DocPage {
                 let message = match result {
                     crate::nav::ActionResult::Done(message)
                     | crate::nav::ActionResult::Nothing(message)
+                    | crate::nav::ActionResult::Pending(message)
                     | crate::nav::ActionResult::Failed(message) => message,
                     crate::nav::ActionResult::Unsupported => "cannot send".to_owned(),
                 };

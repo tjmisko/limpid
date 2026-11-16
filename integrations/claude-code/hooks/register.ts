@@ -4,10 +4,14 @@ import type { EngineInterface, Register } from 'claude-code'
 const ARGUMENT_HINT = '[0 | 0..2 | 1..=3 | 2.. | ..4]'
 const TIMEOUT_MS = 30_000
 
-// Binds the wake socket, then prints each frame before answering {ok}, so a
-// listener whose session is gone fails the write and the host falls back.
+// Binds the wake socket. Each frame is printed with an id and answered only
+// after the plugin acknowledges it on a second connection, `{"ack": id, "ok":
+// bool}`, once `$.prompt.submit` has accepted or refused the prompt. A frame
+// nobody acknowledges is dropped without an answer, so the host reports the
+// result as uncertain instead of claiming a prompt that may not exist. A
+// listener whose session is gone fails to connect and the host falls back.
 const LISTENER = `
-import os, socket, sys
+import json, os, socket, sys, threading
 path = sys.argv[1]
 os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
 try: os.unlink(path)
@@ -16,21 +20,68 @@ server = socket.socket(socket.AF_UNIX)
 server.bind(path)
 os.chmod(path, 0o600)
 server.listen()
-while True:
-    connection, _ = server.accept()
+lock = threading.Lock()
+pending = {}
+counter = 0
+
+def read_line(connection):
+    buffer = b""
+    while b"\\n" not in buffer:
+        chunk = connection.recv(65536)
+        if not chunk: return None
+        buffer += chunk
+    return buffer.split(b"\\n", 1)[0]
+
+def answer(connection, body):
+    connection.sendall(json.dumps(body).encode() + b"\\n")
+
+def serve(connection):
+    global counter
     with connection:
         connection.settimeout(5)
-        buffer = b""
         try:
-            while b"\\n" not in buffer:
-                chunk = connection.recv(65536)
-                if not chunk: break
-                buffer += chunk
-        except OSError: continue
-        if b"\\n" not in buffer: continue
-        sys.stdout.write(buffer.split(b"\\n", 1)[0].decode() + "\\n")
-        sys.stdout.flush()
-        connection.sendall(b'{"ok":true}\\n')
+            line = read_line(connection)
+            if line is None: return
+            try: frame = json.loads(line)
+            except ValueError: frame = None
+            if not isinstance(frame, dict):
+                answer(connection, {"ok": False, "error": "malformed frame"})
+                return
+            if "ack" in frame:
+                with lock: entry = pending.get(frame["ack"])
+                if entry:
+                    entry["ok"] = frame.get("ok") is True
+                    entry["done"].set()
+                return
+            with lock:
+                counter += 1
+                ident = str(counter)
+                entry = {"done": threading.Event(), "ok": False}
+                pending[ident] = entry
+            try:
+                frame["id"] = ident
+                sys.stdout.write(json.dumps(frame) + "\\n")
+                sys.stdout.flush()
+                confirmed = entry["done"].wait(1.5)
+            finally:
+                with lock: pending.pop(ident, None)
+            if not confirmed: return
+            if entry["ok"]: answer(connection, {"ok": True})
+            else: answer(connection, {"ok": False, "error": "the agent did not accept the prompt"})
+        except OSError: return
+
+while True:
+    connection, _ = server.accept()
+    threading.Thread(target=serve, args=(connection,), daemon=True).start()
+`
+
+// Tells the listener whether the prompt in frame argv[2] was accepted.
+const ACKNOWLEDGER = `
+import json, socket, sys
+connection = socket.socket(socket.AF_UNIX)
+connection.settimeout(2)
+connection.connect(sys.argv[1])
+connection.sendall(json.dumps({"ack": sys.argv[2], "ok": sys.argv[3] == "1"}).encode() + b"\\n")
 `
 
 let feedbackSock: string | undefined
@@ -72,7 +123,7 @@ async function ensureListener($: EngineInterface): Promise<void> {
           buffer = buffer.slice(newline + 1)
           try {
             const signal = JSON.parse(line)
-            if (typeof signal.message === 'string') void $.prompt.submit({ text: signal.message })
+            if (typeof signal.message === 'string') void submitAndAcknowledge($, socket, signal)
           } catch { /* ignore malformed frames */ }
         }
       }
@@ -83,6 +134,18 @@ async function ensureListener($: EngineInterface): Promise<void> {
       feedbackSock = undefined
     }
   })()
+}
+
+// Submit the prompt, then tell the listener how it went. The acknowledgment is
+// what lets a remote host report success: without it the listener stays silent.
+async function submitAndAcknowledge($: EngineInterface, socket: string, signal: { id?: unknown, message: string }): Promise<void> {
+  let accepted = false
+  try {
+    await $.prompt.submit({ text: signal.message })
+    accepted = true
+  } catch { accepted = false }
+  if (typeof signal.id !== 'string') return
+  try { await $.process.run(['python3', '-c', ACKNOWLEDGER, socket, signal.id, accepted ? '1' : '0'], { timeoutMs: 5_000 }) } catch { /* the listener reports the lost acknowledgment */ }
 }
 
 export const register: Register = on => {

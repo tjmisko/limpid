@@ -135,6 +135,7 @@ impl Login {
         PushRequest {
             instance: page.instance.clone(),
             page_id: page.page_id.clone(),
+            submit: false,
         }
     }
 
@@ -508,12 +509,14 @@ fn should_report_local_only_when_the_page_or_launcher_is_unknown() {
     let unknown = PushRequest {
         instance: "nope".into(),
         page_id: page.page_id.clone(),
+        submit: false,
     };
     let reply = request_push(login.service.path(), &unknown, Duration::from_secs(5));
     assert_eq!(reply.state, PushState::LocalOnly);
     let wrong_page = PushRequest {
         instance: page.instance.clone(),
         page_id: "md-other".into(),
+        submit: false,
     };
     let reply = request_push(login.service.path(), &wrong_page, Duration::from_secs(5));
     assert_eq!(reply.state, PushState::LocalOnly);
@@ -544,16 +547,16 @@ fn should_answer_a_malformed_request_with_local_only_when_the_line_is_not_json()
 }
 
 #[test]
-fn should_refuse_a_submit_and_still_not_contact_the_agent_when_the_hub_submits() {
+fn should_refuse_a_submit_and_not_contact_the_agent_when_there_is_no_feedback() {
     let root = scratch("submit");
     let html = agent_page(&root.join("sender"), None);
     let login = login(&root, "r1");
     let (page, _relay) = login.open(&html);
     let error = login
         .hub
-        .submit(&page.instance, &page.page_id, 1)
+        .submit(&page.instance, &page.page_id, 0)
         .unwrap_err();
-    assert!(error.to_string().contains("not available"), "{error}");
+    assert!(error.to_string().contains("no feedback"), "{error}");
     let _ = fs::remove_dir_all(root);
 }
 

@@ -11,6 +11,7 @@
 use crate::{
     bridge::{Body, BridgeError, Delivery, ErrorCode, OpenPage, Relay},
     bridge_save::{apply_save, page_id_of, read_feedback, read_revision},
+    bridge_submit::{LISTENER_WAIT, submit_feedback},
 };
 use std::{
     ffi::OsString,
@@ -121,19 +122,20 @@ fn new_instance() -> String {
 
 /// The relay's life: connect, open, report the outcome on `status`, then hold
 /// the connection until it ends. A save from the hub is persisted on this
-/// host and acknowledged with its revision; it never reaches the agent.
-/// Submitting is not implemented and is refused, and a page is never answered
-/// locally.
+/// host and acknowledged with its revision; it never reaches the agent. A
+/// submit composes the saved feedback here and delivers it to the listener of
+/// the page's own agent session, and nowhere else.
 pub fn serve(route: &RouteEnv, page: OpenPage, status: &mut dyn Write) -> Result<(), String> {
     let report = |status: &mut dyn Write, line: &str| {
         let _ = writeln!(status, "{line}");
         let _ = status.flush();
     };
-    let identity = (
-        page.instance.clone(),
-        page.page_id.clone(),
-        page.remote_path.clone(),
-    );
+    let identity = Identity {
+        instance: page.instance.clone(),
+        page_id: page.page_id.clone(),
+        remote_path: page.remote_path.clone(),
+        session: page.session.clone(),
+    };
     let relay = match Relay::connect(&route.socket, &route.route) {
         Ok(relay) => relay.with_timeout(OPEN_TIMEOUT),
         Err(error) => {
@@ -163,35 +165,39 @@ pub fn serve(route: &RouteEnv, page: OpenPage, status: &mut dyn Write) -> Result
     }
 }
 
+/// What the relay holds: the page it opened and the session it belongs to.
+struct Identity {
+    instance: String,
+    page_id: String,
+    remote_path: Option<String>,
+    session: String,
+}
+
 /// Answer one request from the hub for the page this relay holds.
-fn answer(
-    relay: &Relay,
-    request: &crate::bridge::Request,
-    (instance, page_id, remote_path): &(String, String, Option<String>),
-) {
-    let Body::Save {
-        instance: saved_instance,
-        page_id: saved_page,
-        revision,
-        annotations,
-    } = &request.body
-    else {
-        let _ = relay.fail(
-            request,
-            ErrorCode::DeliveryUnavailable,
-            "submitting feedback is not available yet; it is saved on this host only",
-        );
-        return;
+fn answer(relay: &Relay, request: &crate::bridge::Request, identity: &Identity) {
+    let (instance, page_id, revision) = match &request.body {
+        Body::Save {
+            instance,
+            page_id,
+            revision,
+            ..
+        }
+        | Body::Submit {
+            instance,
+            page_id,
+            revision,
+        } => (instance, page_id, *revision),
+        _ => return,
     };
-    if saved_instance != instance || saved_page != page_id {
+    if instance != &identity.instance || page_id != &identity.page_id {
         let _ = relay.fail(
             request,
             ErrorCode::PageMismatch,
-            "the save is for a different page than this relay holds",
+            "the request is for a different page than this relay holds",
         );
         return;
     }
-    let Some(html) = remote_path else {
+    let Some(html) = &identity.remote_path else {
         let _ = relay.fail(
             request,
             ErrorCode::DeliveryUnavailable,
@@ -199,7 +205,19 @@ fn answer(
         );
         return;
     };
-    match apply_save(Path::new(html), page_id, instance, *revision, annotations) {
+    let result = match &request.body {
+        Body::Save { annotations, .. } => {
+            apply_save(Path::new(html), page_id, instance, revision, annotations)
+        }
+        _ => submit_feedback(
+            Path::new(html),
+            &identity.session,
+            page_id,
+            revision,
+            LISTENER_WAIT,
+        ),
+    };
+    match result {
         Ok(stored) => {
             let _ = relay.ack(request, Some(stored));
         }

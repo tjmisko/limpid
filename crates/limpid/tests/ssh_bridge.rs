@@ -756,6 +756,7 @@ fn should_save_feedback_to_the_remote_page_when_the_local_copy_is_pushed_over_ss
     let request = limpid_core::bridge_push::PushRequest {
         instance: origin["instance"].as_str().unwrap().into(),
         page_id: origin["page_id"].as_str().unwrap().into(),
+        submit: false,
     };
     let reply = limpid_core::bridge_push::request_push(
         Path::new(origin["save_sock"].as_str().unwrap()),
