@@ -86,6 +86,74 @@ pub fn send_feedback(
     Ok(value.get("ok").and_then(serde_json::Value::as_bool) == Some(true))
 }
 
+/// What happened to a frame sent to an agent's feedback listener. Only
+/// [`FeedbackOutcome::Accepted`] means the integration took the prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FeedbackOutcome {
+    /// The listener answered `{"ok":true}`: the prompt was accepted.
+    Accepted,
+    /// The frame never reached a listener: nothing can have been submitted.
+    NotDelivered(String),
+    /// The listener answered `{"ok":false}`: it refused the prompt.
+    Refused(String),
+    /// The frame was written but no answer arrived, so the prompt may have
+    /// been submitted. Callers must not retry on their own.
+    Uncertain(String),
+}
+
+/// Like [`send_feedback`], but tells a listener that was never reached apart
+/// from one that refused and one whose answer was lost.
+pub fn send_feedback_checked(
+    socket: &Path,
+    signal: &FeedbackSignal,
+    wait: std::time::Duration,
+) -> FeedbackOutcome {
+    let stream = match UnixStream::connect(socket) {
+        Ok(stream) => stream,
+        Err(error) => {
+            return FeedbackOutcome::NotDelivered(format!(
+                "no agent is listening at {} ({error})",
+                socket.display()
+            ));
+        }
+    };
+    let _ = stream.set_write_timeout(Some(wait));
+    let _ = stream.set_read_timeout(Some(wait));
+    let mut writer = &stream;
+    let written = serde_json::to_vec(signal)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            writer
+                .write_all(&bytes)
+                .and_then(|()| writer.write_all(b"\n"))
+                .map_err(|error| error.to_string())
+        });
+    if let Err(error) = written {
+        return FeedbackOutcome::Uncertain(format!("could not finish writing the prompt: {error}"));
+    }
+    let mut bytes = Vec::new();
+    let read = BufReader::new(&stream)
+        .take(1 << 20)
+        .read_until(b'\n', &mut bytes);
+    if read.is_err() || bytes.last() != Some(&b'\n') {
+        return FeedbackOutcome::Uncertain("the agent did not confirm the prompt".into());
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return FeedbackOutcome::Uncertain("the agent's confirmation was unreadable".into());
+    };
+    match value.get("ok").and_then(serde_json::Value::as_bool) {
+        Some(true) => FeedbackOutcome::Accepted,
+        Some(false) => FeedbackOutcome::Refused(
+            value
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("the agent refused the prompt")
+                .to_owned(),
+        ),
+        None => FeedbackOutcome::Uncertain("the agent's confirmation was unreadable".into()),
+    }
+}
+
 pub fn receive(stream: UnixStream) -> Option<Handoff> {
     if !same_user(&stream) {
         return None;

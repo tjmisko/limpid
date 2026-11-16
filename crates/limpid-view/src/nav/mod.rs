@@ -112,6 +112,9 @@ pub enum ActionResult {
     /// There was nothing to do; the message says why.
     Nothing(String),
     Failed(String),
+    /// The work continues in the background; the message is flashed and the
+    /// page stays open until the page closes itself.
+    Pending(String),
     /// This page has no such feature.
     Unsupported,
 }
@@ -590,6 +593,7 @@ impl Nav {
         match result {
             ActionResult::Done(message)
             | ActionResult::Nothing(message)
+            | ActionResult::Pending(message)
             | ActionResult::Failed(message) => self.flash(message, now_ms),
             ActionResult::Unsupported => self.flash(unsupported, now_ms),
         }

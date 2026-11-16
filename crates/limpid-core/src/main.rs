@@ -441,7 +441,7 @@ fn prune_agent_pages(cache: &Path, preserve: &Path) -> Result<(), Box<dyn Error>
             continue;
         }
         std::fs::remove_file(&page)?;
-        for extension in ["meta.json", "md", "replies.json"] {
+        for extension in ["meta.json", "md", "replies.json", "revision"] {
             let mut associated = page.clone();
             associated.set_extension(extension);
             if associated.exists() {

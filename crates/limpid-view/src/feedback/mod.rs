@@ -28,6 +28,7 @@ use fields::{
 };
 use host::{BeginError, EditorHost, OwnerId, SharedEditor};
 use limpid_core::{
+    bridge_push::{PUSH_WAIT, PushReply, PushRequest, request_push},
     doc::Block,
     replies::{self, AgentReplies},
     settings::Settings,
@@ -38,9 +39,46 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     ops::Range,
+    path::PathBuf,
     rc::Rc,
+    sync::mpsc::{self, Receiver, Sender},
     time::{Duration, Instant},
 };
+
+/// How often a window polls for the sender's answer to a save.
+const PUSH_POLL_PERIOD: Duration = Duration::from_millis(50);
+
+/// Where a page's feedback is pushed after it is saved locally: the page was
+/// opened from another machine, and that machine's launcher holds the route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteLink {
+    save_sock: Option<PathBuf>,
+    instance: String,
+    page_id: String,
+}
+
+fn remote_link(handoff: &Handoff) -> Option<RemoteLink> {
+    let meta = replies::page_meta(handoff).ok()?;
+    let remote = meta.get("remote").filter(|remote| !remote.is_null())?;
+    let text = |key: &str| remote.get(key).and_then(serde_json::Value::as_str);
+    Some(RemoteLink {
+        save_sock: text("save_sock").map(PathBuf::from),
+        instance: text("instance")?.to_owned(),
+        page_id: text("page_id")?.to_owned(),
+    })
+}
+
+/// Answers of saves in flight to the sender, produced by worker threads. The
+/// flag says whether the request also asked to submit.
+struct Pushes {
+    sender: Sender<(bool, PushReply)>,
+    receiver: Receiver<(bool, PushReply)>,
+    inflight: usize,
+    /// A submission is on its way; a second `:wq` must not start another.
+    submitting: bool,
+    /// The agent session accepted the feedback: the page may close.
+    close: bool,
+}
 
 /// How long a window with nothing to poll sleeps when no idle deadline runs.
 const BYSTANDER_PERIOD: Duration = Duration::from_secs(1);
@@ -121,6 +159,8 @@ pub struct Feedback {
     reload: bool,
     focus: Option<Focus>,
     flashes: Vec<String>,
+    remote: Option<RemoteLink>,
+    pushes: Pushes,
 }
 
 impl Drop for Feedback {
@@ -163,6 +203,7 @@ impl Feedback {
         };
         let host = EditorHost::shared_nvim();
         let owner = host.borrow_mut().register();
+        let remote = remote_link(&handoff);
         Self {
             options: FeedbackOptions::from_settings(settings),
             settings: settings.clone(),
@@ -183,6 +224,17 @@ impl Feedback {
             reload: false,
             focus: None,
             flashes,
+            remote,
+            pushes: {
+                let (sender, receiver) = mpsc::channel();
+                Pushes {
+                    sender,
+                    receiver,
+                    inflight: 0,
+                    submitting: false,
+                    close: false,
+                }
+            },
         }
     }
 
@@ -342,7 +394,7 @@ impl Feedback {
     /// Whether the window should call [`Feedback::tick`]: an editor is
     /// running or its idle timer is.
     pub fn wants_ticks(&self) -> bool {
-        self.open.is_some() || self.host.borrow().has_editor()
+        self.open.is_some() || self.host.borrow().has_editor() || self.pushes.inflight > 0
     }
 
     /// How long the window may sleep before the next [`Feedback::tick`]: the
@@ -351,6 +403,9 @@ impl Feedback {
     pub fn tick_period(&self, now: Instant) -> Duration {
         if self.open.is_some() {
             return TICK_INTERVAL;
+        }
+        if self.pushes.inflight > 0 {
+            return PUSH_POLL_PERIOD;
         }
         let host = self.host.borrow();
         let Some(deadline) = host.idle_deadline(self.options.idle) else {
@@ -598,8 +653,9 @@ impl Feedback {
     /// Returns whether the page needs a repaint.
     pub fn tick(&mut self, now: Instant) -> bool {
         let handled = self.drain_editor();
+        let pushed = self.drain_pushes();
         self.host.borrow_mut().stop_if_idle(now, self.options.idle);
-        handled || self.stale
+        handled || pushed || self.stale
     }
 
     /// Paint the open box over its placeholder block. `scroll` is the
@@ -681,6 +737,12 @@ impl Feedback {
     // ---- saving and sending ----
 
     fn save(&mut self) -> Result<(), String> {
+        self.save_locally()?;
+        self.push_remote(false);
+        Ok(())
+    }
+
+    fn save_locally(&mut self) -> Result<(), String> {
         let value = self.pending.to_value();
         let file_backed =
             replies::save_pending(&mut self.handoff, &value).map_err(|error| error.to_string())?;
@@ -690,6 +752,91 @@ impl Feedback {
         }
         self.stale = true;
         Ok(())
+    }
+
+    /// The local copy is saved; ask the sender's launcher to push it to the
+    /// remote page, and to submit it to the agent session when `submit`. The
+    /// wait happens on a worker, never on the event loop. Returns whether a
+    /// request was made.
+    fn push_remote(&mut self, submit: bool) -> bool {
+        let Some(link) = self.remote.clone() else {
+            return false;
+        };
+        let Some(socket) = link.save_sock else {
+            // A send reports this itself, with the page still open.
+            if !submit {
+                self.flashes
+                    .push("Saved locally only: this page has no route to the remote".into());
+            }
+            return false;
+        };
+        let request = PushRequest {
+            instance: link.instance,
+            page_id: link.page_id,
+            submit,
+        };
+        let sender = self.pushes.sender.clone();
+        self.pushes.inflight += 1;
+        self.pushes.submitting |= submit;
+        std::thread::spawn(move || {
+            let _ = sender.send((submit, request_push(&socket, &request, PUSH_WAIT)));
+        });
+        true
+    }
+
+    fn drain_pushes(&mut self) -> bool {
+        let mut any = false;
+        while let Ok((submit, reply)) = self.pushes.receiver.try_recv() {
+            self.pushes.inflight = self.pushes.inflight.saturating_sub(1);
+            if submit {
+                self.pushes.submitting = false;
+                self.pushes.close |= reply.submitted();
+            }
+            let line = if submit && reply.submission.is_none() {
+                format!(
+                    "{}; not sent: the launcher did not report a submission",
+                    reply.describe()
+                )
+            } else {
+                reply.describe()
+            };
+            self.flashes.push(line);
+            any = true;
+        }
+        any
+    }
+
+    /// Whether a save is still on its way to the remote.
+    pub fn push_in_flight(&self) -> bool {
+        self.pushes.inflight > 0
+    }
+
+    /// Whether the agent session accepted the feedback, so the page is done.
+    pub fn take_close(&mut self) -> bool {
+        std::mem::take(&mut self.pushes.close)
+    }
+
+    /// `:wq` on a page opened from another machine: the local copy is saved
+    /// first, and then the launcher saves it on the sender and submits it to
+    /// the page's own agent session. Nothing here reaches a local pane,
+    /// clipboard or listener. The page stays open until the session accepts.
+    fn send_remote(&mut self) -> ActionResult {
+        if self.pushes.submitting {
+            return ActionResult::Pending("already sending to the remote session".into());
+        }
+        let feedback = match replies::has_feedback(&self.handoff) {
+            Ok(feedback) => feedback,
+            Err(error) => return ActionResult::Failed(error.to_string()),
+        };
+        if !feedback {
+            return ActionResult::Nothing("no feedback to send".into());
+        }
+        if !self.push_remote(true) {
+            return ActionResult::Failed(
+                "not sent (saved locally): this page has no route to the remote".into(),
+            );
+        }
+        ActionResult::Pending("Saved locally, sending to the remote session".into())
     }
 
     fn send(&mut self) -> ActionResult {
@@ -901,12 +1048,23 @@ impl Feedback {
             return ActionResult::Nothing("nothing to save".into());
         }
         match self.save() {
+            Ok(()) if self.pushes.inflight > 0 => {
+                ActionResult::Done("Saved locally, saving to the remote".into())
+            }
             Ok(()) => ActionResult::Done("Saved".into()),
             Err(error) => ActionResult::Failed(format!("not saved: {error}")),
         }
     }
 
     pub fn write_and_send(&mut self) -> ActionResult {
+        if self.remote.is_some() {
+            if self.pending.has_unsaved()
+                && let Err(error) = self.save_locally()
+            {
+                return ActionResult::Failed(format!("not saved: {error}"));
+            }
+            return self.send_remote();
+        }
         if self.pending.has_unsaved()
             && let Err(error) = self.save()
         {

@@ -31,6 +31,8 @@ use tiny_skia::Pixmap;
 pub struct BoxEnv {
     /// Where relative image paths start. `None` means the working directory.
     pub document_dir: Option<PathBuf>,
+    /// The page came over the bridge: no reference may name a local file.
+    pub remote_page: bool,
     /// `false`: diagrams always show their source.
     pub mermaid_enabled: bool,
     /// Images with more pixels than this are not decoded.
@@ -51,6 +53,7 @@ impl Default for BoxEnv {
     fn default() -> Self {
         Self {
             document_dir: None,
+            remote_page: false,
             mermaid_enabled: true,
             max_image_pixels: 40_000_000,
             max_file_bytes: 64 * 1024 * 1024,
