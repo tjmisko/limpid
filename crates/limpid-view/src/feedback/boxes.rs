@@ -318,7 +318,7 @@ impl OpenBox {
 /// Pixel size of one grid cell for a window at `scale`.
 pub fn scaled_theme(theme: &Theme, scale: f32) -> Theme {
     let mut scaled = theme.clone();
-    scaled.font_size = EDITOR_FONT_SIZE * scale;
+    scaled.font_size = EDITOR_FONT_SIZE * theme.font_size / 17.0 * scale;
     scaled
 }
 
@@ -441,11 +441,15 @@ fn paint_footer(
     line: &str,
     typing: bool,
 ) {
-    let size = (CMDLINE_FONT_SIZE * scale).round().max(8.0);
+    let size = (CMDLINE_FONT_SIZE * theme.font_size / 17.0 * scale)
+        .round()
+        .max(8.0);
     let pad = 14.0 * scale;
     let border = scale.round().max(1.0);
     let inner = box_inner(outer, scale);
-    let row = (EDITOR_FONT_SIZE * scale * GRID_LINE_HEIGHT).round();
+    let row = (scaled_theme(theme, scale).font_size * GRID_LINE_HEIGHT)
+        .round()
+        .max(1.0);
     let top = (inner.bottom() - row).max(outer.y + border);
     let strip = Rect::new(
         outer.x + border,
@@ -522,8 +526,8 @@ pub fn paint(
 }
 
 /// Height in device pixels of a box of `rows` rows at `scale`, frame included.
-pub fn box_height(rows: u16, _theme: &Theme, scale: f32) -> f32 {
-    let row = (EDITOR_FONT_SIZE * scale * GRID_LINE_HEIGHT)
+pub fn box_height(rows: u16, theme: &Theme, scale: f32) -> f32 {
+    let row = (scaled_theme(theme, scale).font_size * GRID_LINE_HEIGHT)
         .round()
         .max(1.0);
     let frame = 2.0 * (12.0 * scale + scale.round().max(1.0));
@@ -642,15 +646,22 @@ mod tests {
             src: end..end,
             id: None,
         });
-        for scale in [1.0, 1.5, 2.0] {
-            let layout = crate::layout::lay_out(&doc, 1000.0, &theme, scale, &mut Fonts::new());
-            let laid = layout.blocks[1].rect.h;
-            let predicted = box_height(5, &theme, scale);
-            assert!(
-                (laid - predicted).abs() < 1.0,
-                "scale {scale}: {laid} vs {predicted}"
-            );
-            assert!(grid_row_height(EDITOR_FONT_SIZE * scale) > 0.0);
+        for zoom in [0.5, 1.0, 1.3, 2.0] {
+            let mut theme = theme.clone();
+            theme.font_size *= zoom;
+            for scale in [1.0, 1.5, 2.0] {
+                let mut fonts = Fonts::new();
+                let layout = crate::layout::lay_out(&doc, 1000.0, &theme, scale, &mut fonts);
+                let outer = layout.blocks[1].rect;
+                let predicted = box_height(5, &theme, scale);
+                assert!(
+                    (outer.h - predicted).abs() < 1.0,
+                    "zoom {zoom}, scale {scale}: {} vs {predicted}",
+                    outer.h
+                );
+                assert_eq!(grid_size(outer, &theme, scale, &mut fonts).1, 5);
+                assert!(grid_row_height(EDITOR_FONT_SIZE * zoom * scale) > 0.0);
+            }
         }
     }
 

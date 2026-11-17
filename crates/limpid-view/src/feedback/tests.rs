@@ -1599,6 +1599,49 @@ fn should_not_resend_the_size_when_the_same_window_paints_again() {
 }
 
 #[test]
+fn should_resize_an_open_editor_when_the_page_font_changes() {
+    use crate::{layout::lay_out, paint::Canvas};
+
+    let mut h = harness("A paragraph.\n", false);
+    let src = h.doc.blocks[0].src.clone();
+    h.fb.act(FeedbackAction::OpenComment, Some(&src));
+    let mut fonts = Fonts::new();
+    let mut pixels = vec![0; 900 * 700];
+    let mut heights = Vec::new();
+    for zoom in [1.0, 1.3, 0.7, 1.0] {
+        let mut theme = Theme::dark();
+        theme.font_size *= zoom;
+        let mut doc = h.doc.clone();
+        doc.blocks = h.fb.overlay(&h.doc.blocks);
+        let layout = lay_out(&doc, 900.0, &theme, 1.0, &mut fonts);
+        let src = h.fb.box_src().unwrap();
+        heights.push(find_block(&layout.blocks, &src).unwrap().rect.h);
+        h.fb.paint_box(
+            &mut Canvas::new(&mut pixels, 900, 700),
+            &layout,
+            0.0,
+            &theme,
+            &mut fonts,
+        );
+    }
+    let script = h.script.borrow();
+    assert_eq!(script.resizes.len(), 4);
+    assert!(script.resizes[1].0 < script.resizes[0].0);
+    assert!(script.resizes[2].0 > script.resizes[0].0);
+    assert_eq!(script.resizes[3], script.resizes[0]);
+    assert!(
+        script
+            .resizes
+            .iter()
+            .all(|size| size.1 == script.resizes[0].1)
+    );
+    assert!(heights[1] > heights[0] && heights[2] < heights[0]);
+    assert_eq!(heights[3], heights[0]);
+    assert_eq!(script.spawns, 1);
+    assert!(h.fb.box_open());
+}
+
+#[test]
 fn should_send_insert_at_start_keys_when_capital_i_opens_a_comment() {
     let mut h = harness(QUESTIONS, false);
     let src = h.paragraph_src();

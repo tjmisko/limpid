@@ -461,7 +461,7 @@ fn lay_box(
 ) -> LaidBlock {
     let (padding, border) = frame(cx);
     let rows = rows.max(1);
-    let grid_height = f32::from(rows) * grid_row_height(cx.px(EDITOR_FONT_SIZE));
+    let grid_height = f32::from(rows) * grid_row_height(cx.font_px(EDITOR_FONT_SIZE));
     let height = grid_height + 2.0 * (padding + border);
     let (x, width) = slot(cx, flow, &COMMENT);
     let style = TextStyle::sans(flow.ink);
