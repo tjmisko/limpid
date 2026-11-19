@@ -80,10 +80,6 @@ opened after that go through the newer login, and end with it. If the newer
 login ends first, `/read` in the older one reports a stale socket until you
 log in again.
 
-`limpid ssh [--dark|--light] [ssh options] HOST` still works and needs no
-configuration: it runs its own hub for one login and sets
-`LIMPID_BRIDGE_SOCKET` and `LIMPID_BRIDGE_ROUTE`.
-
 The status line says what is true: `Saved locally only`, `Saved locally and on
 the remote (revision N)`, `Sent to the agent session`, `Not sent`, or
 `Possibly sent, not confirmed` (look at the session before sending again; it

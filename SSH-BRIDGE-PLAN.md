@@ -6,6 +6,10 @@ the native viewer. tmux, screen, client switching for a surviving agent,
 arbitrary HTML pages, and remote image assets are deferred. Independent SSH
 logins from several clients remain in scope.
 
+> Since superseded: logins are plain `ssh nlessfun` with a `RemoteForward`
+> line to a persistent local hub (`limpid bridge serve`); see SSH-BRIDGE.md.
+> `limpid ssh` was removed.
+
 The proposed entry point is `limpid ssh nlessfun`, followed by the usual
 `claude` and `/read`. A later shell integration can preserve the spelling
 `ssh nlessfun`. The launcher owns a local bridge and a fresh reverse Unix
