@@ -1792,7 +1792,7 @@ mod tests {
         let mut page = page(&numbered(200));
         paint(&mut page, 400, 300, 1.0);
         assert!(page.handle_key(&Key::Character("d".into()), true));
-        assert!((page.scroll() - 150.0).abs() < 2.0, "{}", page.scroll());
+        assert_scrolled_a_fraction_then_centred(&page, 0.5);
         assert!(page.handle_key(&Key::Character("u".into()), true));
         assert!(page.scroll() < 30.0, "{}", page.scroll());
     }
@@ -1809,7 +1809,30 @@ mod tests {
         );
         paint(&mut page, 400, 400, 1.0);
         page.handle_key(&Key::Character("d".into()), true);
-        assert!((page.scroll() - 100.0).abs() < 2.0, "{}", page.scroll());
+        assert_scrolled_a_fraction_then_centred(&page, 0.25);
+    }
+
+    /// A half-page scroll moves `fraction` of the viewport and then centres
+    /// the stop at the new viewport centre, so it lands within half a block
+    /// pitch of the plain scroll, wherever the font size puts the blocks.
+    fn assert_scrolled_a_fraction_then_centred(page: &DocPage, fraction: f32) {
+        let layout = page.layout().unwrap();
+        let viewport = page.viewport_height;
+        let focused = page.nav().cursor().stop(layout).unwrap();
+        let stops = cursor::collect_stops(layout);
+        let at = stops.iter().position(|stop| stop.src == focused.src).unwrap();
+        let pitch = stops[at + 1].rect.y - stops[at].rect.y;
+        let centre = focused.rect.y + focused.rect.h / 2.0 - page.scroll();
+        assert!(
+            (centre - viewport / 2.0).abs() < 1.0,
+            "focused stop centre {centre} in a {viewport} viewport"
+        );
+        let plain = viewport * fraction;
+        assert!(
+            (page.scroll() - plain).abs() <= pitch / 2.0,
+            "scroll {} is more than half a pitch ({pitch}) from {plain}",
+            page.scroll()
+        );
     }
 
     #[test]
