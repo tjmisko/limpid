@@ -187,12 +187,22 @@ pub fn serve(listener: UnixListener, sender: mpsc::Sender<Handoff>) {
 }
 
 fn same_user(stream: &UnixStream) -> bool {
+    // SAFETY: geteuid has no preconditions.
+    peer_uid(stream) == Some(unsafe { libc::geteuid() })
+}
+
+/// The effective uid of the process on the other end of `stream`, as the
+/// kernel recorded it at connect time.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn peer_uid(stream: &UnixStream) -> Option<u32> {
     let mut credentials = libc::ucred {
         pid: 0,
         uid: 0,
         gid: 0,
     };
     let mut size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `credentials` and `size` are valid for the call and `size`
+    // holds the buffer length, as SO_PEERCRED requires.
     let status = unsafe {
         libc::getsockopt(
             stream.as_raw_fd(),
@@ -202,9 +212,18 @@ fn same_user(stream: &UnixStream) -> bool {
             &raw mut size,
         )
     };
-    status == 0
-        && size as usize == std::mem::size_of::<libc::ucred>()
-        && credentials.uid == unsafe { libc::geteuid() }
+    (status == 0 && size as usize == std::mem::size_of::<libc::ucred>())
+        .then_some(credentials.uid)
+}
+
+/// The effective uid of the process on the other end of `stream`, as the
+/// kernel recorded it at connect time.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub fn peer_uid(stream: &UnixStream) -> Option<u32> {
+    let (mut uid, mut gid) = (0, 0);
+    // SAFETY: both out-pointers refer to live locals.
+    let status = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
+    (status == 0).then_some(uid)
 }
 
 #[cfg(test)]
