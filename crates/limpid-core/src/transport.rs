@@ -158,9 +158,9 @@ pub fn receive(stream: UnixStream) -> Option<Handoff> {
     if !same_user(&stream) {
         return None;
     }
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-        .ok()?;
+    // macOS refuses a timeout once the peer has closed; its bytes are
+    // already buffered then, so the read cannot block.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
     let mut bytes = Vec::new();
     BufReader::new(stream)
         .take(1 << 20)
@@ -229,6 +229,24 @@ pub fn peer_uid(stream: &UnixStream) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn should_receive_the_handoff_when_the_sender_closed_before_it_was_read() {
+        let (mut sender, receiver) = UnixStream::pair().unwrap();
+        let request = Handoff {
+            path: "/tmp/closed.md".into(),
+            theme: Scheme::Dark,
+            pane: None,
+            source: None,
+            source_hash: None,
+            source_backed: false,
+        };
+        let mut line = serde_json::to_vec(&request).unwrap();
+        line.push(b'\n');
+        std::io::Write::write_all(&mut sender, &line).unwrap();
+        drop(sender);
+        assert_eq!(receive(receiver), Some(request));
+    }
+
     #[test]
     fn handoff_round_trip_and_socket_names() {
         let request = Handoff {

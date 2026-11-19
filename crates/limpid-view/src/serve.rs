@@ -39,7 +39,9 @@ pub fn receive_request(stream: UnixStream, allow_close: bool) -> Option<Request>
     if !same_user(&stream) {
         return None;
     }
-    stream.set_read_timeout(Some(READ_TIMEOUT)).ok()?;
+    // macOS refuses a timeout once the peer has closed; its bytes are
+    // already buffered then, so the read cannot block.
+    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
     let mut bytes = Vec::new();
     BufReader::new(stream)
         .take(MAX_LINE)
