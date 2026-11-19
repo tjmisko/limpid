@@ -136,7 +136,7 @@ pub struct Theme {
     pub families: Families,
 }
 
-pub const DEFAULT_FONT_SIZE: f32 = 20.0;
+pub const DEFAULT_FONT_SIZE: f32 = 17.0;
 /// The font size the layout proportions are designed at.
 pub const REFERENCE_FONT_SIZE: f32 = 17.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.65;
