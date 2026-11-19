@@ -332,6 +332,16 @@ impl PushService {
     pub fn bind(path: &Path, importer: Arc<Importer>, hub: Arc<Hub>) -> std::io::Result<Self> {
         let listener = UnixListener::bind(path)?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(Self::from_listener(listener, path, importer, hub))
+    }
+
+    /// Serve a listener already bound at `path`; shutdown removes `path`.
+    pub fn from_listener(
+        listener: UnixListener,
+        path: &Path,
+        importer: Arc<Importer>,
+        hub: Arc<Hub>,
+    ) -> Self {
         let core = Arc::new(PushCore {
             importer,
             hub,
@@ -349,11 +359,11 @@ impl PushService {
                 thread::spawn(move || serve_one(&core, stream));
             }
         });
-        Ok(Self {
+        Self {
             path: path.to_path_buf(),
             core,
             stop,
-        })
+        }
     }
 
     pub fn path(&self) -> &Path {
