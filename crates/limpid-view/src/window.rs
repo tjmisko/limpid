@@ -11,9 +11,28 @@ use winit::{
     event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, OwnedDisplayHandle},
     keyboard::ModifiersState,
-    platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11},
     window::{CursorIcon, Window, WindowId},
 };
+
+/// Set the Wayland app id and X11 class, which compositor rules match on.
+/// Other platforms have no such name.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+fn with_class(
+    attributes: winit::window::WindowAttributes,
+    class: &str,
+) -> winit::window::WindowAttributes {
+    use winit::platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11};
+    let attributes = WindowAttributesExtWayland::with_name(attributes, class, class);
+    WindowAttributesExtX11::with_name(attributes, class, class)
+}
+
+#[cfg(not(all(unix, not(target_vendor = "apple"))))]
+fn with_class(
+    attributes: winit::window::WindowAttributes,
+    _class: &str,
+) -> winit::window::WindowAttributes {
+    attributes
+}
 
 /// What a window shows.
 pub trait Page {
@@ -211,8 +230,7 @@ impl App {
         let attributes = Window::default_attributes()
             .with_title(title.clone())
             .with_inner_size(LogicalSize::new(self.config.width, self.config.height));
-        let attributes = WindowAttributesExtWayland::with_name(attributes, &class, &class);
-        let attributes = WindowAttributesExtX11::with_name(attributes, &class, &class);
+        let attributes = with_class(attributes, &class);
         let window = Rc::new(
             event_loop
                 .create_window(attributes)
