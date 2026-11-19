@@ -1,0 +1,12 @@
+# The local hub that plain `ssh` logins forward to. systemd holds the socket
+# and starts limpid-bridge.service when the first remote page arrives.
+[Unit]
+Description=limpid bridge hub socket
+
+[Socket]
+ListenStream=%t/limpid/hub.sock
+SocketMode=0600
+DirectoryMode=0700
+
+[Install]
+WantedBy=sockets.target

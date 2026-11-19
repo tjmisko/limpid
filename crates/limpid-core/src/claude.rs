@@ -64,32 +64,23 @@ pub fn is_read_invocation(prompt: &str) -> bool {
 }
 
 pub fn collect_turns(messages: &[Message<'_>]) -> Vec<Turn> {
-    let mut opened = Vec::<Turn>::new();
-    let mut current: Option<usize> = None;
+    let mut opened = Vec::new();
+    let mut prompt = String::new();
     for message in messages {
-        if starts_turn(message) {
+        if starts_turn(message) && !is_read_invocation(&prompt_text(message.text)) {
+            prompt = prompt_text(message.text);
+        } else if message.role == Role::Assistant && !message.text.trim().is_empty() {
+            // A prompt can receive several readable replies: progress before a
+            // tool call, an answer, then a background-agent follow-up. The
+            // plugin's message rows need not contain a user prompt between
+            // them. Index each reply instead of overwriting the previous one.
             opened.push(Turn {
-                prompt: prompt_text(message.text),
-                response: String::new(),
+                prompt: prompt.clone(),
+                response: message.text.trim().into(),
             });
-            current = Some(opened.len() - 1);
-        } else if message.role == Role::Assistant
-            && let Some(index) = current
-            && !message.text.trim().is_empty()
-        {
-            opened[index].response = message.text.trim().into();
         }
     }
-    if opened
-        .last()
-        .is_some_and(|turn| is_read_invocation(&turn.prompt))
-    {
-        opened.pop();
-    }
     opened
-        .into_iter()
-        .filter(|turn| !turn.response.is_empty())
-        .collect()
 }
 
 #[cfg(test)]
@@ -109,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn groups_transcript_and_drops_current_read() {
+    fn preserves_each_assistant_response_without_counting_read_commands() {
         let messages = [
             user("first"),
             assistant("Working"),
@@ -119,14 +110,20 @@ mod tests {
         ];
         assert_eq!(
             collect_turns(&messages),
-            vec![Turn {
-                prompt: "first".into(),
-                response: "Done".into()
-            }]
+            vec![
+                Turn {
+                    prompt: "first".into(),
+                    response: "Working".into()
+                },
+                Turn {
+                    prompt: "first".into(),
+                    response: "Done".into()
+                },
+            ]
         );
         assert_eq!(
             collect_turns(&[assistant("orphan"), user("q"), assistant("a")]).len(),
-            1
+            2
         );
         assert!(collect_turns(&[user("q"), assistant(" ")]).is_empty());
     }
@@ -141,10 +138,16 @@ mod tests {
         ];
         assert_eq!(
             collect_turns(&messages),
-            vec![Turn {
-                prompt: "real question".into(),
-                response: "later".into()
-            }]
+            vec![
+                Turn {
+                    prompt: "real question".into(),
+                    response: "answer".into()
+                },
+                Turn {
+                    prompt: "real question".into(),
+                    response: "later".into()
+                },
+            ]
         );
     }
 
@@ -189,9 +192,11 @@ mod tests {
                 assistant("Still looking."),
                 user(""),
                 assistant("Done: the answer."),
-            ])[0]
-                .response,
-            "Done: the answer."
+            ])
+            .iter()
+            .map(|turn| turn.response.as_str())
+            .collect::<Vec<_>>(),
+            vec!["Let me look.", "Still looking.", "Done: the answer."]
         );
         assert_eq!(
             collect_turns(&[user("go"), assistant("Working."), assistant("")])[0].response,

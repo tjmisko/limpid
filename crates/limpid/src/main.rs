@@ -110,17 +110,10 @@ fn choose_viewer(target: &Target, forced: Option<Viewer>) -> Result<Viewer, Stri
     }
 }
 
-/// `limpid ssh HOST`: a direct SSH login with a bridge back to this machine.
-fn ssh_login(arguments: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
-    let ssh = std::env::var_os("LIMPID_SSH")
-        .filter(|value| !value.is_empty())
-        .map_or_else(|| PathBuf::from("ssh"), PathBuf::from);
+/// `limpid bridge serve`: the long-lived local hub plain `ssh` logins forward to.
+fn bridge(arguments: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
     let limpid = std::env::current_exe()?;
-    let code = limpid_core::bridge_ssh::run(arguments, &ssh, &limpid)?;
-    if code != 0 {
-        std::process::exit(code);
-    }
-    Ok(())
+    Ok(limpid_core::bridge_serve::run(arguments, &limpid)?)
 }
 
 /// `limpid recover`: list or print feedback saved here but not on the remote.
@@ -134,7 +127,7 @@ fn recover(arguments: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
                 .ok_or_else(|| format!("argument {argument:?} is not valid text"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let cache = limpid_core::bridge_ssh::cache_dir()?;
+    let cache = limpid_core::bridge_serve::cache_dir()?;
     print!("{}", limpid_core::bridge_recover::run(&arguments, &cache)?);
     Ok(())
 }
@@ -150,7 +143,7 @@ fn bridge_relay() -> Result<(), Box<dyn Error>> {
 }
 
 /// Open an agent page through the login's bridge. The page opens on the
-/// machine that ran `limpid ssh`; there is no local fallback on this host.
+/// machine whose hub the login forwards; there is no local fallback on this host.
 fn open_through_bridge(
     target: &Target,
     route: &limpid_core::bridge_relay::RouteEnv,
@@ -161,9 +154,9 @@ fn open_through_bridge(
     } = target
     else {
         return Err(format!(
-            "this login has a bridge to another machine, which opens agent pages only;              unset {} and {} to open {target:?} on this host",
-            limpid_core::bridge_relay::SOCKET_ENV,
-            limpid_core::bridge_relay::ROUTE_ENV
+            "this login has a bridge to another machine through {}, which opens agent pages \
+             only; {target:?} is not one. Use --out FILE to render it here instead",
+            route.socket.display()
         )
         .into());
     };
@@ -180,8 +173,8 @@ fn open_through_bridge(
 fn run() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     match arguments.first().and_then(|arg| arg.to_str()) {
-        Some("ssh") => return ssh_login(&arguments[1..]),
         Some("recover") => return recover(&arguments[1..]),
+        Some("bridge") => return bridge(&arguments[1..]),
         Some("--bridge-relay") if arguments.len() == 1 => return bridge_relay(),
         _ => {}
     }
@@ -207,7 +200,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             Some("--help" | "-h") => {
                 println!(
-                    "Usage: limpid ssh [--dark|--light] [ssh options] HOST\n       limpid recover [--cache DIR] [--text NAME]\n       limpid [--out FILE] [--watch] [--separate] [--source-backed] [--viewer view|host] [--dark|--light] <file.md | page.html | ->"
+                    "Usage: limpid bridge serve [--dark|--light]\n       limpid recover [--cache DIR] [--text NAME]\n       limpid [--out FILE] [--watch] [--separate] [--source-backed] [--viewer view|host] [--dark|--light] <file.md | page.html | ->"
                 );
                 return Ok(());
             }
@@ -252,10 +245,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     if let Some(out) = out {
         return export(&classified, Path::new(&out));
     }
-    if let Some(route) = limpid_core::bridge_relay::route_from_env(
-        std::env::var_os(limpid_core::bridge_relay::SOCKET_ENV),
-        std::env::var_os(limpid_core::bridge_relay::ROUTE_ENV),
-    )? {
+    if let Some(route) = limpid_core::bridge_relay::route_for_process()? {
         return open_through_bridge(&classified, &route);
     }
     // The environment is read only now: a bad value must not break --help

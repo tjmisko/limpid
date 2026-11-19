@@ -1,0 +1,9 @@
+# Started by limpid-bridge.socket. Opens the pages remote logins send in the
+# local viewer, so it needs the graphical session's environment
+# (WAYLAND_DISPLAY), which the compositor imports into the user manager.
+[Unit]
+Description=limpid bridge hub for remote agent pages
+Requires=limpid-bridge.socket
+
+[Service]
+ExecStart=%h/.local/bin/limpid bridge serve

@@ -343,6 +343,9 @@ pub struct Hub {
     path: PathBuf,
     state: Arc<HubState>,
     timeout: Duration,
+    /// Whether shutdown removes the socket file; not when a service manager
+    /// created it and hands it over.
+    owns_socket: bool,
 }
 
 impl Hub {
@@ -351,6 +354,21 @@ impl Hub {
     pub fn bind(path: &Path, sink: Arc<dyn PageSink>) -> io::Result<Hub> {
         let listener = UnixListener::bind(path)?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(Self::serve(listener, path, sink, true))
+    }
+
+    /// Serve a listener created elsewhere, such as a socket systemd passed
+    /// in. `path` is where it is bound; shutdown leaves that file in place.
+    pub fn from_listener(listener: UnixListener, path: &Path, sink: Arc<dyn PageSink>) -> Hub {
+        Self::serve(listener, path, sink, false)
+    }
+
+    fn serve(
+        listener: UnixListener,
+        path: &Path,
+        sink: Arc<dyn PageSink>,
+        owns_socket: bool,
+    ) -> Hub {
         let state = Arc::new(HubState {
             bindings: Mutex::new(HashMap::new()),
             sink,
@@ -367,11 +385,12 @@ impl Hub {
                 thread::spawn(move || serve_connection(st, stream));
             }
         });
-        Ok(Hub {
+        Hub {
             path: path.to_path_buf(),
             state,
             timeout: REQUEST_TIMEOUT,
-        })
+            owns_socket,
+        }
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -467,7 +486,9 @@ impl Hub {
         for p in peers {
             p.close();
         }
-        let _ = std::fs::remove_file(&self.path);
+        if self.owns_socket {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -683,6 +704,37 @@ pub struct Relay {
     peer: Arc<Peer>,
     requests: Mutex<Receiver<Request>>,
     timeout: Duration,
+    peer_pid: Option<i32>,
+}
+
+/// The process that listens on the other end of `stream`, as the kernel
+/// recorded it at connect time. Through an SSH forward that is the login's
+/// own `sshd` process.
+#[cfg(target_os = "linux")]
+fn listener_pid(stream: &UnixStream) -> Option<i32> {
+    use std::os::fd::AsRawFd;
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: the buffer and its length describe a valid ucred.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut length,
+        )
+    };
+    (result == 0 && credentials.pid > 0).then_some(credentials.pid)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn listener_pid(_stream: &UnixStream) -> Option<i32> {
+    None
 }
 
 impl Relay {
@@ -697,6 +749,7 @@ impl Relay {
         version: u32,
     ) -> Result<Relay, BridgeError> {
         let mut stream = UnixStream::connect(socket)?;
+        let peer_pid = listener_pid(&stream);
         stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
         let peer = Peer::new(stream.try_clone()?);
         peer.send(&Frame {
@@ -751,12 +804,19 @@ impl Relay {
             peer,
             requests: Mutex::new(rx),
             timeout: REQUEST_TIMEOUT,
+            peer_pid,
         })
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
+    }
+
+    /// The process listening on the hub side of this connection, when the
+    /// platform reports it.
+    pub fn peer_pid(&self) -> Option<i32> {
+        self.peer_pid
     }
 
     /// Send a page; returns once the hub reports real acceptance or failure.
@@ -821,5 +881,107 @@ impl Relay {
 impl Drop for Relay {
     fn drop(&mut self) {
         self.peer.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Recorder {
+        opened: Mutex<Vec<(String, String)>>,
+    }
+
+    impl PageSink for Recorder {
+        fn open(&self, page: &OpenPage) -> Result<(), String> {
+            self.opened
+                .lock()
+                .unwrap()
+                .push((page.route.clone(), page.instance.clone()));
+            Ok(())
+        }
+        fn close(&self, _instance: &str, _page_id: &str) {}
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("limpid-hub-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn page(route: &str, instance: &str) -> OpenPage {
+        OpenPage {
+            route: route.into(),
+            session: "s".into(),
+            page_id: "p".into(),
+            instance: instance.into(),
+            remote_path: None,
+            markdown: "# x".into(),
+            annotations: serde_json::Value::Null,
+            revision: 0,
+            delivery: Delivery::Remote,
+        }
+    }
+
+    #[test]
+    fn should_accept_pages_from_logins_with_different_routes_when_serving_a_handed_over_listener() {
+        let dir = scratch("handed");
+        let path = dir.join("hub.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let sink = Arc::new(Recorder::default());
+        let hub = Hub::from_listener(listener, &path, sink.clone());
+        let first = Relay::connect(&path, "route-a").unwrap();
+        let second = Relay::connect(&path, "route-b").unwrap();
+        first.open(page("route-a", "i-1")).unwrap();
+        second.open(page("route-b", "i-2")).unwrap();
+        assert_eq!(hub.route_of("i-1").as_deref(), Some("route-a"));
+        assert_eq!(hub.route_of("i-2").as_deref(), Some("route-b"));
+        assert_eq!(sink.opened.lock().unwrap().len(), 2);
+        hub.shutdown();
+        assert!(
+            path.exists(),
+            "a handed-over socket belongs to whoever created it"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_refuse_an_open_for_another_route_when_the_hub_serves_many_logins() {
+        let dir = scratch("mismatch");
+        let path = dir.join("hub.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let _hub = Hub::from_listener(listener, &path, Arc::new(Recorder::default()));
+        let relay = Relay::connect(&path, "route-a").unwrap();
+        match relay.open(page("route-b", "i-1")) {
+            Err(BridgeError::Remote {
+                code: ErrorCode::RouteMismatch,
+                ..
+            }) => {}
+            other => panic!("expected a route mismatch, got {other:?}"),
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_remove_its_socket_on_shutdown_when_the_hub_bound_it_itself() {
+        let dir = scratch("owned");
+        let path = dir.join("hub.sock");
+        let hub = Hub::bind(&path, Arc::new(Recorder::default())).unwrap();
+        hub.shutdown();
+        assert!(!path.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn should_report_the_listening_process_when_a_relay_connects() {
+        let dir = scratch("peer");
+        let path = dir.join("hub.sock");
+        let _hub = Hub::bind(&path, Arc::new(Recorder::default())).unwrap();
+        let relay = Relay::connect(&path, "r").unwrap();
+        assert_eq!(relay.peer_pid(), Some(std::process::id() as i32));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

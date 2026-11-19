@@ -165,6 +165,85 @@ fn claude_read_uses_latest_completed_turn_and_ignores_read_invocation() {
 }
 
 #[test]
+fn claude_read_keeps_outcome_answer_before_background_agent_followup() {
+    // The session.messages() view does not necessarily include background
+    // notifications as user rows. These are separate visible assistant replies,
+    // even though no human prompt separates the last two.
+    let temp = std::env::temp_dir().join(format!("limpid-claude-followup-{}", std::process::id()));
+    fs::create_dir_all(&temp).unwrap();
+    let recorded = "The Replicate rulings are recorded and pushed.";
+    let outcome = "## The problem `Outcome` solves\n\nValue, Failed and Absent.\n\n## Decisions for you\n\n1. Honest types?";
+    let followup = "The Replicate drift trace is back. The four Outcome decisions from my last message are still waiting on you.";
+    let mut input = serde_json::json!({
+        "model": "opus",
+        "session_id": "claude-background-followup",
+        "messages": [
+            {"role": "user", "text": "Record the Replicate rulings."},
+            {"role": "assistant", "text": recorded},
+            {"role": "user", "text": "Let's discuss Outcome typing now."},
+            {"role": "assistant", "text": outcome},
+            {"role": "user", "text": "<local-command-stdout>Settings dialog dismissed</local-command-stdout>"},
+            {"role": "assistant", "text": "", "toolUses": [{"tool": "Bash"}]},
+            {"role": "user", "text": "", "toolResults": [{"text": "follow-up task updated"}]},
+            {"role": "assistant", "text": followup},
+            {"role": "user", "text": "<command-name>/read</command-name><command-args>0</command-args>"}
+        ]
+    });
+    for (spec, expected) in [
+        ("0", followup),
+        ("1", outcome),
+        ("2", recorded),
+        ("0..3", ""),
+    ] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_limpid-core"))
+            .args(["claude", spec])
+            .env("XDG_CACHE_HOME", &temp)
+            .env("XDG_CONFIG_HOME", &temp)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&serde_json::to_vec(&input).unwrap())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let page = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim());
+        let markdown = fs::read_to_string(page.with_extension("md")).unwrap();
+        let html = fs::read_to_string(&page).unwrap();
+        if spec == "0..3" {
+            let positions = [recorded, outcome, followup].map(|text| markdown.find(text).unwrap());
+            assert!(positions[0] < positions[1] && positions[1] < positions[2]);
+            assert!(html.contains("The problem"));
+        } else {
+            assert_eq!(markdown, expected, "spec {spec}");
+            let visible = if spec == "1" {
+                "Value, Failed and Absent."
+            } else {
+                expected
+            };
+            assert!(html.contains(visible), "spec {spec}");
+        }
+        // Previous read invocations must not consume an index on later reads.
+        input["messages"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "role": "user", "text": format!("/read {spec}")
+            }));
+    }
+    fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
 fn codex_command_selects_fixture_turn_and_records_source() {
     let temp = std::env::temp_dir().join(format!("limpid-codex-cli-{}", std::process::id()));
     let sessions = temp.join("sessions/2026/10/15");

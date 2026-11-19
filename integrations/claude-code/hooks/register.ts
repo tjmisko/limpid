@@ -152,7 +152,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'read',
-      description: 'Open a response, or a Rust-style range of turns, as a styled HTML page',
+      description: 'Read assistant responses (0 = latest, 1 = previous), or a Rust-style range, in Limpid',
       argumentHint: ARGUMENT_HINT,
     })
     await ensureListener($)

@@ -234,7 +234,8 @@ impl DocPage {
                 let max_width = self.viewport_width / 2.0;
                 let width = (x - *offset)
                     .clamp((MIN_RAIL_WIDTH * self.scale).min(max_width), max_width)
-                    / self.scale;
+                    / self.scale
+                    / crate::layout::rail::zoom_of(&self.theme);
                 if (self.theme.rail_width - width).abs() < 0.5 {
                     return false;
                 }

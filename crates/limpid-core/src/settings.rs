@@ -137,7 +137,7 @@ impl Default for View {
         Self {
             font: "sans-serif".into(),
             mono_font: "monospace".into(),
-            font_size: 17,
+            font_size: 20,
             line_height: 1.65,
             content_width: 860,
             rail_width: 220,
@@ -386,7 +386,7 @@ pub struct Style {
 impl Default for Style {
     fn default() -> Self {
         Self {
-            font_size: 17,
+            font_size: 20,
             css: None,
             line_height: None,
             content_width: None,
@@ -449,7 +449,7 @@ mod tests {
         let settings = Settings::parse("[reply]\ncommand = 'limpid-core send'\n").unwrap();
         assert_eq!(settings.reply.command, "limpid-core send");
         assert_eq!(settings.highlight.theme, "default");
-        assert_eq!(settings.style.font_size, 17);
+        assert_eq!(settings.style.font_size, 20);
         assert_eq!(settings.style.css, None);
     }
 
@@ -492,7 +492,7 @@ mod tests {
         let settings = Settings::parse("").unwrap();
         assert_eq!(settings.view.font, "sans-serif");
         assert_eq!(settings.view.mono_font, "monospace");
-        assert_eq!(settings.view.font_size, 17);
+        assert_eq!(settings.view.font_size, 20);
         assert_eq!(settings.view.line_height, 1.65);
         assert_eq!(settings.view.content_width, 860);
         assert_eq!(settings.view.rail_width, 220);

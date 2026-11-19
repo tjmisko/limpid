@@ -95,7 +95,8 @@ the Claude Code plugin adds `/read`; both render the current turn with
 any other.
 
 To read a response from a Claude Code session on another machine in a local
-window, log in with `limpid ssh HOST`; see [SSH-BRIDGE.md](SSH-BRIDGE.md).
+window, forward the local hub with one `RemoteForward` line in `~/.ssh/config`
+and log in with plain `ssh`; see [SSH-BRIDGE.md](SSH-BRIDGE.md).
 
 For a Codex session, run `limpid codex` or `limpid codex 0..2`. The core reader
 also has a [Codex integration](integrations/codex/README.md): `$read` in the
@@ -110,6 +111,12 @@ passed to `limpid`, and writes the Markdown it rendered from beside it as
 
 Turn specs include `0`, `3`, `0..2`, `1..=3`, `2..`, `..4`, and `..`. Ranges are
 limited to ten turns.
+
+In Claude Code, `0` is the latest nonempty assistant response and `1` is the
+previous one. Each visible assistant message counts, including progress text
+before tool calls and follow-ups after background agents finish. Several
+responses to the same prompt stay separately readable. Tool output, empty
+messages, and `/read` commands do not consume an index.
 
 ## Answer from the keyboard
 
