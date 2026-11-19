@@ -110,19 +110,6 @@ fn choose_viewer(target: &Target, forced: Option<Viewer>) -> Result<Viewer, Stri
     }
 }
 
-/// `limpid ssh HOST`: a direct SSH login with a bridge back to this machine.
-fn ssh_login(arguments: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
-    let ssh = std::env::var_os("LIMPID_SSH")
-        .filter(|value| !value.is_empty())
-        .map_or_else(|| PathBuf::from("ssh"), PathBuf::from);
-    let limpid = std::env::current_exe()?;
-    let code = limpid_core::bridge_ssh::run(arguments, &ssh, &limpid)?;
-    if code != 0 {
-        std::process::exit(code);
-    }
-    Ok(())
-}
-
 /// `limpid bridge serve`: the long-lived local hub plain `ssh` logins forward to.
 fn bridge(arguments: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
     let limpid = std::env::current_exe()?;
@@ -140,7 +127,7 @@ fn recover(arguments: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
                 .ok_or_else(|| format!("argument {argument:?} is not valid text"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let cache = limpid_core::bridge_ssh::cache_dir()?;
+    let cache = limpid_core::bridge_serve::cache_dir()?;
     print!("{}", limpid_core::bridge_recover::run(&arguments, &cache)?);
     Ok(())
 }
@@ -156,7 +143,7 @@ fn bridge_relay() -> Result<(), Box<dyn Error>> {
 }
 
 /// Open an agent page through the login's bridge. The page opens on the
-/// machine that ran `limpid ssh`; there is no local fallback on this host.
+/// machine whose hub the login forwards; there is no local fallback on this host.
 fn open_through_bridge(
     target: &Target,
     route: &limpid_core::bridge_relay::RouteEnv,
@@ -186,7 +173,6 @@ fn open_through_bridge(
 fn run() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     match arguments.first().and_then(|arg| arg.to_str()) {
-        Some("ssh") => return ssh_login(&arguments[1..]),
         Some("recover") => return recover(&arguments[1..]),
         Some("bridge") => return bridge(&arguments[1..]),
         Some("--bridge-relay") if arguments.len() == 1 => return bridge_relay(),
@@ -214,7 +200,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             Some("--help" | "-h") => {
                 println!(
-                    "Usage: limpid bridge serve [--dark|--light]\n       limpid ssh [--dark|--light] [ssh options] HOST\n       limpid recover [--cache DIR] [--text NAME]\n       limpid [--out FILE] [--watch] [--separate] [--source-backed] [--viewer view|host] [--dark|--light] <file.md | page.html | ->"
+                    "Usage: limpid bridge serve [--dark|--light]\n       limpid recover [--cache DIR] [--text NAME]\n       limpid [--out FILE] [--watch] [--separate] [--source-backed] [--viewer view|host] [--dark|--light] <file.md | page.html | ->"
                 );
                 return Ok(());
             }

@@ -20,7 +20,6 @@ use crate::{
     bridge::Hub,
     bridge_import::{Importer, LauncherOpener},
     bridge_push::PushService,
-    bridge_ssh::{cache_dir, private_directory},
     transport::Scheme,
 };
 use std::{
@@ -29,7 +28,7 @@ use std::{
     os::{
         fd::{FromRawFd, RawFd},
         unix::{
-            fs::{FileTypeExt, PermissionsExt},
+            fs::{FileTypeExt, MetadataExt, PermissionsExt},
             net::{UnixListener, UnixStream},
         },
     },
@@ -104,6 +103,36 @@ pub fn bind_fresh(path: &Path) -> Result<UnixListener, String> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .map_err(|error| format!("{shown}: {error}"))?;
     Ok(listener)
+}
+
+/// The private directory that holds local bridge sockets.
+pub fn private_directory(runtime: Option<OsString>) -> Result<PathBuf, String> {
+    let directory = match runtime.filter(|value| !value.is_empty()) {
+        Some(runtime) => PathBuf::from(runtime).join("limpid"),
+        None => PathBuf::from(format!("/tmp/limpid-{}", unsafe { libc::getuid() })),
+    };
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("{}: {error}", directory.display()))?;
+    let metadata = std::fs::metadata(&directory)
+        .map_err(|error| format!("{}: {error}", directory.display()))?;
+    if metadata.uid() != unsafe { libc::getuid() } {
+        return Err(format!(
+            "{} is owned by another user; refusing to place a bridge socket there",
+            directory.display()
+        ));
+    }
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("{}: {error}", directory.display()))?;
+    Ok(directory)
+}
+
+/// Where this machine keeps the pages it imported from remote logins.
+pub fn cache_dir() -> Result<PathBuf, String> {
+    if let Some(base) = std::env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(base).join("limpid/remote"));
+    }
+    let home = std::env::var_os("HOME").ok_or("HOME is required")?;
+    Ok(PathBuf::from(home).join(".cache/limpid/remote"))
 }
 
 /// Mark a passed descriptor close-on-exec so the viewers this hub starts do
@@ -261,5 +290,16 @@ mod tests {
         assert!(error.contains("not a socket"), "{error}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep me");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn should_create_a_private_directory_when_the_runtime_directory_is_given() {
+        let runtime = std::env::temp_dir().join(format!("limpid-ssh-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&runtime);
+        std::fs::create_dir_all(&runtime).unwrap();
+        let directory = private_directory(Some(runtime.clone().into_os_string())).unwrap();
+        let mode = std::fs::metadata(&directory).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        std::fs::remove_dir_all(runtime).unwrap();
     }
 }

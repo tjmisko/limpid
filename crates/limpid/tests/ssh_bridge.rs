@@ -1,4 +1,6 @@
-//! Stage 3: `limpid ssh` against an isolated sshd on a loopback port. The test
+//! The SSH bridge over plain `ssh` against an isolated sshd on a loopback
+//! port. Each desktop runs `limpid bridge serve`; each login forwards a socket
+//! to it with `-R`, as a `RemoteForward` line in `~/.ssh/config` does. The test
 //! sshd runs as the current user with its own keys and configuration; it never
 //! touches a real host. The local viewer is a stand-in socket, so no window
 //! opens, and the launcher is a copy of the binary with no `limpid-view`
@@ -183,7 +185,7 @@ impl Sshd {
         Some(sshd)
     }
 
-    /// Arguments after `limpid ssh` that reach this sshd.
+    /// ssh arguments that reach this sshd, ending with the host.
     fn client_args(&self) -> Vec<String> {
         let identity = self.dir.join("user");
         [
@@ -216,32 +218,101 @@ impl Drop for Sshd {
     }
 }
 
+/// `limpid bridge serve` for one desktop, bound in its runtime directory.
+struct Serve {
+    child: Child,
+}
+
+impl Serve {
+    fn start(dir: &Path, launcher: &Path) -> Self {
+        let child = spawn_retry(
+            Command::new(launcher)
+                .args(["bridge", "serve"])
+                .env("XDG_RUNTIME_DIR", dir)
+                .env("XDG_CACHE_HOME", dir)
+                .env("XDG_CONFIG_HOME", dir)
+                .env("PATH", "/usr/bin:/bin")
+                .env_remove("LISTEN_PID")
+                .env_remove("LISTEN_FDS")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        );
+        let hub = hub_of(dir);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::os::unix::net::UnixStream::connect(&hub).is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "limpid bridge serve did not start"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Self { child }
+    }
+}
+
+impl Drop for Serve {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn hub_of(runtime: &Path) -> PathBuf {
+    runtime.join("limpid/hub.sock")
+}
+
 struct Outcome {
     code: Option<i32>,
     stdout: String,
     stderr: String,
-    route: Option<String>,
+    /// The socket this login forwarded on the remote.
+    socket: PathBuf,
+    elapsed: Duration,
 }
 
-/// Run `limpid ssh` with `args`, feed `script` to the remote login shell and
-/// wait for it to finish. Panics if it hangs.
-fn login(runtime: &Path, launcher: &Path, args: &[String], script: &str) -> Outcome {
-    let mut child = spawn_retry(
-        Command::new(launcher)
-            .arg("ssh")
-            .args(args)
-            .env("XDG_RUNTIME_DIR", runtime)
-            .env("XDG_CACHE_HOME", runtime)
-            .env("XDG_CONFIG_HOME", runtime)
-            .env("PATH", "/usr/bin:/bin")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped()),
-    );
-    // The route is the name of the one socket the launcher binds.
-    let route = wait_for_route(runtime, &mut child);
+/// A remote socket path no other login in this run uses.
+fn next_socket() -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, Ordering::SeqCst);
+    let path = PathBuf::from(format!("/tmp/lsb-{}-{n}.sock", std::process::id()));
+    let _ = fs::remove_file(&path);
+    path
+}
+
+/// A plain `ssh` login that forwards a socket of its own to the hub served in
+/// `runtime`, the way a `RemoteForward` line in `~/.ssh/config` does, and
+/// feeds `script` to the remote shell with `LIMPID_BRIDGE_SOCKET` naming that
+/// socket. Panics if ssh does not exit.
+fn login(runtime: &Path, args: &[String], script: &str) -> Outcome {
+    let socket = next_socket();
+    let mut args = args.to_vec();
+    let host = args.pop().unwrap();
+    let started = Instant::now();
+    let mut child = Command::new("ssh")
+        .args(&args)
+        .args([
+            "-T",
+            "-o",
+            "ControlMaster=no",
+            "-o",
+            "ControlPath=none",
+            "-R",
+        ])
+        .arg(format!(
+            "{}:{}",
+            socket.display(),
+            hub_of(runtime).display()
+        ))
+        .arg(host)
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    let script = script.to_string();
+    let script = format!("export LIMPID_BRIDGE_SOCKET={}\n{script}", socket.display());
     std::thread::spawn(move || {
         let _ = stdin.write_all(script.as_bytes());
     });
@@ -264,7 +335,7 @@ fn login(runtime: &Path, launcher: &Path, args: &[String], script: &str) -> Outc
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("limpid ssh hung; stdout {:?}", stdout.join());
+            panic!("ssh hung at logout; stdout {:?}", stdout.join());
         }
         std::thread::sleep(Duration::from_millis(20));
     };
@@ -272,88 +343,63 @@ fn login(runtime: &Path, launcher: &Path, args: &[String], script: &str) -> Outc
         code: status.code(),
         stdout: stdout.join().unwrap(),
         stderr: stderr.join().unwrap(),
-        route,
+        socket,
+        elapsed: started.elapsed(),
     }
 }
 
-/// Routes some `login` already took, so two logins sharing a runtime
-/// directory each pick their own socket.
-static CLAIMED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-fn claim(route: &str) -> bool {
-    let mut claimed = CLAIMED.lock().unwrap();
-    if claimed.iter().any(|known| known == route) {
-        return false;
-    }
-    claimed.push(route.to_string());
-    true
-}
-
-fn wait_for_route(runtime: &Path, child: &mut Child) -> Option<String> {
-    let directory = runtime.join("limpid");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if let Ok(entries) = fs::read_dir(&directory) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if let Some(route) = name
-                    .strip_prefix("b-")
-                    .and_then(|rest| rest.strip_suffix(".sock"))
-                    && claim(route)
-                {
-                    return Some(route.to_string());
-                }
-            }
-        }
-        if child.try_wait().unwrap().is_some() {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    None
-}
-
-/// Pids of processes that carry this login's route in their environment.
-fn processes_for(route: &str) -> Vec<u32> {
-    let needle = format!("LIMPID_BRIDGE_ROUTE={route}");
+/// Pids of processes whose environment holds `entry` exactly.
+fn processes_with_env(entry: &str) -> Vec<u32> {
     fs::read_dir("/proc")
         .unwrap()
         .flatten()
-        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
+        .filter_map(|e| e.file_name().to_string_lossy().parse::<u32>().ok())
         .filter(|pid| {
             fs::read(format!("/proc/{pid}/environ"))
-                .map(|bytes| {
-                    bytes
-                        .split(|byte| *byte == 0)
-                        .any(|entry| entry == needle.as_bytes())
-                })
+                .map(|bytes| bytes.split(|b| *b == 0).any(|e| e == entry.as_bytes()))
                 .unwrap_or(false)
         })
         .collect()
 }
 
-fn assert_nothing_left_behind(runtime: &Path, route: &str) {
+/// No relay of this login is left running and no ssh client still forwards
+/// to this desktop. The hub's own sockets stay: it outlives logins. sshd
+/// leaves the remote socket file behind; it is removed here.
+fn assert_nothing_left_behind(runtime: &Path, socket: &Path) {
+    let entry = format!("LIMPID_BRIDGE_SOCKET={}", socket.display());
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !processes_for(route).is_empty() && Instant::now() < deadline {
+    while !processes_with_env(&entry).is_empty() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert_eq!(
-        processes_for(route),
+        processes_with_env(&entry),
         Vec::<u32>::new(),
         "relays left behind"
     );
-    assert!(
-        !runtime.join(format!("limpid/b-{route}.sock")).exists(),
-        "local bridge socket left behind"
+    assert_eq!(
+        ssh_clients_for(runtime),
+        Vec::<u32>::new(),
+        "ssh left behind"
     );
-    assert!(
-        !runtime.join(format!("limpid/s-{route}.sock")).exists(),
-        "local save socket left behind"
-    );
-    assert!(
-        !Path::new(&format!("/tmp/limpid-{route}.sock")).exists(),
-        "remote socket left behind"
-    );
+    let _ = fs::remove_file(socket);
+}
+
+/// Pids of `ssh` clients that forward to the hub served in `runtime`.
+fn ssh_clients_for(runtime: &Path) -> Vec<u32> {
+    let needle = format!(":{}", hub_of(runtime).display());
+    fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
+        .filter(|pid| {
+            fs::read_to_string(format!("/proc/{pid}/comm"))
+                .map(|comm| comm.trim() == "ssh")
+                .unwrap_or(false)
+                && fs::read(format!("/proc/{pid}/cmdline"))
+                    .map(|bytes| String::from_utf8_lossy(&bytes).contains(&needle))
+                    .unwrap_or(false)
+        })
+        .collect()
 }
 
 fn remote_page(dir: &Path, name: &str, markdown: &str, session: &str) -> PathBuf {
@@ -378,6 +424,7 @@ fn should_open_the_page_locally_and_log_out_cleanly_when_remote_limpid_runs_with
     let dir = scratch("open-run");
     let viewer = FakeViewer::start(&dir);
     let launcher = isolated_binary(&dir);
+    let _serve = Serve::start(&dir, &launcher);
     let markdown = "# Remote plan\n\nnaïve 日本語\n\n## Questions\n\n1. Which?\n   - A\n";
     let html = remote_page(&dir, "claude-1", markdown, "sess-ssh");
     let script = format!(
@@ -386,7 +433,7 @@ fn should_open_the_page_locally_and_log_out_cleanly_when_remote_limpid_runs_with
         page = html.display()
     );
     let started = Instant::now();
-    let outcome = login(&dir, &launcher, &sshd.client_args(), &script);
+    let outcome = login(&dir, &sshd.client_args(), &script);
     assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
     assert!(
         outcome.stdout.contains("OPEN_STATUS=0"),
@@ -402,7 +449,14 @@ fn should_open_the_page_locally_and_log_out_cleanly_when_remote_limpid_runs_with
         .parse()
         .unwrap();
     assert!(elapsed <= 3, "/read-style open took {elapsed}s");
-    assert!(started.elapsed() < TIMEOUT, "logout hung with a page open");
+    // The relay holds a forwarded connection; it must let go once the shell
+    // exits, or ssh waits for it.
+    assert!(
+        outcome.elapsed < Duration::from_secs(10),
+        "logout waited {:?} for the relay",
+        outcome.elapsed
+    );
+    let _ = started;
 
     let handoffs = viewer.handoffs();
     assert_eq!(handoffs.len(), 1, "{handoffs:?}");
@@ -421,10 +475,14 @@ fn should_open_the_page_locally_and_log_out_cleanly_when_remote_limpid_runs_with
     assert_eq!(meta["remote"]["session"], "sess-ssh");
     assert_eq!(meta["remote"]["preview"], true);
     assert_eq!(
+        meta["remote"]["save_sock"],
+        dir.join("limpid/save.sock").to_str().unwrap()
+    );
+    assert_eq!(
         meta["remote"]["remote_path"],
         html.canonicalize().unwrap().to_str().unwrap()
     );
-    assert_nothing_left_behind(&dir, &outcome.route.unwrap());
+    assert_nothing_left_behind(&dir, &outcome.socket);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -436,17 +494,18 @@ fn should_open_pages_from_two_independent_logins_when_they_share_one_viewer() {
     let dir = scratch("two-run");
     let viewer = FakeViewer::start(&dir);
     let launcher = isolated_binary(&dir);
+    let _serve = Serve::start(&dir, &launcher);
     let first = remote_page(&dir, "a", "# From first\n", "sess-a");
     let second = remote_page(&dir, "b", "# From second\n", "sess-b");
     let args = sshd.client_args();
     let run = |page: PathBuf| {
-        let (dir, launcher, args) = (dir.clone(), launcher.clone(), args.clone());
+        let (dir, args) = (dir.clone(), args.clone());
         std::thread::spawn(move || {
             let script = format!(
                 "{LIMPID} --source-backed {}\necho OPEN_STATUS=$?\nsleep 1\nexit\n",
                 page.display()
             );
-            login(&dir, &launcher, &args, &script)
+            login(&dir, &args, &script)
         })
     };
     let (one, two) = (run(first), run(second));
@@ -459,7 +518,12 @@ fn should_open_pages_from_two_independent_logins_when_they_share_one_viewer() {
             outcome.stdout
         );
     }
-    assert_ne!(one.route, two.route, "each login has its own route");
+    let routes: std::collections::HashSet<String> = viewer
+        .handoffs()
+        .iter()
+        .map(|handoff| origin_of(handoff)["route"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(routes.len(), 2, "each login has its own route");
     let mut titles: Vec<String> = viewer
         .handoffs()
         .iter()
@@ -467,36 +531,40 @@ fn should_open_pages_from_two_independent_logins_when_they_share_one_viewer() {
         .collect();
     titles.sort();
     assert_eq!(titles, ["# From first\n", "# From second\n"]);
-    assert_nothing_left_behind(&dir, &one.route.unwrap());
-    assert_nothing_left_behind(&dir, &two.route.unwrap());
+    assert_nothing_left_behind(&dir, &one.socket);
+    assert_nothing_left_behind(&dir, &two.socket);
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn should_fail_with_a_hint_and_leave_nothing_behind_when_the_server_refuses_forwarding() {
+fn should_report_the_missing_forward_when_the_server_refuses_forwarding() {
     let Some(sshd) = Sshd::start("noforward", "AllowStreamLocalForwarding no") else {
         return;
     };
     let dir = scratch("noforward-run");
-    let _viewer = FakeViewer::start(&dir);
+    let viewer = FakeViewer::start(&dir);
     let launcher = isolated_binary(&dir);
-    let outcome = login(
-        &dir,
-        &launcher,
-        &sshd.client_args(),
-        "echo SHOULD_NOT_RUN\nexit\n",
+    let _serve = Serve::start(&dir, &launcher);
+    let html = remote_page(&dir, "p", "# Page\n", "sess-x");
+    let script = format!(
+        "{LIMPID} --source-backed {}\necho OPEN_STATUS=$?\nexit\n",
+        html.display()
     );
-    assert_eq!(outcome.code, Some(255), "{}", outcome.stderr);
+    // ssh warns about the refused forward and logs in anyway.
+    let outcome = login(&dir, &sshd.client_args(), &script);
+    assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
     assert!(
-        !outcome.stdout.contains("SHOULD_NOT_RUN"),
-        "a login without its forward must not start"
+        outcome.stdout.contains("OPEN_STATUS=1"),
+        "{}",
+        outcome.stdout
     );
     assert!(
         outcome.stderr.contains("AllowStreamLocalForwarding"),
         "{}",
         outcome.stderr
     );
-    assert_nothing_left_behind(&dir, &outcome.route.unwrap());
+    assert!(viewer.handoffs().is_empty(), "nothing opened locally");
+    assert_nothing_left_behind(&dir, &outcome.socket);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -508,11 +576,12 @@ fn should_report_the_remote_failure_and_log_out_when_the_remote_has_no_limpid() 
     let dir = scratch("nolimpid-run");
     let _viewer = FakeViewer::start(&dir);
     let launcher = isolated_binary(&dir);
+    let _serve = Serve::start(&dir, &launcher);
     let script = "limpid-definitely-not-installed /nowhere\necho STATUS=$?\nexit\n";
-    let outcome = login(&dir, &launcher, &sshd.client_args(), script);
+    let outcome = login(&dir, &sshd.client_args(), script);
     assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
     assert!(outcome.stdout.contains("STATUS=127"), "{}", outcome.stdout);
-    assert_nothing_left_behind(&dir, &outcome.route.unwrap());
+    assert_nothing_left_behind(&dir, &outcome.socket);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -525,12 +594,13 @@ fn should_fail_the_remote_open_and_stay_logged_in_when_no_local_viewer_is_instal
     // No FakeViewer: nothing listens and no limpid-view exists on PATH or
     // beside the launcher, so the local launch fails.
     let launcher = isolated_binary(&dir);
+    let _serve = Serve::start(&dir, &launcher);
     let html = remote_page(&dir, "p", "# Page\n", "sess-x");
     let script = format!(
         "{LIMPID} --source-backed {}\necho OPEN_STATUS=$?\nexit\n",
         html.display()
     );
-    let outcome = login(&dir, &launcher, &sshd.client_args(), &script);
+    let outcome = login(&dir, &sshd.client_args(), &script);
     assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
     assert!(
         outcome.stdout.contains("OPEN_STATUS=1"),
@@ -544,7 +614,7 @@ fn should_fail_the_remote_open_and_stay_logged_in_when_no_local_viewer_is_instal
         outcome.stdout,
         outcome.stderr
     );
-    assert_nothing_left_behind(&dir, &outcome.route.unwrap());
+    assert_nothing_left_behind(&dir, &outcome.socket);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -556,6 +626,7 @@ fn should_report_missing_forwarding_when_the_relay_cannot_reach_its_socket() {
     let dir = scratch("norelay-run");
     let _viewer = FakeViewer::start(&dir);
     let launcher = isolated_binary(&dir);
+    let _serve = Serve::start(&dir, &launcher);
     let html = remote_page(&dir, "p", "# Page\n", "sess-x");
     // A login whose route points at a socket nobody listens on.
     let script = format!(
@@ -563,7 +634,7 @@ fn should_report_missing_forwarding_when_the_relay_cannot_reach_its_socket() {
         html.display(),
         pid = std::process::id()
     );
-    let outcome = login(&dir, &launcher, &sshd.client_args(), &script);
+    let outcome = login(&dir, &sshd.client_args(), &script);
     assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
     assert!(
         outcome.stdout.contains("OPEN_STATUS=1"),
@@ -572,142 +643,7 @@ fn should_report_missing_forwarding_when_the_relay_cannot_reach_its_socket() {
     );
     let all = format!("{}{}", outcome.stdout, outcome.stderr);
     assert!(all.contains("forwarding"), "{all}");
-    assert_nothing_left_behind(&dir, &outcome.route.unwrap());
-    fs::remove_dir_all(dir).unwrap();
-}
-
-// ---- no sshd: a fake ssh records what the launcher asks for ----------------
-
-fn fake_ssh(dir: &Path, body: &str) -> PathBuf {
-    let path = dir.join("fake-ssh");
-    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-    path
-}
-
-fn launch_with(dir: &Path, ssh: &Path, args: &[&str]) -> std::process::Output {
-    spawn_retry(
-        Command::new(isolated_binary(dir))
-            .arg("ssh")
-            .args(args)
-            .env("LIMPID_SSH", ssh)
-            .env("XDG_RUNTIME_DIR", dir)
-            .env("XDG_CACHE_HOME", dir)
-            .env("PATH", "/usr/bin:/bin")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped()),
-    )
-    .wait_with_output()
-    .unwrap()
-}
-
-#[test]
-fn should_pass_the_forward_and_options_to_ssh_when_the_launcher_runs() {
-    let dir = scratch("fake-args");
-    let record = dir.join("args.txt");
-    let ssh = fake_ssh(
-        &dir,
-        &format!(
-            "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > {}\nls {}/limpid > {}/live.txt\nexit 0",
-            record.display(),
-            dir.display(),
-            dir.display()
-        ),
-    );
-    let output = launch_with(&dir, &ssh, &["-p", "2222", "--light", "me@box"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let args: Vec<String> = fs::read_to_string(&record)
-        .unwrap()
-        .lines()
-        .map(String::from)
-        .collect();
-    assert!(
-        args.contains(&"ExitOnForwardFailure=yes".to_string()),
-        "{args:?}"
-    );
-    assert!(args.contains(&"ControlPath=none".to_string()));
-    let forward = args.iter().position(|a| a == "-R").unwrap();
-    let (remote, local) = args[forward + 1].split_once(':').unwrap();
-    assert!(remote.starts_with("/tmp/limpid-") && remote.ends_with(".sock"));
-    assert!(local.starts_with(dir.join("limpid").to_str().unwrap()));
-    assert_eq!(args[args.len() - 2], "me@box");
-    assert!(
-        args.last()
-            .unwrap()
-            .starts_with("env LIMPID_BRIDGE_SOCKET=")
-    );
-    assert!(
-        fs::read_to_string(dir.join("live.txt"))
-            .unwrap()
-            .contains("b-"),
-        "the hub socket exists while ssh runs"
-    );
-    assert!(
-        fs::read_dir(dir.join("limpid")).unwrap().next().is_none(),
-        "the hub socket is removed when ssh exits"
-    );
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn should_propagate_the_exit_status_when_ssh_fails() {
-    let dir = scratch("fake-status");
-    let ssh = fake_ssh(&dir, "exit 7");
-    let output = launch_with(&dir, &ssh, &["box"]);
-    assert_eq!(output.status.code(), Some(7));
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn should_name_the_missing_client_when_ssh_is_not_installed() {
-    let dir = scratch("fake-missing");
-    let output = launch_with(&dir, &dir.join("no-such-ssh"), &["box"]);
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("not found") && stderr.contains("LIMPID_SSH"),
-        "{stderr}"
-    );
-    assert!(fs::read_dir(dir.join("limpid")).unwrap().next().is_none());
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn should_set_the_route_and_remove_the_socket_when_the_remote_command_runs_in_sh() {
-    use limpid_core::bridge_ssh::remote_command;
-    let dir = scratch("quoting");
-    let socket = dir.join("it's a sock");
-    fs::write(&socket, "").unwrap();
-    let shell = dir.join("login-shell");
-    fs::write(
-        &shell,
-        "#!/bin/sh\nprintf '%s|%s' \"$LIMPID_BRIDGE_ROUTE\" \"$LIMPID_BRIDGE_SOCKET\"\nexit 3\n",
-    )
-    .unwrap();
-    fs::set_permissions(&shell, fs::Permissions::from_mode(0o755)).unwrap();
-    let route = "r'o $(touch pwned) \"x\"";
-    let command = remote_command(socket.to_str().unwrap(), route);
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(&command)
-        .env("SHELL", &shell)
-        .output()
-        .unwrap();
-    assert_eq!(
-        output.status.code(),
-        Some(3),
-        "the shell's status carries through"
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        format!("{route}|{}", socket.display())
-    );
-    assert!(!socket.exists(), "the login's socket is removed on exit");
-    assert!(!Path::new("pwned").exists());
+    assert_nothing_left_behind(&dir, &outcome.socket);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -719,6 +655,7 @@ fn should_save_feedback_to_the_remote_page_when_the_local_copy_is_pushed_over_ss
     let dir = scratch("save-run");
     let viewer = FakeViewer::start(&dir);
     let launcher = isolated_binary(&dir);
+    let _serve = Serve::start(&dir, &launcher);
     let markdown = "# Remote plan\n\nnaïve 日本語\n\n## Questions\n\n1. Which?\n   - A\n";
     let html = remote_page(&dir, "claude-save", markdown, "sess-save");
     let flag = dir.join("pushed");
@@ -730,8 +667,8 @@ fn should_save_feedback_to_the_remote_page_when_the_local_copy_is_pushed_over_ss
     );
     let args = sshd.client_args();
     let session = {
-        let (dir, launcher) = (dir.clone(), launcher.clone());
-        std::thread::spawn(move || login(&dir, &launcher, &args, &script))
+        let dir = dir.clone();
+        std::thread::spawn(move || login(&dir, &args, &script))
     };
     let deadline = Instant::now() + Duration::from_secs(30);
     while viewer.handoffs().is_empty() {
@@ -784,7 +721,7 @@ fn should_save_feedback_to_the_remote_page_when_the_local_copy_is_pushed_over_ss
         "{}",
         outcome.stdout
     );
-    assert_nothing_left_behind(&dir, &outcome.route.unwrap());
+    assert_nothing_left_behind(&dir, &outcome.socket);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -800,6 +737,7 @@ struct Client {
     dir: PathBuf,
     viewer: FakeViewer,
     launcher: PathBuf,
+    _serve: Serve,
 }
 
 impl Client {
@@ -807,17 +745,19 @@ impl Client {
         let dir = scratch(name);
         let viewer = FakeViewer::start(&dir);
         let launcher = isolated_binary(&dir);
+        let _serve = Serve::start(&dir, &launcher);
         Self {
             dir,
             viewer,
             launcher,
+            _serve,
         }
     }
 
     /// A login on its own thread: `script` runs in the remote shell.
     fn login(&self, sshd: &Sshd, script: String) -> std::thread::JoinHandle<Outcome> {
-        let (dir, launcher, args) = (self.dir.clone(), self.launcher.clone(), sshd.client_args());
-        std::thread::spawn(move || login(&dir, &launcher, &args, &script))
+        let (dir, args) = (self.dir.clone(), sshd.client_args());
+        std::thread::spawn(move || login(&dir, &args, &script))
     }
 
     fn wait_for_handoffs(&self, count: usize) -> Vec<Handoff> {
@@ -972,8 +912,8 @@ fn should_keep_two_clients_apart_and_refuse_the_stale_one_when_both_open_the_sam
     for outcome in [&first, &second] {
         assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
     }
-    assert_nothing_left_behind(&one.dir, &first.route.unwrap());
-    assert_nothing_left_behind(&two.dir, &second.route.unwrap());
+    assert_nothing_left_behind(&one.dir, &first.socket);
+    assert_nothing_left_behind(&two.dir, &second.socket);
 }
 
 #[test]
@@ -1001,7 +941,8 @@ fn should_save_each_page_to_its_own_remote_file_when_one_login_opens_several_pag
         .iter()
         .map(|handoff| origin_of(handoff)["route"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(routes.len(), 1, "one login, one route");
+    // Each opening process names its own route; the login is the socket.
+    assert_eq!(routes.len(), 3, "each page has its own route");
     for handoff in &handoffs {
         let title = fs::read_to_string(&handoff.path).unwrap();
         let name = title.trim().rsplit(' ').next().unwrap().to_string();
@@ -1027,25 +968,7 @@ fn should_save_each_page_to_its_own_remote_file_when_one_login_opens_several_pag
         "{}",
         outcome.stdout
     );
-    assert_nothing_left_behind(&client.dir, &outcome.route.unwrap());
-}
-
-/// Pids of `ssh` clients that carry this login's forward.
-fn ssh_clients_for(route: &str) -> Vec<u32> {
-    let needle = format!("/tmp/limpid-{route}.sock:");
-    fs::read_dir("/proc")
-        .unwrap()
-        .flatten()
-        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
-        .filter(|pid| {
-            fs::read_to_string(format!("/proc/{pid}/comm"))
-                .map(|comm| comm.trim() == "ssh")
-                .unwrap_or(false)
-                && fs::read(format!("/proc/{pid}/cmdline"))
-                    .map(|bytes| String::from_utf8_lossy(&bytes).contains(&needle))
-                    .unwrap_or(false)
-        })
-        .collect()
+    assert_nothing_left_behind(&client.dir, &outcome.socket);
 }
 
 #[derive(Clone, Copy)]
@@ -1073,7 +996,6 @@ fn unsent_feedback_survives(name: &str, ending: Ending) {
     let flag = client.dir.join("done");
     let session = client.login(&sshd, open_script(&[&html], &flag));
     let handoff = client.wait_for_handoffs(1).remove(0);
-    let route = origin_of(&handoff)["route"].as_str().unwrap().to_string();
     let (reply, _) = viewer_saves(&handoff, &feedback(&[("q1", "first")]), false);
     assert_eq!(reply.state, PushState::RemoteSaved, "{reply:?}");
     feedback(&[("q1", "second, naïve 日本語")])
@@ -1083,8 +1005,8 @@ fn unsent_feedback_survives(name: &str, ending: Ending) {
     match ending {
         Ending::ShellExit => fs::write(&flag, "").unwrap(),
         Ending::ConnectionLost => {
-            let pids = ssh_clients_for(&route);
-            assert_eq!(pids.len(), 1, "ssh clients for {route}: {pids:?}");
+            let pids = ssh_clients_for(&client.dir);
+            assert_eq!(pids.len(), 1, "ssh clients: {pids:?}");
             let status = Command::new("kill")
                 .args(["-9", &pids[0].to_string()])
                 .status()
@@ -1096,7 +1018,7 @@ fn unsent_feedback_survives(name: &str, ending: Ending) {
     let outcome = session.join().unwrap();
     assert!(
         started.elapsed() < TIMEOUT,
-        "the launcher hung after the login ended"
+        "ssh hung after the login ended"
     );
     if matches!(ending, Ending::ConnectionLost) {
         assert_ne!(
@@ -1108,15 +1030,13 @@ fn unsent_feedback_survives(name: &str, ending: Ending) {
         fs::write(&flag, "").unwrap();
     }
 
-    // The launcher is gone: the push cannot happen, and says why.
+    // The login is gone: the push cannot happen, and says why.
     let (reply, took) = viewer_saves(&handoff, &feedback(&[("q1", "second, naïve 日本語")]), true);
     assert_eq!(reply.state, PushState::LocalOnly, "{reply:?}");
     assert!(!reply.submitted());
     assert!(took < Duration::from_secs(5), "{took:?}");
     assert!(
-        reply
-            .describe()
-            .contains("login that opened this page is gone"),
+        reply.describe().contains("remote connection is gone"),
         "{}",
         reply.describe()
     );
@@ -1143,7 +1063,7 @@ fn unsent_feedback_survives(name: &str, ending: Ending) {
     assert!(text.contains("q1: second, naïve 日本語"), "{text}");
     assert_eq!(client.cache(), handoff.path.parent().unwrap());
 
-    assert_nothing_left_behind(&client.dir, &route);
+    assert_nothing_left_behind(&client.dir, &outcome.socket);
 }
 
 #[test]
@@ -1281,303 +1201,45 @@ fn measure_warm_open_and_feedback_acknowledgment_latency() {
     report("submit_ack (viewer :wq to agent accepted)", &mut submits);
 }
 
-// ---- plain ssh: one `limpid bridge serve`, forwards from ~/.ssh/config -----
-
-/// `limpid bridge serve` for one desktop, bound in its runtime directory.
-struct Serve {
-    child: Child,
-    hub: PathBuf,
-}
-
-impl Serve {
-    fn start(dir: &Path, launcher: &Path) -> Self {
-        let child = spawn_retry(
-            Command::new(launcher)
-                .args(["bridge", "serve"])
-                .env("XDG_RUNTIME_DIR", dir)
-                .env("XDG_CACHE_HOME", dir)
-                .env("XDG_CONFIG_HOME", dir)
-                .env("PATH", "/usr/bin:/bin")
-                .env_remove("LISTEN_PID")
-                .env_remove("LISTEN_FDS")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null()),
-        );
-        let hub = dir.join("limpid/hub.sock");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while std::os::unix::net::UnixStream::connect(&hub).is_err() {
-            assert!(
-                Instant::now() < deadline,
-                "limpid bridge serve did not start"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        Self { child, hub }
-    }
-}
-
-impl Drop for Serve {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-struct PlainOutcome {
-    code: Option<i32>,
-    stdout: String,
-    stderr: String,
-    elapsed: Duration,
-}
-
-/// A plain `ssh` login that forwards `remote_socket` to the hub the way a
-/// `RemoteForward` line in `~/.ssh/config` does, with `script` as the shell's
-/// input. Panics if ssh does not exit.
-fn plain_login(sshd: &Sshd, hub: &Path, remote_socket: &Path, script: &str) -> PlainOutcome {
-    let mut args = sshd.client_args();
-    let host = args.pop().unwrap();
-    let started = Instant::now();
-    let mut child = Command::new("ssh")
-        .args(&args)
-        .args([
-            "-T",
-            "-o",
-            "ControlMaster=no",
-            "-o",
-            "ControlPath=none",
-            "-R",
-        ])
-        .arg(format!("{}:{}", remote_socket.display(), hub.display()))
-        .arg(host)
-        .env("PATH", "/usr/bin:/bin")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    let script = script.to_string();
-    std::thread::spawn(move || {
-        let _ = stdin.write_all(script.as_bytes());
-    });
-    let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
-    let stdout = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = out.read_to_string(&mut text);
-        text
-    });
-    let stderr = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = err.read_to_string(&mut text);
-        text
-    });
-    let deadline = Instant::now() + TIMEOUT;
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("plain ssh hung at logout; stdout {:?}", stdout.join());
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    PlainOutcome {
-        code: status.code(),
-        stdout: stdout.join().unwrap(),
-        stderr: stderr.join().unwrap(),
-        elapsed: started.elapsed(),
-    }
-}
-
-/// Pids of processes whose environment holds `entry` exactly.
-fn processes_with_env(entry: &str) -> Vec<u32> {
-    fs::read_dir("/proc")
-        .unwrap()
-        .flatten()
-        .filter_map(|e| e.file_name().to_string_lossy().parse::<u32>().ok())
-        .filter(|pid| {
-            fs::read(format!("/proc/{pid}/environ"))
-                .map(|bytes| bytes.split(|b| *b == 0).any(|e| e == entry.as_bytes()))
-                .unwrap_or(false)
-        })
-        .collect()
-}
-
-fn assert_no_relay_for(remote_socket: &Path) {
-    let entry = format!("LIMPID_BRIDGE_SOCKET={}", remote_socket.display());
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !processes_with_env(&entry).is_empty() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert_eq!(
-        processes_with_env(&entry),
-        Vec::<u32>::new(),
-        "relays left behind"
-    );
-}
-
-fn remote_socket(name: &str) -> PathBuf {
-    let path = PathBuf::from(format!("/tmp/lsb-{name}-{}.sock", std::process::id()));
-    let _ = fs::remove_file(&path);
-    path
-}
-
-fn plain_open_script(remote_socket: &Path, pages: &[&Path], tail: &str) -> String {
-    let mut script = format!("export LIMPID_BRIDGE_SOCKET={}\n", remote_socket.display());
-    for page in pages {
-        script.push_str(&format!(
-            "{LIMPID} --source-backed {}\necho OPEN_STATUS=$?\n",
-            page.display()
-        ));
-    }
-    script.push_str(tail);
-    script.push_str("exit\n");
-    script
-}
-
-#[test]
-fn should_open_the_page_and_log_out_promptly_when_a_plain_ssh_login_forwards_the_hub() {
-    let Some(sshd) = Sshd::start("plain-open", "") else {
-        return;
-    };
-    let client = Client::new("plain-open-run");
-    let serve = Serve::start(&client.dir, &client.launcher);
-    let markdown = "# Plain plan\n\nnaïve 日本語\n";
-    let html = remote_page(&client.dir, "claude-plain", markdown, "sess-plain");
-    let socket = remote_socket("plain-open");
-    let outcome = plain_login(
-        &sshd,
-        &serve.hub,
-        &socket,
-        &plain_open_script(&socket, &[&html], ""),
-    );
-    assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
-    assert!(
-        outcome.stdout.contains("OPEN_STATUS=0"),
-        "{}",
-        outcome.stdout
-    );
-    // The relay holds a forwarded connection; it must let go once the shell
-    // exits, or ssh waits for it.
-    assert!(
-        outcome.elapsed < Duration::from_secs(10),
-        "logout waited {:?} for the relay",
-        outcome.elapsed
-    );
-    let handoffs = client.wait_for_handoffs(1);
-    assert_eq!(fs::read_to_string(&handoffs[0].path).unwrap(), markdown);
-    let origin = origin_of(&handoffs[0]);
-    assert_eq!(origin["session"], "sess-plain");
-    assert_eq!(
-        origin["save_sock"],
-        client.dir.join("limpid/save.sock").to_str().unwrap()
-    );
-    assert_no_relay_for(&socket);
-    let _ = fs::remove_file(&socket);
-}
-
-#[test]
-fn should_keep_logins_apart_and_save_to_each_when_two_plain_logins_share_one_hub() {
-    let Some(sshd) = Sshd::start("plain-two", "") else {
-        return;
-    };
-    let client = Client::new("plain-two-run");
-    let serve = Serve::start(&client.dir, &client.launcher);
-    let first = remote_page(
-        &client.dir,
-        "a",
-        "# First\n\n## Questions\n\n1. Q?\n",
-        "sess-a",
-    );
-    let second = remote_page(
-        &client.dir,
-        "b",
-        "# Second\n\n## Questions\n\n1. Q?\n",
-        "sess-b",
-    );
-    let flag = client.dir.join("saved");
-    let tail = format!("while [ ! -f {} ]; do sleep 0.1; done\n", flag.display());
-    let socket_a = remote_socket("plain-two-a");
-    let socket_b = remote_socket("plain-two-b");
-    let script_a = plain_open_script(&socket_a, &[&first], &tail);
-    let script_b = plain_open_script(&socket_b, &[&second], &tail);
-    std::thread::scope(|scope| {
-        let one = scope.spawn(|| plain_login(&sshd, &serve.hub, &socket_a, &script_a));
-        let two = scope.spawn(|| plain_login(&sshd, &serve.hub, &socket_b, &script_b));
-        let handoffs = client.wait_for_handoffs(2);
-        let routes: Vec<String> = handoffs
-            .iter()
-            .map(|handoff| origin_of(handoff)["route"].as_str().unwrap().to_string())
-            .collect();
-        assert_ne!(routes[0], routes[1], "each login has its own route");
-        for handoff in &handoffs {
-            let title = fs::read_to_string(&handoff.path).unwrap();
-            let replies = feedback(&[("q1", title.lines().next().unwrap())]);
-            let (reply, _) = viewer_saves(handoff, &replies, false);
-            assert_eq!(reply.state, PushState::RemoteSaved, "{reply:?}");
-            let page = if title.starts_with("# First") {
-                &first
-            } else {
-                &second
-            };
-            assert_eq!(
-                limpid_core::bridge_save::read_feedback(page).unwrap(),
-                replies
-            );
-        }
-        fs::write(&flag, "").unwrap();
-        for outcome in [one.join().unwrap(), two.join().unwrap()] {
-            assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
-            assert!(
-                outcome.stdout.contains("OPEN_STATUS=0"),
-                "{}",
-                outcome.stdout
-            );
-        }
-    });
-    assert_no_relay_for(&socket_a);
-    assert_no_relay_for(&socket_b);
-    let _ = fs::remove_file(&socket_a);
-    let _ = fs::remove_file(&socket_b);
-}
-
 #[test]
 fn should_serve_a_later_login_when_an_earlier_one_has_ended() {
-    let Some(sshd) = Sshd::start("plain-later", "") else {
+    let Some(sshd) = Sshd::start("later", "") else {
         return;
     };
-    let client = Client::new("plain-later-run");
-    let serve = Serve::start(&client.dir, &client.launcher);
-    for (round, name) in ["plain-later-1", "plain-later-2"].into_iter().enumerate() {
-        let html = remote_page(&client.dir, name, &format!("# Round {round}\n"), "sess");
-        let socket = remote_socket(name);
-        let outcome = plain_login(
-            &sshd,
-            &serve.hub,
-            &socket,
-            &plain_open_script(&socket, &[&html], ""),
+    let client = Client::new("later-run");
+    for round in 0..2 {
+        let html = remote_page(
+            &client.dir,
+            &format!("r{round}"),
+            &format!("# Round {round}\n"),
+            "sess",
         );
+        let script = format!(
+            "{LIMPID} --source-backed {}\necho OPEN_STATUS=$?\nexit\n",
+            html.display()
+        );
+        let outcome = login(&client.dir, &sshd.client_args(), &script);
         assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
         assert!(
             outcome.stdout.contains("OPEN_STATUS=0"),
             "{}",
             outcome.stdout
         );
-        assert_no_relay_for(&socket);
-        let _ = fs::remove_file(&socket);
+        assert_nothing_left_behind(&client.dir, &outcome.socket);
     }
-    assert_eq!(client.wait_for_handoffs(2).len(), 2);
+    assert_eq!(
+        client.wait_for_handoffs(2).len(),
+        2,
+        "one hub served both logins"
+    );
 }
 
 #[test]
 fn should_name_the_stale_socket_and_the_fix_when_its_login_has_ended() {
-    let dir = scratch("plain-stale");
+    let dir = scratch("stale");
     let html = remote_page(&dir, "claude-stale", "# Stale\n", "sess");
     let socket = dir.join("stale.sock");
-    drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+    drop(UnixListener::bind(&socket).unwrap());
     let output = Command::new(LIMPID)
         .arg(&html)
         .env("LIMPID_BRIDGE_SOCKET", &socket)

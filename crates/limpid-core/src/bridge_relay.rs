@@ -309,7 +309,7 @@ pub fn serve(route: &RouteEnv, page: OpenPage, status: &mut dyn Write) -> Result
     loop {
         // ssh will not end the login while a forwarded connection is open, so
         // the relay must let go as soon as the login is over: when its socket
-        // path is gone (`limpid ssh` removes it) or its sshd has no sessions
+        // path is gone or its sshd has no sessions
         // left (a plain `ssh` login).
         if !route.socket.exists() {
             return Ok(());
@@ -409,7 +409,7 @@ fn connect_message(socket: &Path, error: &BridgeError) -> String {
             code: ErrorCode::IncompatibleVersion,
             message,
         } => format!(
-            "this host and the machine that ran `limpid ssh` run incompatible limpid versions \
+            "this host and the machine running `limpid bridge serve` run incompatible limpid versions \
              ({message}); install the same limpid release on both"
         ),
         BridgeError::Remote { code, message } => {
