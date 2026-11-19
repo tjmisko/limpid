@@ -69,7 +69,8 @@ pub fn geometry(width: f32, theme: &Theme, scale: f32, mode: RailMode, has_toc: 
     } else {
         (css_width * 0.05).clamp(theme.margin, 64.0_f32.max(theme.margin))
     } * scale;
-    let page_width = (theme.content_width * scale).min(available);
+    let zoom = theme.font_size / crate::theme::DEFAULT_FONT_SIZE;
+    let page_width = (theme.content_width * zoom * scale).min(available);
     let column_width = (page_width - 2.0 * side).max(1.0);
     let page_x = rail_width + (available - page_width) / 2.0;
     // When the page is too narrow for its gutters the column takes what is left.
@@ -571,6 +572,17 @@ mod tests {
             assert!(geometry.column_width >= 1.0);
             assert!(geometry.column_x >= 0.0);
         }
+    }
+
+    #[test]
+    fn should_widen_the_column_with_the_font_size_when_there_is_room() {
+        let mut theme = Theme::dark();
+        let base = geometry(4000.0, &theme, 1.0, RailMode::Off, false);
+        theme.font_size *= 2.0;
+        let zoomed = geometry(4000.0, &theme, 1.0, RailMode::Off, false);
+        let base_chars = base.column_width / 17.0;
+        let zoomed_chars = zoomed.column_width / 34.0;
+        assert!(zoomed_chars >= base_chars);
     }
 
     #[test]

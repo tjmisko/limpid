@@ -136,7 +136,7 @@ pub struct Theme {
     pub families: Families,
 }
 
-const DEFAULT_FONT_SIZE: f32 = 17.0;
+pub const DEFAULT_FONT_SIZE: f32 = 17.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.65;
 const DEFAULT_CONTENT_WIDTH: f32 = 860.0;
 const DEFAULT_RAIL_WIDTH: f32 = 220.0;
