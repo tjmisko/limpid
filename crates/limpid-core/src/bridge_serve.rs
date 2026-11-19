@@ -109,7 +109,7 @@ pub fn bind_fresh(path: &Path) -> Result<UnixListener, String> {
 pub fn private_directory(runtime: Option<OsString>) -> Result<PathBuf, String> {
     let directory = match runtime.filter(|value| !value.is_empty()) {
         Some(runtime) => PathBuf::from(runtime).join("limpid"),
-        None => PathBuf::from(format!("/tmp/limpid-{}", unsafe { libc::getuid() })),
+        None => return crate::transport::private_dir_in(Path::new("/tmp")),
     };
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("{}: {error}", directory.display()))?;

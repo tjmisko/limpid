@@ -329,8 +329,8 @@ fn open(opening: &Opening) -> Result<(), Box<dyn Error>> {
         stdin.write_all(b"\n")?;
         return Ok(());
     }
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").ok_or("XDG_RUNTIME_DIR is required")?;
-    let socket = opening.viewer.socket(Path::new(&runtime), opening.scheme);
+    let runtime = limpid_core::transport::runtime_dir(std::env::var_os("XDG_RUNTIME_DIR"))?;
+    let socket = opening.viewer.socket(&runtime, opening.scheme);
     let mut child = launch_viewer(opening.viewer, &socket, opening.scheme)?;
     wait_socket(opening.viewer, &socket, &mut child)?;
     limpid_core::transport::send(&socket, &handoff)?;

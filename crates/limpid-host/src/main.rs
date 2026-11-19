@@ -100,8 +100,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         sender.send(request)?;
         None
     } else {
-        let runtime = std::env::var_os("XDG_RUNTIME_DIR").ok_or("XDG_RUNTIME_DIR is required")?;
-        let socket = socket_path(Path::new(&runtime), scheme);
+        let runtime = limpid_core::transport::runtime_dir(std::env::var_os("XDG_RUNTIME_DIR"))?;
+        let socket = socket_path(&runtime, scheme);
         let listener = bind_socket(&socket)?;
         std::thread::spawn(move || serve(listener, sender));
         Some(socket)
