@@ -311,7 +311,7 @@ impl DocPage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{nav::status::StateName, snapshot::render};
+    use crate::{layout::rail::zoom_of, nav::status::StateName, snapshot::render};
 
     struct Copies(Rc<RefCell<Vec<String>>>);
     impl Clipboard for Copies {
@@ -336,6 +336,18 @@ mod tests {
 
     fn paint(page: &mut DocPage, width: u32, height: u32, scale: f32) {
         render(page, width, height, scale).unwrap();
+    }
+
+    /// Where the rail's right edge is painted, in device pixels.
+    fn rail_edge(page: &DocPage) -> f32 {
+        page.layout.as_ref().unwrap().rail.as_ref().unwrap().width
+    }
+
+    fn assert_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 1e-3,
+            "{actual} is not {expected}"
+        );
     }
 
     fn point(page: &DocPage, block: usize) -> (f32, f32) {
@@ -590,25 +602,27 @@ mod tests {
             let height = 600;
             paint(&mut page, width, height, scale);
             let initial_focus = page.nav.cursor().src.clone();
-            move_to(&mut page, ((220.0 + 3.0) * scale, 200.0 * scale), 0);
+            let zoom = zoom_of(&page.theme);
+            let edge = rail_edge(&page);
+            assert_close(edge, page.theme.rail_width * zoom * scale);
+            move_to(&mut page, (edge + 3.0 * scale, 200.0 * scale), 0);
             assert_eq!(page.cursor_icon(), CursorIcon::ColResize);
             button(&mut page, ElementState::Pressed, 10);
-            move_to(&mut page, ((420.0 + 3.0) * scale, 200.0 * scale), 20);
+            let dragged = edge + 200.0 * scale;
+            move_to(&mut page, (dragged + 3.0 * scale, 200.0 * scale), 20);
             paint(&mut page, width, height, scale);
-            assert_eq!(page.theme.rail_width, 420.0);
-            assert_eq!(
-                page.layout.as_ref().unwrap().rail.as_ref().unwrap().width,
-                420.0 * scale
-            );
+            assert_close(rail_edge(&page), dragged);
+            assert_close(page.theme.rail_width, dragged / scale / zoom);
             assert_eq!(page.options.rail, RailMode::On);
             assert_eq!(page.nav.cursor().src, initial_focus);
             move_to(&mut page, (-100.0, 200.0 * scale), 30);
-            assert_eq!(page.theme.rail_width, MIN_RAIL_WIDTH);
+            assert_close(page.theme.rail_width * zoom, MIN_RAIL_WIDTH);
+            let widest = width as f32 / 2.0 / zoom;
             move_to(&mut page, (5000.0, 200.0 * scale), 40);
-            assert_eq!(page.theme.rail_width, 700.0);
+            assert_close(page.theme.rail_width, widest);
             button(&mut page, ElementState::Released, 50);
             move_to(&mut page, (300.0, 200.0 * scale), 60);
-            assert_eq!(page.theme.rail_width, 700.0, "release stops resizing");
+            assert_eq!(page.theme.rail_width, widest, "release stops resizing");
         }
     }
 
@@ -621,16 +635,18 @@ mod tests {
         let block = layout.block_at(page.scroll).unwrap();
         let offset = page.scroll - layout.blocks[block].rect.y;
         let focus = page.nav.cursor().src.clone();
-        move_to(&mut page, (220.0, 200.0), 0);
+        let edge = rail_edge(&page);
+        move_to(&mut page, (edge, 200.0), 0);
         button(&mut page, ElementState::Pressed, 10);
-        move_to(&mut page, (320.0, 200.0), 20);
+        move_to(&mut page, (edge + 100.0, 200.0), 20);
         paint(&mut page, 1400, 600, 1.0);
         let layout = page.layout.as_ref().unwrap();
         assert!((page.scroll - layout.blocks[block].rect.y - offset).abs() < 0.5);
         assert_eq!(page.nav.cursor().src, focus);
         press(&mut page, "escape");
-        move_to(&mut page, (500.0, 200.0), 30);
-        assert_eq!(page.theme.rail_width, 320.0);
+        let resized = (edge + 100.0) / zoom_of(&page.theme);
+        move_to(&mut page, (edge + 280.0, 200.0), 30);
+        assert_close(page.theme.rail_width, resized);
         assert_eq!(page.input_mode(), InputMode::Mouse);
         assert!(page.mouse.gesture.is_none());
     }

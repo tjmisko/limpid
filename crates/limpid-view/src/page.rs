@@ -1820,7 +1820,10 @@ mod tests {
         let viewport = page.viewport_height;
         let focused = page.nav().cursor().stop(layout).unwrap();
         let stops = cursor::collect_stops(layout);
-        let at = stops.iter().position(|stop| stop.src == focused.src).unwrap();
+        let at = stops
+            .iter()
+            .position(|stop| stop.src == focused.src)
+            .unwrap();
         let pitch = stops[at + 1].rect.y - stops[at].rect.y;
         let centre = focused.rect.y + focused.rect.h / 2.0 - page.scroll();
         assert!(
