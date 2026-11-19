@@ -132,6 +132,35 @@ pub fn fold_lines(text: &str, shell: bool) -> String {
     lines.join(if shell { "; " } else { " " })
 }
 
+/// The shell command a fenced code block holds, when its language is a shell
+/// (or it has none). `console` blocks keep only their `$ ` lines.
+pub fn shell_block(markdown: &str) -> Option<String> {
+    let opening = markdown.lines().next()?.trim_start();
+    let info = opening.trim_start_matches(['`', '~']).trim();
+    let lang = info
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let body = super::yank::fence_body(markdown)?;
+    let body = match lang.as_str() {
+        "" | "bash" | "sh" | "shell" | "zsh" | "fish" => body,
+        "console" | "shell-session" | "shellsession" | "terminal" => body
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim_start();
+                line.strip_prefix("$ ")
+                    .or_else(|| line.strip_prefix("% "))
+                    .or_else(|| (line == "$").then_some(""))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+    let command = fold_lines(&body, true);
+    (!command.is_empty()).then_some(command)
+}
+
 /// The `:` bar along the bottom, above the bottom `reserved` pixels that
 /// belong to the status bar: a teal `:` already typed, then the line, on the
 /// surface colour inside a teal border.
@@ -341,6 +370,46 @@ mod tests {
         let mut line = LineEditor::default();
         line.paste("echo \u{1b}[31mhi\u{7}", true);
         assert_eq!(line.text(), "echo [31mhi");
+    }
+
+    #[test]
+    fn should_stage_shell_blocks_when_the_language_is_a_shell_or_missing() {
+        assert_eq!(
+            shell_block("```bash\nls -la\n```").as_deref(),
+            Some("ls -la")
+        );
+        assert_eq!(shell_block("```sh\nmake\n```").as_deref(), Some("make"));
+        assert_eq!(shell_block("```\nls\n```").as_deref(), Some("ls"));
+        assert_eq!(shell_block("~~~zsh\nls\n~~~").as_deref(), Some("ls"));
+        assert_eq!(
+            shell_block("```Bash title=x\nls\n```").as_deref(),
+            Some("ls")
+        );
+    }
+
+    #[test]
+    fn should_not_stage_a_block_when_it_is_another_language_or_not_code() {
+        assert_eq!(shell_block("```rust\nfn main() {}\n```"), None);
+        assert_eq!(shell_block("```python\nprint(1)\n```"), None);
+        assert_eq!(shell_block("just a paragraph"), None);
+        assert_eq!(shell_block("```bash\n\n```"), None);
+        assert_eq!(shell_block(""), None);
+    }
+
+    #[test]
+    fn should_keep_only_prompt_lines_when_the_block_is_a_console_session() {
+        assert_eq!(
+            shell_block("```console\n$ cargo test\nrunning 3 tests\n$ ls\nfile\n```").as_deref(),
+            Some("cargo test; ls")
+        );
+    }
+
+    #[test]
+    fn should_fold_multi_line_blocks_when_staging_them() {
+        assert_eq!(
+            shell_block("```bash\n# go\ncd x \\\n  && make\necho ok\n```").as_deref(),
+            Some("cd x && make; echo ok")
+        );
     }
 
     #[test]

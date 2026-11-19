@@ -573,10 +573,7 @@ impl Nav {
             Action::SearchNext => self.search_step(true, now_ms, env),
             Action::SearchPrev => self.search_step(false, now_ms, env),
             Action::CommandOpen => self.open_prompt(Mode::Command),
-            Action::ShellOpen => {
-                self.open_prompt(Mode::Command);
-                self.line.insert("!");
-            }
+            Action::ShellOpen => self.open_shell(env),
             Action::Help => {
                 self.mode = Mode::Help;
                 self.help_scroll = 0;
@@ -679,6 +676,22 @@ impl Nav {
         self.mode = mode;
         self.line.clear();
         self.keymap.reset();
+    }
+
+    /// Open `:!`, staged with the focused code block when it is a shell
+    /// command, so Enter runs it.
+    fn open_shell(&mut self, env: &mut Env) {
+        let staged = self
+            .cursor
+            .stop(env.layout)
+            .filter(|stop| stop.kind == StopKind::Special)
+            .and_then(|stop| env.doc.source.get(stop.src))
+            .and_then(command::shell_block);
+        self.open_prompt(Mode::Command);
+        self.line.insert("!");
+        if let Some(staged) = staged {
+            self.line.insert(&staged);
+        }
     }
 
     fn paste_into_line(&mut self, now_ms: u64, io: &mut Io) {
@@ -1726,6 +1739,41 @@ mod tests {
         world.press("ctrl+v");
         assert_eq!(world.paste.reads, 0);
         assert_eq!(world.nav.state(), StateName::Page);
+    }
+
+    #[test]
+    fn should_stage_the_focused_bash_block_when_pressing_bang() {
+        let mut world = World::new("intro\n\n```bash\ncargo test -p view\n```\n", 600.0);
+        world.press("j");
+        world.press("!");
+        assert_eq!(world.nav.command_box(), Some("!cargo test -p view"));
+        let outcome = world.press("enter");
+        assert_eq!(
+            outcome.requests,
+            vec![Request::Shell("cargo test -p view".into())]
+        );
+    }
+
+    #[test]
+    fn should_open_a_bare_bang_when_the_focused_block_is_not_a_shell_command() {
+        for markdown in [
+            "```rust\nfn main() {}\n```\n",
+            "just text\n",
+            "```bash\n```\n",
+        ] {
+            let mut world = World::new(markdown, 600.0);
+            world.press("!");
+            assert_eq!(world.nav.command_box(), Some("!"), "{markdown:?}");
+        }
+    }
+
+    #[test]
+    fn should_let_the_staged_command_be_edited_before_running_when_pressing_bang() {
+        let mut world = World::new("```sh\nls\n```\n", 600.0);
+        world.press("!");
+        world.typed(" -la");
+        let outcome = world.press("enter");
+        assert_eq!(outcome.requests, vec![Request::Shell("ls -la".into())]);
     }
 
     #[test]
