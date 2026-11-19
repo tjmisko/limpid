@@ -15,12 +15,11 @@ use crate::{
     bridge::Hub,
     bridge_import::{Importer, LauncherOpener},
     bridge_push::PushService,
-    bridge_relay::{ROUTE_ENV, SOCKET_ENV},
+    bridge_relay::{ROUTE_ENV, SOCKET_ENV, new_route},
     transport::Scheme,
 };
 use std::{
     ffi::OsString,
-    io::Read,
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Command,
@@ -155,21 +154,12 @@ pub fn ssh_command(
     Ok(command)
 }
 
-/// A fresh, unguessable login route: 64 random bits as hex.
-pub fn new_route() -> Result<String, String> {
-    let mut bytes = [0u8; 8];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut bytes))
-        .map_err(|error| format!("could not generate a route: {error}"))?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
 pub fn remote_socket_for(route: &str) -> String {
     format!("/tmp/limpid-{route}.sock")
 }
 
 /// The private directory that holds local bridge sockets.
-fn private_directory(runtime: Option<OsString>) -> Result<PathBuf, String> {
+pub fn private_directory(runtime: Option<OsString>) -> Result<PathBuf, String> {
     let directory = match runtime.filter(|value| !value.is_empty()) {
         Some(runtime) => PathBuf::from(runtime).join("limpid"),
         None => PathBuf::from(format!("/tmp/limpid-{}", unsafe { libc::getuid() })),

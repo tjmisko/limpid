@@ -123,6 +123,12 @@ fn ssh_login(arguments: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// `limpid bridge serve`: the long-lived local hub plain `ssh` logins forward to.
+fn bridge(arguments: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
+    let limpid = std::env::current_exe()?;
+    Ok(limpid_core::bridge_serve::run(arguments, &limpid)?)
+}
+
 /// `limpid recover`: list or print feedback saved here but not on the remote.
 fn recover(arguments: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
     let arguments = arguments
@@ -161,9 +167,9 @@ fn open_through_bridge(
     } = target
     else {
         return Err(format!(
-            "this login has a bridge to another machine, which opens agent pages only;              unset {} and {} to open {target:?} on this host",
-            limpid_core::bridge_relay::SOCKET_ENV,
-            limpid_core::bridge_relay::ROUTE_ENV
+            "this login has a bridge to another machine through {}, which opens agent pages \
+             only; {target:?} is not one. Use --out FILE to render it here instead",
+            route.socket.display()
         )
         .into());
     };
@@ -182,6 +188,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     match arguments.first().and_then(|arg| arg.to_str()) {
         Some("ssh") => return ssh_login(&arguments[1..]),
         Some("recover") => return recover(&arguments[1..]),
+        Some("bridge") => return bridge(&arguments[1..]),
         Some("--bridge-relay") if arguments.len() == 1 => return bridge_relay(),
         _ => {}
     }
@@ -207,7 +214,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             Some("--help" | "-h") => {
                 println!(
-                    "Usage: limpid ssh [--dark|--light] [ssh options] HOST\n       limpid recover [--cache DIR] [--text NAME]\n       limpid [--out FILE] [--watch] [--separate] [--source-backed] [--viewer view|host] [--dark|--light] <file.md | page.html | ->"
+                    "Usage: limpid bridge serve [--dark|--light]\n       limpid ssh [--dark|--light] [ssh options] HOST\n       limpid recover [--cache DIR] [--text NAME]\n       limpid [--out FILE] [--watch] [--separate] [--source-backed] [--viewer view|host] [--dark|--light] <file.md | page.html | ->"
                 );
                 return Ok(());
             }
@@ -252,10 +259,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     if let Some(out) = out {
         return export(&classified, Path::new(&out));
     }
-    if let Some(route) = limpid_core::bridge_relay::route_from_env(
-        std::env::var_os(limpid_core::bridge_relay::SOCKET_ENV),
-        std::env::var_os(limpid_core::bridge_relay::ROUTE_ENV),
-    )? {
+    if let Some(route) = limpid_core::bridge_relay::route_for_process()? {
         return open_through_bridge(&classified, &route);
     }
     // The environment is read only now: a bad value must not break --help

@@ -1280,3 +1280,313 @@ fn measure_warm_open_and_feedback_acknowledgment_latency() {
     report("save_ack (viewer :w to remote saved)", &mut saves);
     report("submit_ack (viewer :wq to agent accepted)", &mut submits);
 }
+
+// ---- plain ssh: one `limpid bridge serve`, forwards from ~/.ssh/config -----
+
+/// `limpid bridge serve` for one desktop, bound in its runtime directory.
+struct Serve {
+    child: Child,
+    hub: PathBuf,
+}
+
+impl Serve {
+    fn start(dir: &Path, launcher: &Path) -> Self {
+        let child = spawn_retry(
+            Command::new(launcher)
+                .args(["bridge", "serve"])
+                .env("XDG_RUNTIME_DIR", dir)
+                .env("XDG_CACHE_HOME", dir)
+                .env("XDG_CONFIG_HOME", dir)
+                .env("PATH", "/usr/bin:/bin")
+                .env_remove("LISTEN_PID")
+                .env_remove("LISTEN_FDS")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        );
+        let hub = dir.join("limpid/hub.sock");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::os::unix::net::UnixStream::connect(&hub).is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "limpid bridge serve did not start"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Self { child, hub }
+    }
+}
+
+impl Drop for Serve {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+struct PlainOutcome {
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    elapsed: Duration,
+}
+
+/// A plain `ssh` login that forwards `remote_socket` to the hub the way a
+/// `RemoteForward` line in `~/.ssh/config` does, with `script` as the shell's
+/// input. Panics if ssh does not exit.
+fn plain_login(sshd: &Sshd, hub: &Path, remote_socket: &Path, script: &str) -> PlainOutcome {
+    let mut args = sshd.client_args();
+    let host = args.pop().unwrap();
+    let started = Instant::now();
+    let mut child = Command::new("ssh")
+        .args(&args)
+        .args([
+            "-T",
+            "-o",
+            "ControlMaster=no",
+            "-o",
+            "ControlPath=none",
+            "-R",
+        ])
+        .arg(format!("{}:{}", remote_socket.display(), hub.display()))
+        .arg(host)
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let script = script.to_string();
+    std::thread::spawn(move || {
+        let _ = stdin.write_all(script.as_bytes());
+    });
+    let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+    let stdout = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = out.read_to_string(&mut text);
+        text
+    });
+    let stderr = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = err.read_to_string(&mut text);
+        text
+    });
+    let deadline = Instant::now() + TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("plain ssh hung at logout; stdout {:?}", stdout.join());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    PlainOutcome {
+        code: status.code(),
+        stdout: stdout.join().unwrap(),
+        stderr: stderr.join().unwrap(),
+        elapsed: started.elapsed(),
+    }
+}
+
+/// Pids of processes whose environment holds `entry` exactly.
+fn processes_with_env(entry: &str) -> Vec<u32> {
+    fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .filter_map(|e| e.file_name().to_string_lossy().parse::<u32>().ok())
+        .filter(|pid| {
+            fs::read(format!("/proc/{pid}/environ"))
+                .map(|bytes| bytes.split(|b| *b == 0).any(|e| e == entry.as_bytes()))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+fn assert_no_relay_for(remote_socket: &Path) {
+    let entry = format!("LIMPID_BRIDGE_SOCKET={}", remote_socket.display());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !processes_with_env(&entry).is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        processes_with_env(&entry),
+        Vec::<u32>::new(),
+        "relays left behind"
+    );
+}
+
+fn remote_socket(name: &str) -> PathBuf {
+    let path = PathBuf::from(format!("/tmp/lsb-{name}-{}.sock", std::process::id()));
+    let _ = fs::remove_file(&path);
+    path
+}
+
+fn plain_open_script(remote_socket: &Path, pages: &[&Path], tail: &str) -> String {
+    let mut script = format!("export LIMPID_BRIDGE_SOCKET={}\n", remote_socket.display());
+    for page in pages {
+        script.push_str(&format!(
+            "{LIMPID} --source-backed {}\necho OPEN_STATUS=$?\n",
+            page.display()
+        ));
+    }
+    script.push_str(tail);
+    script.push_str("exit\n");
+    script
+}
+
+#[test]
+fn should_open_the_page_and_log_out_promptly_when_a_plain_ssh_login_forwards_the_hub() {
+    let Some(sshd) = Sshd::start("plain-open", "") else {
+        return;
+    };
+    let client = Client::new("plain-open-run");
+    let serve = Serve::start(&client.dir, &client.launcher);
+    let markdown = "# Plain plan\n\nnaïve 日本語\n";
+    let html = remote_page(&client.dir, "claude-plain", markdown, "sess-plain");
+    let socket = remote_socket("plain-open");
+    let outcome = plain_login(
+        &sshd,
+        &serve.hub,
+        &socket,
+        &plain_open_script(&socket, &[&html], ""),
+    );
+    assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
+    assert!(
+        outcome.stdout.contains("OPEN_STATUS=0"),
+        "{}",
+        outcome.stdout
+    );
+    // The relay holds a forwarded connection; it must let go once the shell
+    // exits, or ssh waits for it.
+    assert!(
+        outcome.elapsed < Duration::from_secs(10),
+        "logout waited {:?} for the relay",
+        outcome.elapsed
+    );
+    let handoffs = client.wait_for_handoffs(1);
+    assert_eq!(fs::read_to_string(&handoffs[0].path).unwrap(), markdown);
+    let origin = origin_of(&handoffs[0]);
+    assert_eq!(origin["session"], "sess-plain");
+    assert_eq!(
+        origin["save_sock"],
+        client.dir.join("limpid/save.sock").to_str().unwrap()
+    );
+    assert_no_relay_for(&socket);
+    let _ = fs::remove_file(&socket);
+}
+
+#[test]
+fn should_keep_logins_apart_and_save_to_each_when_two_plain_logins_share_one_hub() {
+    let Some(sshd) = Sshd::start("plain-two", "") else {
+        return;
+    };
+    let client = Client::new("plain-two-run");
+    let serve = Serve::start(&client.dir, &client.launcher);
+    let first = remote_page(
+        &client.dir,
+        "a",
+        "# First\n\n## Questions\n\n1. Q?\n",
+        "sess-a",
+    );
+    let second = remote_page(
+        &client.dir,
+        "b",
+        "# Second\n\n## Questions\n\n1. Q?\n",
+        "sess-b",
+    );
+    let flag = client.dir.join("saved");
+    let tail = format!("while [ ! -f {} ]; do sleep 0.1; done\n", flag.display());
+    let socket_a = remote_socket("plain-two-a");
+    let socket_b = remote_socket("plain-two-b");
+    let script_a = plain_open_script(&socket_a, &[&first], &tail);
+    let script_b = plain_open_script(&socket_b, &[&second], &tail);
+    std::thread::scope(|scope| {
+        let one = scope.spawn(|| plain_login(&sshd, &serve.hub, &socket_a, &script_a));
+        let two = scope.spawn(|| plain_login(&sshd, &serve.hub, &socket_b, &script_b));
+        let handoffs = client.wait_for_handoffs(2);
+        let routes: Vec<String> = handoffs
+            .iter()
+            .map(|handoff| origin_of(handoff)["route"].as_str().unwrap().to_string())
+            .collect();
+        assert_ne!(routes[0], routes[1], "each login has its own route");
+        for handoff in &handoffs {
+            let title = fs::read_to_string(&handoff.path).unwrap();
+            let replies = feedback(&[("q1", title.lines().next().unwrap())]);
+            let (reply, _) = viewer_saves(handoff, &replies, false);
+            assert_eq!(reply.state, PushState::RemoteSaved, "{reply:?}");
+            let page = if title.starts_with("# First") {
+                &first
+            } else {
+                &second
+            };
+            assert_eq!(
+                limpid_core::bridge_save::read_feedback(page).unwrap(),
+                replies
+            );
+        }
+        fs::write(&flag, "").unwrap();
+        for outcome in [one.join().unwrap(), two.join().unwrap()] {
+            assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
+            assert!(
+                outcome.stdout.contains("OPEN_STATUS=0"),
+                "{}",
+                outcome.stdout
+            );
+        }
+    });
+    assert_no_relay_for(&socket_a);
+    assert_no_relay_for(&socket_b);
+    let _ = fs::remove_file(&socket_a);
+    let _ = fs::remove_file(&socket_b);
+}
+
+#[test]
+fn should_serve_a_later_login_when_an_earlier_one_has_ended() {
+    let Some(sshd) = Sshd::start("plain-later", "") else {
+        return;
+    };
+    let client = Client::new("plain-later-run");
+    let serve = Serve::start(&client.dir, &client.launcher);
+    for (round, name) in ["plain-later-1", "plain-later-2"].into_iter().enumerate() {
+        let html = remote_page(&client.dir, name, &format!("# Round {round}\n"), "sess");
+        let socket = remote_socket(name);
+        let outcome = plain_login(
+            &sshd,
+            &serve.hub,
+            &socket,
+            &plain_open_script(&socket, &[&html], ""),
+        );
+        assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
+        assert!(
+            outcome.stdout.contains("OPEN_STATUS=0"),
+            "{}",
+            outcome.stdout
+        );
+        assert_no_relay_for(&socket);
+        let _ = fs::remove_file(&socket);
+    }
+    assert_eq!(client.wait_for_handoffs(2).len(), 2);
+}
+
+#[test]
+fn should_name_the_stale_socket_and_the_fix_when_its_login_has_ended() {
+    let dir = scratch("plain-stale");
+    let html = remote_page(&dir, "claude-stale", "# Stale\n", "sess");
+    let socket = dir.join("stale.sock");
+    drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+    let output = Command::new(LIMPID)
+        .arg(&html)
+        .env("LIMPID_BRIDGE_SOCKET", &socket)
+        .env_remove("LIMPID_BRIDGE_ROUTE")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("stale"), "{stderr}");
+    assert!(stderr.contains("StreamLocalBindUnlink"), "{stderr}");
+    fs::remove_dir_all(dir).unwrap();
+}
