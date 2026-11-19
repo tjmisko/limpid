@@ -45,7 +45,7 @@ impl Opener for CountingViewer {
 }
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("limpid-resilience-{name}-{}", std::process::id()));
+    let dir = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!("limpid-resilience-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -215,7 +215,7 @@ fn replies(pairs: &[(&str, &str)]) -> AgentReplies {
 }
 
 fn open_descriptors() -> usize {
-    fs::read_dir("/proc/self/fd").unwrap().count()
+    fs::read_dir("/dev/fd").unwrap().count()
 }
 
 #[test]

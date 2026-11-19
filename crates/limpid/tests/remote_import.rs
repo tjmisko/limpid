@@ -23,9 +23,7 @@ fn receive_view_handoff(socket: PathBuf) -> JoinHandle<Option<Handoff>> {
         while Instant::now() < deadline {
             match listener.accept() {
                 Ok((mut stream, _)) => {
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(1)))
-                        .unwrap();
+                    // An accepted socket inherits non-blocking mode on macOS, which                    // also refuses a timeout once the client has closed.                    let _ = stream.set_nonblocking(false);                    let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
                     let mut bytes = Vec::new();
                     stream.read_to_end(&mut bytes).unwrap();
                     if !bytes.is_empty() {
@@ -44,7 +42,7 @@ fn receive_view_handoff(socket: PathBuf) -> JoinHandle<Option<Handoff>> {
 
 #[test]
 fn should_hand_the_imported_markdown_to_the_native_viewer_when_the_real_launcher_opens_it() {
-    let directory = std::env::temp_dir().join(format!("limpid-real-import-{}", std::process::id()));
+    let directory = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!("limpid-real-import-{}", std::process::id()));
     let _ = fs::remove_dir_all(&directory);
     fs::create_dir_all(&directory).unwrap();
     let cache = directory.join("remote-cache");
@@ -90,7 +88,7 @@ fn should_hand_the_imported_markdown_to_the_native_viewer_when_the_real_launcher
 
 #[test]
 fn should_open_through_the_launcher_opener_when_the_importer_uses_the_real_binary() {
-    let directory = std::env::temp_dir().join(format!("limpid-real-opener-{}", std::process::id()));
+    let directory = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!("limpid-real-opener-{}", std::process::id()));
     let _ = fs::remove_dir_all(&directory);
     fs::create_dir_all(&directory).unwrap();
     // LauncherOpener runs in this process's environment; point the socket

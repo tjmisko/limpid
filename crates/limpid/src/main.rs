@@ -560,13 +560,15 @@ fn wait_socket(
 mod tests {
     use super::*;
 
+    /// Through `ps`, which Linux and macOS both have; there is no /proc on macOS.
     fn process_group_of(pid: u32) -> u32 {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
-        let after_name = stat.rsplit_once(')').unwrap().1;
-        after_name
-            .split_whitespace()
-            .nth(2)
+        let output = Command::new("ps")
+            .args(["-o", "pgid=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        String::from_utf8(output.stdout)
             .unwrap()
+            .trim()
             .parse()
             .unwrap()
     }
