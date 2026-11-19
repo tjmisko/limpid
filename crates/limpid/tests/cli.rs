@@ -44,11 +44,14 @@ fn listen_on(socket: std::path::PathBuf) -> JoinHandle<Option<Handoff>> {
 
 #[test]
 fn markdown_open_hands_the_file_to_the_view() {
-    let directory = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!(
-        "limpid-front-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
+    let directory = std::path::Path::new("/tmp")
+        .canonicalize()
+        .unwrap()
+        .join(format!(
+            "limpid-front-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("notes.md");
     fs::write(
@@ -89,11 +92,14 @@ fn markdown_open_hands_the_file_to_the_view() {
 
 #[test]
 fn markdown_open_with_the_host_forced_renders_html_and_uses_the_host_socket() {
-    let directory = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!(
-        "limpid-forced-host-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
+    let directory = std::path::Path::new("/tmp")
+        .canonicalize()
+        .unwrap()
+        .join(format!(
+            "limpid-forced-host-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("notes.md");
     fs::write(
@@ -128,11 +134,14 @@ fn markdown_open_with_the_host_forced_renders_html_and_uses_the_host_socket() {
 
 #[test]
 fn agent_page_with_a_markdown_sidecar_opens_the_sidecar_in_the_view() {
-    let directory = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!(
-        "limpid-agent-route-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
+    let directory = std::path::Path::new("/tmp")
+        .canonicalize()
+        .unwrap()
+        .join(format!(
+            "limpid-agent-route-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
     fs::create_dir_all(&directory).unwrap();
     let page = directory.join("claude-abc.html");
     fs::write(&page, "<!doctype html><p>page</p>").unwrap();
@@ -164,11 +173,14 @@ fn agent_page_with_a_markdown_sidecar_opens_the_sidecar_in_the_view() {
 
 #[test]
 fn standard_input_opens_as_cached_markdown_in_the_view() {
-    let directory = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!(
-        "limpid-stdin-route-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
+    let directory = std::path::Path::new("/tmp")
+        .canonicalize()
+        .unwrap()
+        .join(format!(
+            "limpid-stdin-route-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
     fs::create_dir_all(&directory).unwrap();
     let receiver = receive_view_handoff(&directory, Scheme::Dark);
     let mut child = Command::new(env!("CARGO_BIN_EXE_limpid"))
@@ -207,7 +219,10 @@ fn unknown_viewer_names_are_rejected() {
 
 #[test]
 fn forcing_the_view_on_plain_html_fails_before_starting_anything() {
-    let directory = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!("limpid-view-html-{}", std::process::id()));
+    let directory = std::path::Path::new("/tmp")
+        .canonicalize()
+        .unwrap()
+        .join(format!("limpid-view-html-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     let page = directory.join("page.html");
     fs::write(&page, "<p>x</p>").unwrap();
@@ -225,11 +240,14 @@ fn forcing_the_view_on_plain_html_fails_before_starting_anything() {
 #[test]
 fn html_source_backed_is_explicit() {
     for (suffix, flag, expected) in [("default", false, false), ("flagged", true, true)] {
-        let directory = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!(
-            "limpid-html-{suffix}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        let directory = std::path::Path::new("/tmp")
+            .canonicalize()
+            .unwrap()
+            .join(format!(
+                "limpid-html-{suffix}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
         fs::create_dir_all(&directory).unwrap();
         let page = directory.join("page.html");
         fs::write(
@@ -263,11 +281,14 @@ fn html_source_backed_is_explicit() {
 
 #[test]
 fn export_writes_self_contained_page_without_a_display() {
-    let directory = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!(
-        "limpid-export-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
+    let directory = std::path::Path::new("/tmp")
+        .canonicalize()
+        .unwrap()
+        .join(format!(
+            "limpid-export-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("notes.md");
     let output_path = directory.join("export.html");
@@ -326,7 +347,10 @@ fn export_writes_self_contained_page_without_a_display() {
 
 #[test]
 fn missing_markdown_fails_fast() {
-    let directory = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!("limpid-missing-{}", std::process::id()));
+    let directory = std::path::Path::new("/tmp")
+        .canonicalize()
+        .unwrap()
+        .join(format!("limpid-missing-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_limpid"))
         .arg("--out")
@@ -387,7 +411,10 @@ fn opening_markdown_starts_the_view_and_its_socket_when_a_display_exists() {
     if !display_available() || sibling_view().is_none() {
         return;
     }
-    let runtime = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!("limpid-e2e-{}", std::process::id()));
+    let runtime = std::path::Path::new("/tmp")
+        .canonicalize()
+        .unwrap()
+        .join(format!("limpid-e2e-{}", std::process::id()));
     let _ = fs::remove_dir_all(&runtime);
     fs::create_dir_all(&runtime).unwrap();
     if let (Some(display), Some(real)) = (
@@ -445,7 +472,10 @@ fn should_print_help_when_the_environment_viewer_is_bogus() {
 
 #[test]
 fn should_export_when_the_environment_viewer_is_bogus() {
-    let directory = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!("limpid-bogus-out-{}", std::process::id()));
+    let directory = std::path::Path::new("/tmp")
+        .canonicalize()
+        .unwrap()
+        .join(format!("limpid-bogus-out-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("a.md");
     let out = directory.join("a.html");
@@ -488,7 +518,10 @@ fn should_let_the_viewer_flag_win_when_the_environment_viewer_is_bogus() {
 
 #[test]
 fn should_export_an_htm_page_untouched_when_given_one() {
-    let directory = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!("limpid-htm-out-{}", std::process::id()));
+    let directory = std::path::Path::new("/tmp")
+        .canonicalize()
+        .unwrap()
+        .join(format!("limpid-htm-out-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     let page = directory.join("page.htm");
     let out = directory.join("copy.html");
@@ -507,7 +540,10 @@ fn should_export_an_htm_page_untouched_when_given_one() {
 
 #[test]
 fn should_prune_old_stdin_pages_when_more_than_fifty_exist() {
-    let directory = std::path::Path::new("/tmp").canonicalize().unwrap().join(format!("limpid-stdin-prune-{}", std::process::id()));
+    let directory = std::path::Path::new("/tmp")
+        .canonicalize()
+        .unwrap()
+        .join(format!("limpid-stdin-prune-{}", std::process::id()));
     let cache = directory.join("limpid");
     fs::create_dir_all(&cache).unwrap();
     for index in 0..60 {
