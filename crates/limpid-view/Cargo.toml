@@ -26,3 +26,12 @@ softbuffer = "0.4"
 tiny-skia = "0.11"
 usvg = { version = "0.45", default-features = false, features = ["text"] }
 winit = "0.30"
+
+[features]
+# Lay text out with the DejaVu subsets in test-fonts/ instead of the system's
+# fonts, so rendered output is the same on every machine. Only this crate's
+# own tests turn it on, through the dev-dependency below.
+bundled-fonts = []
+
+[dev-dependencies]
+limpid-view = { path = ".", features = ["bundled-fonts"] }

@@ -101,7 +101,7 @@ fn raw_frame(body: Body) -> Vec<u8> {
 fn read_one(s: &mut UnixStream) -> Option<Frame> {
     let mut dec = Decoder::default();
     loop {
-        match dec.next().unwrap() {
+        match dec.next_item().unwrap() {
             Some(Decoded::Frame(f)) => return Some(f),
             Some(Decoded::Invalid(_)) => panic!("invalid frame"),
             None => {}
@@ -196,14 +196,14 @@ fn should_reassemble_frames_when_bytes_arrive_one_at_a_time() {
     let bytes = encode_frame(&frame).unwrap();
     let mut dec = Decoder::default();
     for (i, b) in bytes.iter().enumerate() {
-        assert!(dec.next().unwrap().is_none(), "early frame at byte {i}");
+        assert!(dec.next_item().unwrap().is_none(), "early frame at byte {i}");
         dec.push(&[*b]);
     }
-    match dec.next().unwrap() {
+    match dec.next_item().unwrap() {
         Some(Decoded::Frame(f)) => assert_eq!(f, frame),
         other => panic!("{other:?}"),
     }
-    assert!(dec.next().unwrap().is_none());
+    assert!(dec.next_item().unwrap().is_none());
 }
 
 #[test]
@@ -214,9 +214,9 @@ fn should_split_back_to_back_frames_when_delivered_in_one_chunk() {
     bytes.extend(encode_frame(&f2).unwrap());
     let mut dec = Decoder::default();
     dec.push(&bytes);
-    assert!(matches!(dec.next().unwrap(), Some(Decoded::Frame(f)) if f == f1));
-    assert!(matches!(dec.next().unwrap(), Some(Decoded::Frame(f)) if f == f2));
-    assert!(dec.next().unwrap().is_none());
+    assert!(matches!(dec.next_item().unwrap(), Some(Decoded::Frame(f)) if f == f1));
+    assert!(matches!(dec.next_item().unwrap(), Some(Decoded::Frame(f)) if f == f2));
+    assert!(dec.next_item().unwrap().is_none());
 }
 
 #[test]
@@ -240,7 +240,7 @@ fn should_accept_fragmented_open_over_socket_when_sender_writes_in_pieces() {
 fn should_reject_oversized_length_when_frame_exceeds_limit() {
     let mut dec = Decoder::default();
     dec.push(&((MAX_FRAME_BYTES as u32) + 1).to_be_bytes());
-    assert!(matches!(dec.next(), Err(BridgeError::FrameTooLarge(_))));
+    assert!(matches!(dec.next_item(), Err(BridgeError::FrameTooLarge(_))));
 }
 
 #[test]

@@ -76,6 +76,15 @@ impl LineEditor {
             .extend(typed.chars().filter(|character| !character.is_control()));
     }
 
+    /// Append pasted text. A prompt is one line, so line breaks are folded:
+    /// a trailing `\` continues onto the next line, blank lines go, and for a
+    /// shell command (`shell`) whole-line `#` comments go and the remaining
+    /// lines are joined with `; ` as the shell would run them. Elsewhere lines
+    /// are joined with a space.
+    pub fn paste(&mut self, pasted: &str, shell: bool) {
+        self.insert(&fold_lines(pasted, shell));
+    }
+
     /// Remove the last character. Returns false when the line was empty, which
     /// is how Backspace on an empty prompt closes it.
     pub fn backspace(&mut self) -> bool {
@@ -89,6 +98,67 @@ impl LineEditor {
         let keep = self.text.rfind(char::is_whitespace).map_or(0, |at| at + 1);
         self.text.truncate(keep);
     }
+}
+
+/// One line for `text`; see [`LineEditor::paste`].
+pub fn fold_lines(text: &str, shell: bool) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut continued = String::new();
+    for raw in text.lines() {
+        let line = raw.replace('\t', " ");
+        let line = line.trim_end();
+        let line = if continued.is_empty() {
+            line
+        } else {
+            line.trim_start()
+        };
+        if let Some(head) = line.strip_suffix('\\') {
+            continued.push_str(head.trim_end());
+            continued.push(' ');
+            continue;
+        }
+        continued.push_str(line);
+        let whole = std::mem::take(&mut continued);
+        let whole = whole.trim();
+        if whole.is_empty() || (shell && whole.starts_with('#')) {
+            continue;
+        }
+        lines.push(whole.to_owned());
+    }
+    let tail = continued.trim();
+    if !tail.is_empty() && !(shell && tail.starts_with('#')) {
+        lines.push(tail.to_owned());
+    }
+    lines.join(if shell { "; " } else { " " })
+}
+
+/// The shell command a fenced code block holds, when its language is a shell
+/// (or it has none). `console` blocks keep only their `$ ` lines.
+pub fn shell_block(markdown: &str) -> Option<String> {
+    let opening = markdown.lines().next()?.trim_start();
+    let info = opening.trim_start_matches(['`', '~']).trim();
+    let lang = info
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let body = super::yank::fence_body(markdown)?;
+    let body = match lang.as_str() {
+        "" | "bash" | "sh" | "shell" | "zsh" | "fish" => body,
+        "console" | "shell-session" | "shellsession" | "terminal" => body
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim_start();
+                line.strip_prefix("$ ")
+                    .or_else(|| line.strip_prefix("% "))
+                    .or_else(|| (line == "$").then_some(""))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+    let command = fold_lines(&body, true);
+    (!command.is_empty()).then_some(command)
 }
 
 /// The `:` bar along the bottom, above the bottom `reserved` pixels that
@@ -244,6 +314,102 @@ mod tests {
         line.insert("caf\u{e9}\u{4e16}");
         assert!(line.backspace());
         assert_eq!(line.text(), "caf\u{e9}");
+    }
+
+    #[test]
+    fn should_insert_pasted_text_when_it_is_one_line() {
+        let mut line = LineEditor::default();
+        line.insert("!");
+        line.paste("git status\n", true);
+        assert_eq!(line.text(), "!git status");
+    }
+
+    #[test]
+    fn should_join_lines_with_semicolons_when_pasting_a_shell_command() {
+        assert_eq!(
+            fold_lines("cd crates\ncargo test\n", true),
+            "cd crates; cargo test"
+        );
+        assert_eq!(fold_lines("a\n\n\nb", true), "a; b");
+        assert_eq!(fold_lines("a\r\nb\r\n", true), "a; b");
+    }
+
+    #[test]
+    fn should_join_with_spaces_when_pasting_into_search() {
+        assert_eq!(fold_lines("one\ntwo\n# three", false), "one two # three");
+    }
+
+    #[test]
+    fn should_follow_backslash_continuations_when_pasting() {
+        assert_eq!(
+            fold_lines("cargo build \\\n    --release \\\n    -p view\nls", true),
+            "cargo build --release -p view; ls"
+        );
+        assert_eq!(fold_lines("dangling \\", true), "dangling");
+    }
+
+    #[test]
+    fn should_drop_comment_lines_when_pasting_a_shell_command() {
+        assert_eq!(
+            fold_lines("# build it\ncargo build\n  # done", true),
+            "cargo build"
+        );
+    }
+
+    #[test]
+    fn should_paste_nothing_when_the_clipboard_is_only_whitespace() {
+        let mut line = LineEditor::default();
+        line.paste(" \n\t\n ", true);
+        assert!(line.is_empty());
+        line.paste("", false);
+        assert!(line.is_empty());
+    }
+
+    #[test]
+    fn should_strip_control_characters_when_pasting() {
+        let mut line = LineEditor::default();
+        line.paste("echo \u{1b}[31mhi\u{7}", true);
+        assert_eq!(line.text(), "echo [31mhi");
+    }
+
+    #[test]
+    fn should_stage_shell_blocks_when_the_language_is_a_shell_or_missing() {
+        assert_eq!(
+            shell_block("```bash\nls -la\n```").as_deref(),
+            Some("ls -la")
+        );
+        assert_eq!(shell_block("```sh\nmake\n```").as_deref(), Some("make"));
+        assert_eq!(shell_block("```\nls\n```").as_deref(), Some("ls"));
+        assert_eq!(shell_block("~~~zsh\nls\n~~~").as_deref(), Some("ls"));
+        assert_eq!(
+            shell_block("```Bash title=x\nls\n```").as_deref(),
+            Some("ls")
+        );
+    }
+
+    #[test]
+    fn should_not_stage_a_block_when_it_is_another_language_or_not_code() {
+        assert_eq!(shell_block("```rust\nfn main() {}\n```"), None);
+        assert_eq!(shell_block("```python\nprint(1)\n```"), None);
+        assert_eq!(shell_block("just a paragraph"), None);
+        assert_eq!(shell_block("```bash\n\n```"), None);
+        assert_eq!(shell_block(""), None);
+    }
+
+    #[test]
+    fn should_keep_only_prompt_lines_when_the_block_is_a_console_session() {
+        assert_eq!(
+            shell_block("```console\n$ cargo test\nrunning 3 tests\n$ ls\nfile\n```").as_deref(),
+            Some("cargo test; ls")
+        );
+    }
+
+    #[test]
+    fn should_fold_multi_line_blocks_when_staging_them() {
+        assert_eq!(
+            shell_block("```bash\n# go\ncd x \\\n  && make\necho ok\n```").as_deref(),
+            Some("cd x && make; echo ok")
+        );
     }
 
     #[test]

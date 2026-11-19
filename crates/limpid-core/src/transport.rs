@@ -9,6 +9,48 @@ use std::{
     sync::mpsc,
 };
 
+/// Where viewer sockets live: `XDG_RUNTIME_DIR` when the system sets it
+/// (Linux desktops), else a private directory under /tmp (macOS has none).
+pub fn runtime_dir(xdg_runtime_dir: Option<std::ffi::OsString>) -> Result<PathBuf, String> {
+    if let Some(directory) = xdg_runtime_dir.filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(directory));
+    }
+    private_dir_in(Path::new("/tmp"))
+}
+
+/// `<base>/limpid-<uid>`, created mode 0700. Anything else already there is
+/// refused, not used: anyone can create a name under /tmp, and a directory
+/// or link someone else planted would receive this user's sockets.
+pub fn private_dir_in(base: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    // SAFETY: getuid cannot fail and touches no memory.
+    let uid = unsafe { libc::getuid() };
+    let directory = base.join(format!("limpid-{uid}"));
+    let shown = directory.display();
+    match std::fs::DirBuilder::new().mode(0o700).create(&directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(format!("{shown}: {error}")),
+    }
+    let metadata =
+        std::fs::symlink_metadata(&directory).map_err(|error| format!("{shown}: {error}"))?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "{shown} is not a directory; refusing to place sockets there"
+        ));
+    }
+    if metadata.uid() != uid {
+        return Err(format!(
+            "{shown} is owned by another user; refusing to place sockets there"
+        ));
+    }
+    if metadata.permissions().mode() & 0o077 != 0 {
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("{shown}: {error}"))?;
+    }
+    Ok(directory)
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Scheme {
@@ -158,9 +200,9 @@ pub fn receive(stream: UnixStream) -> Option<Handoff> {
     if !same_user(&stream) {
         return None;
     }
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-        .ok()?;
+    // macOS refuses a timeout once the peer has closed; its bytes are
+    // already buffered then, so the read cannot block.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
     let mut bytes = Vec::new();
     BufReader::new(stream)
         .take(1 << 20)
@@ -187,12 +229,22 @@ pub fn serve(listener: UnixListener, sender: mpsc::Sender<Handoff>) {
 }
 
 fn same_user(stream: &UnixStream) -> bool {
+    // SAFETY: geteuid has no preconditions.
+    peer_uid(stream) == Some(unsafe { libc::geteuid() })
+}
+
+/// The effective uid of the process on the other end of `stream`, as the
+/// kernel recorded it at connect time.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn peer_uid(stream: &UnixStream) -> Option<u32> {
     let mut credentials = libc::ucred {
         pid: 0,
         uid: 0,
         gid: 0,
     };
     let mut size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `credentials` and `size` are valid for the call and `size`
+    // holds the buffer length, as SO_PEERCRED requires.
     let status = unsafe {
         libc::getsockopt(
             stream.as_raw_fd(),
@@ -202,14 +254,102 @@ fn same_user(stream: &UnixStream) -> bool {
             &raw mut size,
         )
     };
-    status == 0
-        && size as usize == std::mem::size_of::<libc::ucred>()
-        && credentials.uid == unsafe { libc::geteuid() }
+    (status == 0 && size as usize == std::mem::size_of::<libc::ucred>()).then_some(credentials.uid)
+}
+
+/// The effective uid of the process on the other end of `stream`, as the
+/// kernel recorded it at connect time.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub fn peer_uid(stream: &UnixStream) -> Option<u32> {
+    let (mut uid, mut gid) = (0, 0);
+    // SAFETY: both out-pointers refer to live locals.
+    let status = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
+    (status == 0).then_some(uid)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("limpid-rt-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn should_use_the_xdg_runtime_directory_when_it_is_set() {
+        assert_eq!(
+            runtime_dir(Some("/run/user/7".into())).unwrap(),
+            PathBuf::from("/run/user/7")
+        );
+    }
+
+    #[test]
+    fn should_create_a_private_directory_when_no_runtime_directory_is_set() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = scratch("create");
+        let directory = private_dir_in(&base).unwrap();
+        let uid = unsafe { libc::getuid() };
+        assert_eq!(directory, base.join(format!("limpid-{uid}")));
+        let mode = std::fs::metadata(&directory).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        assert_eq!(
+            private_dir_in(&base).unwrap(),
+            directory,
+            "reused when it is ours"
+        );
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn should_tighten_the_private_directory_when_others_can_enter_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = scratch("loose");
+        let uid = unsafe { libc::getuid() };
+        let directory = base.join(format!("limpid-{uid}"));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        private_dir_in(&base).unwrap();
+        let mode = std::fs::metadata(&directory).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn should_refuse_the_private_directory_when_it_is_a_link_or_a_file() {
+        let uid = unsafe { libc::getuid() };
+        let base = scratch("link");
+        let elsewhere = base.join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, base.join(format!("limpid-{uid}"))).unwrap();
+        let error = private_dir_in(&base).unwrap_err();
+        assert!(error.contains("not a directory"), "{error}");
+        std::fs::remove_dir_all(&base).unwrap();
+        let base = scratch("file");
+        std::fs::write(base.join(format!("limpid-{uid}")), "").unwrap();
+        assert!(private_dir_in(&base).is_err());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn should_receive_the_handoff_when_the_sender_closed_before_it_was_read() {
+        let (mut sender, receiver) = UnixStream::pair().unwrap();
+        let request = Handoff {
+            path: "/tmp/closed.md".into(),
+            theme: Scheme::Dark,
+            pane: None,
+            source: None,
+            source_hash: None,
+            source_backed: false,
+        };
+        let mut line = serde_json::to_vec(&request).unwrap();
+        line.push(b'\n');
+        std::io::Write::write_all(&mut sender, &line).unwrap();
+        drop(sender);
+        assert_eq!(receive(receiver), Some(request));
+    }
+
     #[test]
     fn handoff_round_trip_and_socket_names() {
         let request = Handoff {

@@ -12,7 +12,10 @@ struct Harness {
 }
 impl Harness {
     fn new(name: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("limpid-codex-{name}-{}", std::process::id()));
+        let root = std::path::Path::new("/tmp")
+            .canonicalize()
+            .unwrap()
+            .join(format!("limpid-codex-{name}-{}", std::process::id()));
         fs::create_dir_all(root.join("bin")).unwrap();
         let executable = root.join("bin/limpid-core");
         fs::hard_link(env!("CARGO_BIN_EXE_limpid-core"), &executable)

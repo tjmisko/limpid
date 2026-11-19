@@ -5,12 +5,9 @@
 use limpid_core::transport::Handoff;
 use std::{
     io::{BufRead, BufReader, Read},
-    os::{
-        fd::AsRawFd,
-        unix::{
-            fs::PermissionsExt,
-            net::{UnixListener, UnixStream},
-        },
+    os::unix::{
+        fs::PermissionsExt,
+        net::{UnixListener, UnixStream},
     },
     path::Path,
     time::Duration,
@@ -42,7 +39,9 @@ pub fn receive_request(stream: UnixStream, allow_close: bool) -> Option<Request>
     if !same_user(&stream) {
         return None;
     }
-    stream.set_read_timeout(Some(READ_TIMEOUT)).ok()?;
+    // macOS refuses a timeout once the peer has closed; its bytes are
+    // already buffered then, so the read cannot block.
+    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
     let mut bytes = Vec::new();
     BufReader::new(stream)
         .take(MAX_LINE)
@@ -85,27 +84,8 @@ pub fn bind_socket(path: &Path) -> Result<UnixListener, String> {
 }
 
 fn same_user(stream: &UnixStream) -> bool {
-    let mut credentials = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    // SAFETY: `credentials` and `size` are valid for the call and `size`
-    // holds the buffer length, as SO_PEERCRED requires.
-    let status = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&raw mut credentials).cast(),
-            &raw mut size,
-        )
-    };
-    status == 0
-        && size as usize == std::mem::size_of::<libc::ucred>()
-        // SAFETY: geteuid has no preconditions.
-        && credentials.uid == unsafe { libc::geteuid() }
+    // SAFETY: geteuid has no preconditions.
+    limpid_core::transport::peer_uid(stream) == Some(unsafe { libc::geteuid() })
 }
 
 #[cfg(test)]

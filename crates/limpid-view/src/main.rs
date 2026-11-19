@@ -202,9 +202,8 @@ fn socket_path(args: &Args) -> Result<PathBuf, String> {
     if let Some(socket) = &args.socket {
         return Ok(socket.clone());
     }
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .ok_or("XDG_RUNTIME_DIR is required (or pass --socket)")?;
-    Ok(default_socket(Path::new(&runtime), args.scheme))
+    let runtime = limpid_core::transport::runtime_dir(std::env::var_os("XDG_RUNTIME_DIR"))?;
+    Ok(default_socket(&runtime, args.scheme))
 }
 
 fn default_socket(runtime: &Path, scheme: Scheme) -> PathBuf {

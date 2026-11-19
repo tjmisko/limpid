@@ -11,9 +11,40 @@ pub struct Fonts {
 }
 
 impl Fonts {
+    /// The system's fonts. This crate's tests get [`Fonts::bundled`]
+    /// instead, so layout does not depend on what the machine has installed.
     pub fn new() -> Self {
+        #[cfg(any(test, feature = "bundled-fonts"))]
+        return Self::bundled();
+        #[cfg(not(any(test, feature = "bundled-fonts")))]
         Self {
             system: FontSystem::new(),
+            cache: SwashCache::new(),
+        }
+    }
+
+    /// Only the Latin subsets of DejaVu in `test-fonts/`, with every generic
+    /// family pointed at them.
+    #[cfg(any(test, feature = "bundled-fonts"))]
+    pub fn bundled() -> Self {
+        let mut database = cosmic_text::fontdb::Database::new();
+        for font in [
+            include_bytes!("../test-fonts/DejaVuSans.ttf").as_slice(),
+            include_bytes!("../test-fonts/DejaVuSans-Bold.ttf").as_slice(),
+            include_bytes!("../test-fonts/DejaVuSans-Oblique.ttf").as_slice(),
+            include_bytes!("../test-fonts/DejaVuSans-BoldOblique.ttf").as_slice(),
+            include_bytes!("../test-fonts/DejaVuSansMono.ttf").as_slice(),
+            include_bytes!("../test-fonts/DejaVuSansMono-Bold.ttf").as_slice(),
+            include_bytes!("../test-fonts/DejaVuSansMono-Oblique.ttf").as_slice(),
+            include_bytes!("../test-fonts/DejaVuSansMono-BoldOblique.ttf").as_slice(),
+        ] {
+            database.load_font_data(font.to_vec());
+        }
+        database.set_sans_serif_family("DejaVu Sans");
+        database.set_serif_family("DejaVu Sans");
+        database.set_monospace_family("DejaVu Sans Mono");
+        Self {
+            system: FontSystem::new_with_locale_and_db("en-US".into(), database),
             cache: SwashCache::new(),
         }
     }

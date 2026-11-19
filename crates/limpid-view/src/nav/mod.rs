@@ -27,7 +27,7 @@ use limpid_core::doc::Doc;
 use search::{Hit, Query, Search};
 use status::{DEFAULT_FLASH_MS, StateName, Status, StatusView};
 use std::{collections::BTreeMap, ops::Range};
-use yank::{Clipboard, Operator, Step, Target};
+use yank::{Clipboard, NoClipboard, Operator, Paste, Step, Target};
 
 /// Settings of the navigation layer that are not part of the theme.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -166,6 +166,8 @@ impl PageActions for NoActions {}
 pub struct Io<'a> {
     pub actions: &'a mut dyn PageActions,
     pub clipboard: &'a mut dyn Clipboard,
+    /// Where Ctrl-v on a prompt reads from.
+    pub paste: &'a mut dyn Paste,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,9 +295,11 @@ impl Nav {
     /// Copy using the supplied clipboard, without invoking page actions.
     pub fn copy_focused(&mut self, now_ms: u64, env: &mut Env, clipboard: &mut dyn Clipboard) {
         let mut actions = NoActions;
+        let mut paste = NoClipboard;
         let mut io = Io {
             actions: &mut actions,
             clipboard,
+            paste: &mut paste,
         };
         if self.visual_anchor.is_some() {
             self.yank_selection(now_ms, env, &mut io);
@@ -569,10 +573,7 @@ impl Nav {
             Action::SearchNext => self.search_step(true, now_ms, env),
             Action::SearchPrev => self.search_step(false, now_ms, env),
             Action::CommandOpen => self.open_prompt(Mode::Command),
-            Action::ShellOpen => {
-                self.open_prompt(Mode::Command);
-                self.line.insert("!");
-            }
+            Action::ShellOpen => self.open_shell(env),
             Action::Help => {
                 self.mode = Mode::Help;
                 self.help_scroll = 0;
@@ -677,6 +678,38 @@ impl Nav {
         self.keymap.reset();
     }
 
+    /// Open `:!`, staged with the focused code block when it is a shell
+    /// command, so Enter runs it.
+    fn open_shell(&mut self, env: &mut Env) {
+        let staged = self
+            .cursor
+            .stop(env.layout)
+            .filter(|stop| stop.kind == StopKind::Special)
+            .and_then(|stop| env.doc.source.get(stop.src))
+            .and_then(command::shell_block);
+        self.open_prompt(Mode::Command);
+        self.line.insert("!");
+        if let Some(staged) = staged {
+            self.line.insert(&staged);
+        }
+    }
+
+    fn paste_into_line(&mut self, now_ms: u64, io: &mut Io) {
+        match io.paste.paste() {
+            Ok(text) => self.line.paste(&text, self.mode == Mode::Command),
+            Err(error) => {
+                let reason: String = error
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(80)
+                    .collect();
+                self.flash(format!("Paste failed: {reason}"), now_ms);
+            }
+        }
+    }
+
     fn close_prompt(&mut self) {
         self.mode = Mode::Page;
         self.line.clear();
@@ -717,6 +750,7 @@ impl Nav {
             }
             "u" if chord.ctrl => return self.line.clear(),
             "w" if chord.ctrl => return self.line.delete_word(),
+            "v" if chord.ctrl && !chord.alt => return self.paste_into_line(now_ms, io),
             _ => {}
         }
         if chord.ctrl || chord.alt {
@@ -1006,7 +1040,21 @@ mod tests {
         nav: Nav,
         actions: Fake,
         clipboard: Recorder,
+        paste: FakePaste,
         now: u64,
+    }
+
+    #[derive(Default)]
+    struct FakePaste {
+        result: Option<Result<String, String>>,
+        reads: usize,
+    }
+
+    impl Paste for FakePaste {
+        fn paste(&mut self) -> Result<String, String> {
+            self.reads += 1;
+            self.result.clone().unwrap_or_else(|| Ok(String::new()))
+        }
     }
 
     #[derive(Default)]
@@ -1083,6 +1131,7 @@ mod tests {
                 nav: Nav::new(keys, NavOptions::default()).unwrap(),
                 actions: Fake::default(),
                 clipboard: Recorder::default(),
+                paste: FakePaste::default(),
                 now: 0,
             }
         }
@@ -1100,6 +1149,7 @@ mod tests {
             let mut io = Io {
                 actions: &mut self.actions,
                 clipboard: &mut self.clipboard,
+                paste: &mut self.paste,
             };
             self.nav.handle(&input, self.now, &mut env, &mut io)
         }
@@ -1639,6 +1689,94 @@ mod tests {
     }
 
     #[test]
+    fn should_paste_the_clipboard_into_the_command_line_when_pressing_ctrl_v() {
+        for chord in ["ctrl+v", "ctrl+shift+v"] {
+            let mut world = World::new("a\n", 600.0);
+            world.paste.result = Some(Ok("echo hi\n".into()));
+            world.press(":");
+            world.typed("!");
+            world.press(chord);
+            assert_eq!(world.nav.command_box(), Some("!echo hi"), "{chord}");
+            let outcome = world.press("enter");
+            assert_eq!(outcome.requests, vec![Request::Shell("echo hi".into())]);
+        }
+    }
+
+    #[test]
+    fn should_join_pasted_lines_with_semicolons_when_the_prompt_is_a_command() {
+        let mut world = World::new("a\n", 600.0);
+        world.paste.result = Some(Ok("cd x\nmake\n".into()));
+        world.press("!");
+        world.press("ctrl+v");
+        assert_eq!(world.nav.command_box(), Some("!cd x; make"));
+    }
+
+    #[test]
+    fn should_paste_into_search_with_spaces_when_the_search_prompt_is_open() {
+        let mut world = World::new("a\n", 600.0);
+        world.paste.result = Some(Ok("two\nwords".into()));
+        world.press("/");
+        world.press("ctrl+v");
+        assert_eq!(world.nav.search_box(), Some("two words"));
+    }
+
+    #[test]
+    fn should_keep_the_line_and_report_when_the_paste_fails() {
+        let mut world = World::new("a\n", 600.0);
+        world.paste.result = Some(Err("wl-paste: No selection\nmore".into()));
+        world.press("!");
+        world.typed("ls");
+        world.press("ctrl+v");
+        assert_eq!(world.nav.command_box(), Some("!ls"));
+        assert_eq!(world.nav.state(), StateName::Command);
+        assert_eq!(world.message(), "Paste failed: wl-paste: No selection");
+    }
+
+    #[test]
+    fn should_not_read_the_clipboard_when_ctrl_v_is_pressed_outside_a_prompt() {
+        let mut world = World::new("a\n", 600.0);
+        world.paste.result = Some(Ok("boom".into()));
+        world.press("ctrl+v");
+        assert_eq!(world.paste.reads, 0);
+        assert_eq!(world.nav.state(), StateName::Page);
+    }
+
+    #[test]
+    fn should_stage_the_focused_bash_block_when_pressing_bang() {
+        let mut world = World::new("intro\n\n```bash\ncargo test -p view\n```\n", 600.0);
+        world.press("j");
+        world.press("!");
+        assert_eq!(world.nav.command_box(), Some("!cargo test -p view"));
+        let outcome = world.press("enter");
+        assert_eq!(
+            outcome.requests,
+            vec![Request::Shell("cargo test -p view".into())]
+        );
+    }
+
+    #[test]
+    fn should_open_a_bare_bang_when_the_focused_block_is_not_a_shell_command() {
+        for markdown in [
+            "```rust\nfn main() {}\n```\n",
+            "just text\n",
+            "```bash\n```\n",
+        ] {
+            let mut world = World::new(markdown, 600.0);
+            world.press("!");
+            assert_eq!(world.nav.command_box(), Some("!"), "{markdown:?}");
+        }
+    }
+
+    #[test]
+    fn should_let_the_staged_command_be_edited_before_running_when_pressing_bang() {
+        let mut world = World::new("```sh\nls\n```\n", 600.0);
+        world.press("!");
+        world.typed(" -la");
+        let outcome = world.press("enter");
+        assert_eq!(outcome.requests, vec![Request::Shell("ls -la".into())]);
+    }
+
+    #[test]
     fn should_open_the_command_line_prefilled_when_pressing_bang() {
         let mut world = World::new("a\n", 600.0);
         world.press("!");
@@ -1739,6 +1877,7 @@ mod tests {
         let mut io = Io {
             actions: &mut none,
             clipboard: &mut world.clipboard,
+            paste: &mut world.paste,
         };
         world.nav.handle(&input, 5, &mut env, &mut io);
         assert!(world.nav.status_view(5).message.contains("not available"));

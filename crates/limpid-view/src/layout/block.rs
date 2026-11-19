@@ -457,7 +457,15 @@ mod tests {
         let mut fonts = Fonts::new();
         let wide = lay_out(&doc, 1400.0, &Theme::dark(), 1.0, &mut fonts);
         let narrow = lay_out(&doc, 500.0, &Theme::dark(), 1.0, &mut fonts);
-        assert!(narrow.blocks[0].rect.h > wide.blocks[0].rect.h * 1.5);
+        let (narrow, wide) = (narrow.blocks[0].rect, wide.blocks[0].rect);
+        // The column is capped, so compare against the widths laid out. The
+        // words fill lines in proportion to the width, give or take a line.
+        assert!(narrow.w < wide.w, "narrow {narrow:?} wide {wide:?}");
+        let expected = wide.h * wide.w / narrow.w;
+        assert!(
+            narrow.h > expected * 0.85,
+            "narrow {narrow:?} wide {wide:?}: expected about {expected} tall"
+        );
     }
 
     #[test]

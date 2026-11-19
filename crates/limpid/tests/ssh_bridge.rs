@@ -5,6 +5,11 @@
 //! touches a real host. The local viewer is a stand-in socket, so no window
 //! opens, and the launcher is a copy of the binary with no `limpid-view`
 //! beside it.
+//!
+//! Linux only: the relay notices that a plain ssh login ended through
+//! SO_PEERCRED and /proc, which other platforms lack, so logouts would wait
+//! on open pages there (issue #5). The helpers also read /proc.
+#![cfg(target_os = "linux")]
 
 use limpid_core::transport::{Handoff, Scheme, view_socket_path};
 use std::{
@@ -86,10 +91,9 @@ impl FakeViewer {
             while !flag.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        stream.set_nonblocking(false).unwrap();
-                        stream
-                            .set_read_timeout(Some(Duration::from_secs(1)))
-                            .unwrap();
+                        // macOS refuses both once the client has closed.
+                        let _ = stream.set_nonblocking(false);
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
                         let mut bytes = Vec::new();
                         let _ = stream.read_to_end(&mut bytes);
                         if !bytes.is_empty() {

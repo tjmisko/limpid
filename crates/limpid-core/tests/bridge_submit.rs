@@ -43,7 +43,10 @@ impl Opener for Recorder {
 }
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("limpid-submit-{name}-{}", std::process::id()));
+    let dir = std::path::Path::new("/tmp")
+        .canonicalize()
+        .unwrap()
+        .join(format!("limpid-submit-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -727,7 +730,8 @@ impl Plugin {
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
-        wait_until(|| socket.exists());
+        // The file appears at bind, before listen: wait until it accepts.
+        wait_until(|| UnixStream::connect(&socket).is_ok());
         let frames = BufReader::new(child.stdout.take().unwrap());
         Plugin {
             child,

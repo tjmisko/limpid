@@ -189,7 +189,7 @@ impl Decoder {
 
     /// Next complete item, or `Ok(None)` when more bytes are needed. A length
     /// beyond the limit is fatal: the stream cannot be resynchronised.
-    pub fn next(&mut self) -> Result<Option<Decoded>, BridgeError> {
+    pub fn next_item(&mut self) -> Result<Option<Decoded>, BridgeError> {
         if self.buf.len() < 4 {
             return Ok(None);
         }
@@ -211,7 +211,7 @@ impl Decoder {
 /// Read until one item is available. `Ok(None)` means clean EOF between frames.
 fn read_item(stream: &mut UnixStream, dec: &mut Decoder) -> Result<Option<Decoded>, BridgeError> {
     loop {
-        if let Some(item) = dec.next()? {
+        if let Some(item) = dec.next_item()? {
             return Ok(Some(item));
         }
         let mut chunk = [0u8; 8192];

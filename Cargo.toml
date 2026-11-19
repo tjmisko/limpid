@@ -12,3 +12,8 @@ pulldown-cmark = "0.12.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
+
+# QuickJS (MathJax) runs under a 1 MiB script stack limit. Unoptimised C
+# frames exhaust it on macOS, so build the engine optimised in dev and test too.
+[profile.dev.package.rquickjs-sys]
+opt-level = 3
