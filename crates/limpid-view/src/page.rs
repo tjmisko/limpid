@@ -18,7 +18,7 @@ use crate::{
         help,
         keymap::{KeyInput, Keymap},
         search, selection_tint, status,
-        yank::{Clipboard, NoClipboard, ReplyCommand, SystemClipboard},
+        yank::{Clipboard, NoClipboard, Paste, ReplyCommand, SystemClipboard},
     },
     paint::Canvas,
     shell::{self, Shell},
@@ -238,6 +238,8 @@ pub struct DocPage {
     actions: Box<dyn PageActions>,
     clipboard: Box<dyn Clipboard>,
     mouse_clipboard: Box<dyn Clipboard>,
+    /// What Ctrl-v on the `:` and `/` prompts reads.
+    paste: Box<dyn Paste>,
     closer: Option<Box<dyn Closer>>,
     /// Paint the focus band, search highlights and status bar.
     chrome: bool,
@@ -493,6 +495,7 @@ impl DocPage {
             actions: Box::new(NoActions),
             clipboard: Box::new(NoClipboard),
             mouse_clipboard: Box::new(NoClipboard),
+            paste: Box::new(NoClipboard),
             closer: None,
             chrome: false,
             pending_anchor: None,
@@ -522,6 +525,7 @@ impl DocPage {
             source: path.clone(),
         });
         self.mouse_clipboard = Box::new(SystemClipboard);
+        self.paste = Box::new(SystemClipboard);
         self.remote_page = path.as_deref().is_some_and(is_remote_page);
         self.path = path;
         self
@@ -665,6 +669,7 @@ impl DocPage {
         let mut io = Io {
             actions: &mut *self.actions,
             clipboard: &mut *self.clipboard,
+            paste: &mut *self.paste,
         };
         Some(body(&mut self.nav, &mut env, &mut io))
     }

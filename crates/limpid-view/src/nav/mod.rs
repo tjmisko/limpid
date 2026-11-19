@@ -27,7 +27,7 @@ use limpid_core::doc::Doc;
 use search::{Hit, Query, Search};
 use status::{DEFAULT_FLASH_MS, StateName, Status, StatusView};
 use std::{collections::BTreeMap, ops::Range};
-use yank::{Clipboard, Operator, Step, Target};
+use yank::{Clipboard, NoClipboard, Operator, Paste, Step, Target};
 
 /// Settings of the navigation layer that are not part of the theme.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -166,6 +166,8 @@ impl PageActions for NoActions {}
 pub struct Io<'a> {
     pub actions: &'a mut dyn PageActions,
     pub clipboard: &'a mut dyn Clipboard,
+    /// Where Ctrl-v on a prompt reads from.
+    pub paste: &'a mut dyn Paste,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,9 +295,11 @@ impl Nav {
     /// Copy using the supplied clipboard, without invoking page actions.
     pub fn copy_focused(&mut self, now_ms: u64, env: &mut Env, clipboard: &mut dyn Clipboard) {
         let mut actions = NoActions;
+        let mut paste = NoClipboard;
         let mut io = Io {
             actions: &mut actions,
             clipboard,
+            paste: &mut paste,
         };
         if self.visual_anchor.is_some() {
             self.yank_selection(now_ms, env, &mut io);
@@ -677,6 +681,22 @@ impl Nav {
         self.keymap.reset();
     }
 
+    fn paste_into_line(&mut self, now_ms: u64, io: &mut Io) {
+        match io.paste.paste() {
+            Ok(text) => self.line.paste(&text, self.mode == Mode::Command),
+            Err(error) => {
+                let reason: String = error
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(80)
+                    .collect();
+                self.flash(format!("Paste failed: {reason}"), now_ms);
+            }
+        }
+    }
+
     fn close_prompt(&mut self) {
         self.mode = Mode::Page;
         self.line.clear();
@@ -717,6 +737,7 @@ impl Nav {
             }
             "u" if chord.ctrl => return self.line.clear(),
             "w" if chord.ctrl => return self.line.delete_word(),
+            "v" if chord.ctrl && !chord.alt => return self.paste_into_line(now_ms, io),
             _ => {}
         }
         if chord.ctrl || chord.alt {
@@ -1006,7 +1027,21 @@ mod tests {
         nav: Nav,
         actions: Fake,
         clipboard: Recorder,
+        paste: FakePaste,
         now: u64,
+    }
+
+    #[derive(Default)]
+    struct FakePaste {
+        result: Option<Result<String, String>>,
+        reads: usize,
+    }
+
+    impl Paste for FakePaste {
+        fn paste(&mut self) -> Result<String, String> {
+            self.reads += 1;
+            self.result.clone().unwrap_or_else(|| Ok(String::new()))
+        }
     }
 
     #[derive(Default)]
@@ -1083,6 +1118,7 @@ mod tests {
                 nav: Nav::new(keys, NavOptions::default()).unwrap(),
                 actions: Fake::default(),
                 clipboard: Recorder::default(),
+                paste: FakePaste::default(),
                 now: 0,
             }
         }
@@ -1100,6 +1136,7 @@ mod tests {
             let mut io = Io {
                 actions: &mut self.actions,
                 clipboard: &mut self.clipboard,
+                paste: &mut self.paste,
             };
             self.nav.handle(&input, self.now, &mut env, &mut io)
         }
@@ -1639,6 +1676,59 @@ mod tests {
     }
 
     #[test]
+    fn should_paste_the_clipboard_into_the_command_line_when_pressing_ctrl_v() {
+        for chord in ["ctrl+v", "ctrl+shift+v"] {
+            let mut world = World::new("a\n", 600.0);
+            world.paste.result = Some(Ok("echo hi\n".into()));
+            world.press(":");
+            world.typed("!");
+            world.press(chord);
+            assert_eq!(world.nav.command_box(), Some("!echo hi"), "{chord}");
+            let outcome = world.press("enter");
+            assert_eq!(outcome.requests, vec![Request::Shell("echo hi".into())]);
+        }
+    }
+
+    #[test]
+    fn should_join_pasted_lines_with_semicolons_when_the_prompt_is_a_command() {
+        let mut world = World::new("a\n", 600.0);
+        world.paste.result = Some(Ok("cd x\nmake\n".into()));
+        world.press("!");
+        world.press("ctrl+v");
+        assert_eq!(world.nav.command_box(), Some("!cd x; make"));
+    }
+
+    #[test]
+    fn should_paste_into_search_with_spaces_when_the_search_prompt_is_open() {
+        let mut world = World::new("a\n", 600.0);
+        world.paste.result = Some(Ok("two\nwords".into()));
+        world.press("/");
+        world.press("ctrl+v");
+        assert_eq!(world.nav.search_box(), Some("two words"));
+    }
+
+    #[test]
+    fn should_keep_the_line_and_report_when_the_paste_fails() {
+        let mut world = World::new("a\n", 600.0);
+        world.paste.result = Some(Err("wl-paste: No selection\nmore".into()));
+        world.press("!");
+        world.typed("ls");
+        world.press("ctrl+v");
+        assert_eq!(world.nav.command_box(), Some("!ls"));
+        assert_eq!(world.nav.state(), StateName::Command);
+        assert_eq!(world.message(), "Paste failed: wl-paste: No selection");
+    }
+
+    #[test]
+    fn should_not_read_the_clipboard_when_ctrl_v_is_pressed_outside_a_prompt() {
+        let mut world = World::new("a\n", 600.0);
+        world.paste.result = Some(Ok("boom".into()));
+        world.press("ctrl+v");
+        assert_eq!(world.paste.reads, 0);
+        assert_eq!(world.nav.state(), StateName::Page);
+    }
+
+    #[test]
     fn should_open_the_command_line_prefilled_when_pressing_bang() {
         let mut world = World::new("a\n", 600.0);
         world.press("!");
@@ -1739,6 +1829,7 @@ mod tests {
         let mut io = Io {
             actions: &mut none,
             clipboard: &mut world.clipboard,
+            paste: &mut world.paste,
         };
         world.nav.handle(&input, 5, &mut env, &mut io);
         assert!(world.nav.status_view(5).message.contains("not available"));

@@ -246,6 +246,72 @@ impl Clipboard for SystemClipboard {
     }
 }
 
+/// Where pasted text comes from.
+pub trait Paste {
+    fn paste(&mut self) -> Result<String, String>;
+}
+
+/// How long a paste waits for the clipboard owner before giving up, so a
+/// stuck `wl-paste` cannot freeze the window.
+const PASTE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+impl Paste for SystemClipboard {
+    fn paste(&mut self) -> Result<String, String> {
+        let (program, args): (&str, &[&str]) = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            ("wl-paste", &["--no-newline"])
+        } else {
+            ("xclip", &["-selection", "clipboard", "-o"])
+        };
+        run_paste(program, args, PASTE_TIMEOUT)
+    }
+}
+
+/// Run `program` and return its stdout, killing it after `timeout`.
+fn run_paste(program: &str, args: &[&str], timeout: std::time::Duration) -> Result<String, String> {
+    use std::{io::Read, process::Stdio, time::Instant};
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("{program}: {error}"))?;
+    let mut stdout = child.stdout.take().expect("stdout is piped");
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+            break status;
+        }
+        if started.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("{program}: timed out"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    let bytes = reader
+        .join()
+        .map_err(|_| format!("{program}: reader panicked"))?
+        .map_err(|error| format!("{program}: {error}"))?;
+    if !status.success() {
+        let mut stderr = String::new();
+        if let Some(mut pipe) = child.stderr.take() {
+            let _ = pipe.read_to_string(&mut stderr);
+        }
+        let reason = stderr.trim();
+        return Err(if reason.is_empty() {
+            format!("{program}: {status}")
+        } else {
+            format!("{program}: {reason}")
+        });
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// A clipboard that is not there. Pages built without one fail loudly rather
 /// than run a command nobody configured.
 pub struct NoClipboard;
@@ -253,6 +319,12 @@ pub struct NoClipboard;
 impl Clipboard for NoClipboard {
     fn copy(&mut self, _text: &str) -> Result<(), String> {
         Err("no clipboard command configured".into())
+    }
+}
+
+impl Paste for NoClipboard {
+    fn paste(&mut self) -> Result<String, String> {
+        Err("no clipboard to paste from".into())
     }
 }
 

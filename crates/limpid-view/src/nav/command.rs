@@ -76,6 +76,15 @@ impl LineEditor {
             .extend(typed.chars().filter(|character| !character.is_control()));
     }
 
+    /// Append pasted text. A prompt is one line, so line breaks are folded:
+    /// a trailing `\` continues onto the next line, blank lines go, and for a
+    /// shell command (`shell`) whole-line `#` comments go and the remaining
+    /// lines are joined with `; ` as the shell would run them. Elsewhere lines
+    /// are joined with a space.
+    pub fn paste(&mut self, pasted: &str, shell: bool) {
+        self.insert(&fold_lines(pasted, shell));
+    }
+
     /// Remove the last character. Returns false when the line was empty, which
     /// is how Backspace on an empty prompt closes it.
     pub fn backspace(&mut self) -> bool {
@@ -89,6 +98,38 @@ impl LineEditor {
         let keep = self.text.rfind(char::is_whitespace).map_or(0, |at| at + 1);
         self.text.truncate(keep);
     }
+}
+
+/// One line for `text`; see [`LineEditor::paste`].
+pub fn fold_lines(text: &str, shell: bool) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut continued = String::new();
+    for raw in text.lines() {
+        let line = raw.replace('\t', " ");
+        let line = line.trim_end();
+        let line = if continued.is_empty() {
+            line
+        } else {
+            line.trim_start()
+        };
+        if let Some(head) = line.strip_suffix('\\') {
+            continued.push_str(head.trim_end());
+            continued.push(' ');
+            continue;
+        }
+        continued.push_str(line);
+        let whole = std::mem::take(&mut continued);
+        let whole = whole.trim();
+        if whole.is_empty() || (shell && whole.starts_with('#')) {
+            continue;
+        }
+        lines.push(whole.to_owned());
+    }
+    let tail = continued.trim();
+    if !tail.is_empty() && !(shell && tail.starts_with('#')) {
+        lines.push(tail.to_owned());
+    }
+    lines.join(if shell { "; " } else { " " })
 }
 
 /// The `:` bar along the bottom, above the bottom `reserved` pixels that
@@ -244,6 +285,62 @@ mod tests {
         line.insert("caf\u{e9}\u{4e16}");
         assert!(line.backspace());
         assert_eq!(line.text(), "caf\u{e9}");
+    }
+
+    #[test]
+    fn should_insert_pasted_text_when_it_is_one_line() {
+        let mut line = LineEditor::default();
+        line.insert("!");
+        line.paste("git status\n", true);
+        assert_eq!(line.text(), "!git status");
+    }
+
+    #[test]
+    fn should_join_lines_with_semicolons_when_pasting_a_shell_command() {
+        assert_eq!(
+            fold_lines("cd crates\ncargo test\n", true),
+            "cd crates; cargo test"
+        );
+        assert_eq!(fold_lines("a\n\n\nb", true), "a; b");
+        assert_eq!(fold_lines("a\r\nb\r\n", true), "a; b");
+    }
+
+    #[test]
+    fn should_join_with_spaces_when_pasting_into_search() {
+        assert_eq!(fold_lines("one\ntwo\n# three", false), "one two # three");
+    }
+
+    #[test]
+    fn should_follow_backslash_continuations_when_pasting() {
+        assert_eq!(
+            fold_lines("cargo build \\\n    --release \\\n    -p view\nls", true),
+            "cargo build --release -p view; ls"
+        );
+        assert_eq!(fold_lines("dangling \\", true), "dangling");
+    }
+
+    #[test]
+    fn should_drop_comment_lines_when_pasting_a_shell_command() {
+        assert_eq!(
+            fold_lines("# build it\ncargo build\n  # done", true),
+            "cargo build"
+        );
+    }
+
+    #[test]
+    fn should_paste_nothing_when_the_clipboard_is_only_whitespace() {
+        let mut line = LineEditor::default();
+        line.paste(" \n\t\n ", true);
+        assert!(line.is_empty());
+        line.paste("", false);
+        assert!(line.is_empty());
+    }
+
+    #[test]
+    fn should_strip_control_characters_when_pasting() {
+        let mut line = LineEditor::default();
+        line.paste("echo \u{1b}[31mhi\u{7}", true);
+        assert_eq!(line.text(), "echo [31mhi");
     }
 
     #[test]
