@@ -136,7 +136,9 @@ pub struct Theme {
     pub families: Families,
 }
 
-pub const DEFAULT_FONT_SIZE: f32 = 17.0;
+pub const DEFAULT_FONT_SIZE: f32 = 20.0;
+/// The font size the layout proportions are designed at.
+pub const REFERENCE_FONT_SIZE: f32 = 17.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.65;
 const DEFAULT_CONTENT_WIDTH: f32 = 860.0;
 const DEFAULT_RAIL_WIDTH: f32 = 220.0;
@@ -301,7 +303,7 @@ mod tests {
     fn should_use_page_css_values_when_built_with_defaults() {
         let theme = Theme::from_settings(&Settings::default(), Scheme::Dark);
         assert_eq!(theme.bg, Color::rgb(0x0c, 0x10, 0x15));
-        assert_eq!(theme.font_size, 17.0);
+        assert_eq!(theme.font_size, 20.0);
         assert_eq!(theme.line_height, 1.65);
         assert_eq!(theme.content_width, 860.0);
         assert_eq!(theme.rail_width, 220.0);

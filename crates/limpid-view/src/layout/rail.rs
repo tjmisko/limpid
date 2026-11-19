@@ -43,9 +43,14 @@ impl Default for RailFollow {
     }
 }
 
+/// How far the font size is from the size the layout proportions are designed at.
+pub fn zoom_of(theme: &Theme) -> f32 {
+    theme.font_size / crate::theme::REFERENCE_FONT_SIZE
+}
+
 /// Whether the rail fits at this window width (CSS px).
 pub fn fits(window_css_width: f32, theme: &Theme) -> bool {
-    window_css_width >= theme.content_width + theme.rail_width + 2.0 * theme.margin
+    window_css_width >= theme.content_width * zoom_of(theme) + theme.rail_width * zoom_of(theme) + 2.0 * theme.margin
 }
 
 /// Place the rail and the text column in a window `width` device pixels wide.
@@ -59,7 +64,7 @@ pub fn geometry(width: f32, theme: &Theme, scale: f32, mode: RailMode, has_toc: 
         };
     // A forced rail never takes more than half of a narrow window.
     let rail_width = if wanted {
-        (theme.rail_width * scale).min(width / 2.0).max(1.0)
+        (theme.rail_width * zoom_of(theme) * scale).min(width / 2.0).max(1.0)
     } else {
         0.0
     };
@@ -69,7 +74,7 @@ pub fn geometry(width: f32, theme: &Theme, scale: f32, mode: RailMode, has_toc: 
     } else {
         (css_width * 0.05).clamp(theme.margin, 64.0_f32.max(theme.margin))
     } * scale;
-    let zoom = theme.font_size / crate::theme::DEFAULT_FONT_SIZE;
+    let zoom = zoom_of(theme);
     let page_width = (theme.content_width * zoom * scale).min(available);
     let column_width = (page_width - 2.0 * side).max(1.0);
     let page_x = rail_width + (available - page_width) / 2.0;
@@ -527,7 +532,7 @@ mod tests {
     #[test]
     fn should_show_the_rail_when_the_window_reaches_the_threshold() {
         let theme = Theme::dark();
-        let threshold = theme.content_width + theme.rail_width + 2.0 * theme.margin;
+        let threshold = (theme.content_width + theme.rail_width) * zoom_of(&theme) + 2.0 * theme.margin;
         assert!(fits(threshold, &theme));
         assert!(!fits(threshold - 1.0, &theme));
         assert!(layout(DOC, threshold, RailMode::Auto).rail.is_some());
