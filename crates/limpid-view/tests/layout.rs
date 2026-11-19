@@ -122,8 +122,12 @@ fn background_at(page: &mut limpid_view::page::DocPage, width: u32, x: u32) -> u
 #[test]
 fn should_show_the_rail_exactly_when_the_window_reaches_content_plus_rail_plus_gutters() {
     let source = fixture("blocks.md");
-    let theme = Theme::dark();
-    let threshold = (theme.content_width + theme.rail_width + 2.0 * theme.margin) as u32;
+    // The page is laid out at the default settings' font size, which scales
+    // the content column and the rail but not the margins.
+    let theme = Theme::from_settings(&Settings::default(), Scheme::Dark);
+    let zoom = limpid_view::layout::rail::zoom_of(&theme);
+    let threshold =
+        ((theme.content_width + theme.rail_width) * zoom + 2.0 * theme.margin).ceil() as u32;
     let rail_colour = 0x0a0e12;
     let mut wide = page(&source, Scheme::Dark);
     assert_eq!(background_at(&mut wide, threshold, 5), rail_colour);

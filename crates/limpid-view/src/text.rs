@@ -11,12 +11,12 @@ pub struct Fonts {
 }
 
 impl Fonts {
-    /// The system's fonts. Unit tests get [`Fonts::bundled`] instead, so
-    /// layout does not depend on what the machine has installed.
+    /// The system's fonts. This crate's tests get [`Fonts::bundled`]
+    /// instead, so layout does not depend on what the machine has installed.
     pub fn new() -> Self {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "bundled-fonts"))]
         return Self::bundled();
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "bundled-fonts")))]
         Self {
             system: FontSystem::new(),
             cache: SwashCache::new(),
@@ -25,7 +25,7 @@ impl Fonts {
 
     /// Only the Latin subsets of DejaVu in `test-fonts/`, with every generic
     /// family pointed at them.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bundled-fonts"))]
     pub fn bundled() -> Self {
         let mut database = cosmic_text::fontdb::Database::new();
         for font in [
