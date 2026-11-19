@@ -7,23 +7,37 @@ the manual live-host checks are in [SSH-BRIDGE-RUNBOOK.md](SSH-BRIDGE-RUNBOOK.md
 
 ## Scope
 
-- Direct OpenSSH logins only: `limpid ssh HOST`, then `claude` and `/read` on
-  the remote. tmux, screen, moving a surviving agent to another client,
-  arbitrary HTML pages and remote image assets are not supported.
+- Direct OpenSSH logins: a plain `ssh HOST` with one `RemoteForward` line in
+  `~/.ssh/config`, then `claude` and `/read` on the remote. Shells that
+  outlive their login (tmux, screen) work too: `limpid` finds the forwarded
+  socket by path, so a pane reaches whichever login currently forwards it.
 - Claude Code `/read` and the native viewer only. A page whose Markdown
   sidecar is missing is refused on a bridged login rather than opened on the
-  remote host.
-- Several clients may log in to the same remote account at once. Each
-  `limpid ssh` is independent: its own route, sockets, cache entries and
-  windows.
+  remote host. Arbitrary HTML pages and remote image assets are not supported.
+- Several logins, from one client or several, may share a remote account.
+  Each connection has its own route; pages from different logins stay apart.
 
 ## Installation
 
 Local machine (where the windows appear):
 
 - `./install.sh` (puts `limpid`, `limpid-view` and `limpid-core` side by side
-  in `${PREFIX:-$HOME/.local}/bin`).
-- An OpenSSH client (`LIMPID_SSH` names another one). A graphical session.
+  in `${PREFIX:-$HOME/.local}/bin`). A graphical session.
+- The hub, socket-activated so nothing runs until a page arrives:
+
+      cp integrations/systemd/limpid-bridge.{socket,service} ~/.config/systemd/user/
+      systemctl --user daemon-reload
+      systemctl --user enable --now limpid-bridge.socket
+
+  It listens on `$XDG_RUNTIME_DIR/limpid/hub.sock`. Without systemd, run
+  `limpid bridge serve [--dark|--light]` yourself.
+- In `~/.ssh/config`, for each remote host:
+
+      Host nlessfun
+        RemoteForward /tmp/limpid-%r.sock ${XDG_RUNTIME_DIR}/limpid/hub.sock
+
+  ssh expands `%r` to the remote user and `${XDG_RUNTIME_DIR}` locally
+  (OpenSSH 8.4 or later); check with `ssh -G HOST | grep -i remoteforward`.
 
 Remote machine (headless; no viewer, no display):
 
@@ -38,20 +52,37 @@ Remote machine (headless; no viewer, no display):
 - The Claude Code plugin in `integrations/claude-code` (it provides `/read` and
   acknowledges each submitted prompt). Restart Claude after updating it.
 - `sshd` must allow remote stream-local forwarding: `AllowStreamLocalForwarding`
-  must be `yes` (the default), `all` or `remote`; `no` and `local` refuse it.
-  The launcher uses `-R /tmp/limpid-<route>.sock:...` with
-  `ExitOnForwardFailure=yes`, so a refusal fails the login with a hint.
-- `/tmp` writable on the remote.
+  must be `yes` (the default), `all` or `remote`.
+- `sshd` should replace a socket left by an ended login. sshd does not remove
+  the socket file at logout, and without this the next login's forward fails
+  (ssh prints a warning and logs in anyway):
+
+      echo 'StreamLocalBindUnlink yes' | sudo tee /etc/ssh/sshd_config.d/50-limpid.conf
+      sudo systemctl reload sshd
 
 ## Use
 
-    limpid ssh [--dark|--light] [ssh options] HOST
+    ssh HOST
 
-You get a normal login shell with `LIMPID_BRIDGE_SOCKET` and
-`LIMPID_BRIDGE_ROUTE` set. `/read` there opens a window here and returns once
-the viewer accepted the page. In the window, `:w` saves your annotations here
-and on the remote page (Claude is not woken), and `:wq` also submits them to
-the Claude session the page came from.
+`limpid` on the remote finds `/tmp/limpid-$USER.sock` and uses it only when
+it is a socket owned by you with mode 0600; anything else at that path is an
+error, never used. `LIMPID_BRIDGE_SOCKET` names a different path. `/read`
+opens a window here and returns once the viewer accepted the page. In the
+window, `:w` saves your annotations here and on the remote page (Claude is not
+woken), and `:wq` also submits them to the Claude session the page came from.
+
+A remote page holds its forwarded connection open for `:w` and `:wq`. When the
+login's last session exits, the page lets go so ssh can exit; after that the
+page's feedback can no longer reach the remote (see recovery below).
+
+Two logins at once share the path: the newer one takes it over, so pages
+opened after that go through the newer login, and end with it. If the newer
+login ends first, `/read` in the older one reports a stale socket until you
+log in again.
+
+`limpid ssh [--dark|--light] [ssh options] HOST` still works and needs no
+configuration: it runs its own hub for one login and sets
+`LIMPID_BRIDGE_SOCKET` and `LIMPID_BRIDGE_ROUTE`.
 
 The status line says what is true: `Saved locally only`, `Saved locally and on
 the remote (revision N)`, `Sent to the agent session`, `Not sent`, or
@@ -65,10 +96,11 @@ removed by the bridge. What each failure leaves:
 
 | Failure | Result |
 |---|---|
-| Remote shell exits, with or without a page open | the ssh client exits promptly; the remote relay and both sockets are removed |
+| Remote shell exits, with or without a page open | the ssh client exits within about a second; the remote relay exits |
+| Stale socket (login ended, sshd without `StreamLocalBindUnlink`) | `/read` says the socket is stale and names the sshd setting |
 | Network loss (ssh killed) | the launcher exits; the remote relay sees the forward die and exits; later `:w` says the login is gone and keeps the local copy |
 | Viewer restarted | nothing is lost: feedback is on disk; `:w` in the reopened window pushes it if the login is alive |
-| Launcher restarted (`limpid ssh` ended and run again) | the old page cannot be pushed; its feedback stays in the local cache |
+| Hub restarted, or the login ended and you logged in again | the old page cannot be pushed; its feedback stays in the local cache |
 | Another client saved the same page first | the second save is refused as `stale revision`; its local copy is kept |
 | Sender never answers | `:w` answers after the request timeout (10 s) with `Saved locally only`; `:wq` reports not sent |
 | Agent exited, or `/clear` started a new session | `Not sent`; the page stays open; nothing goes to a newer session |
